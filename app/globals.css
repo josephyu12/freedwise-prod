@@ -1,0 +1,248 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: #ffffff;
+  --foreground: #171717;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #0a0a0a;
+    --foreground: #ededed;
+  }
+}
+
+body {
+  color: var(--foreground);
+  background: var(--background);
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+}
+
+/* Rich text editor styles */
+[contenteditable][data-placeholder]:empty:before {
+  content: attr(data-placeholder);
+  color: #9ca3af;
+  pointer-events: none;
+}
+
+/* Rich text editor list styles */
+.rich-text-editor ul,
+.rich-text-editor ol {
+  margin: 0.5em 0;
+  padding-left: 2em;
+  list-style-position: outside;
+}
+
+.rich-text-editor ul {
+  list-style-type: disc;
+}
+
+.rich-text-editor ol {
+  list-style-type: decimal;
+}
+
+.rich-text-editor li {
+  margin: 0.25em 0;
+  display: list-item;
+}
+
+.rich-text-editor ul ul,
+.rich-text-editor ol ol,
+.rich-text-editor ul ol,
+.rich-text-editor ol ul {
+  margin-top: 0.25em;
+  margin-bottom: 0.25em;
+}
+
+/* Prose styles for rich text display */
+.prose {
+  max-width: 65ch;
+}
+
+.prose ul,
+.prose ol {
+  margin: 1em 0;
+  padding-left: 2em;
+}
+
+.prose ul {
+  list-style-type: disc;
+}
+
+.prose ol {
+  list-style-type: decimal;
+}
+
+.prose li {
+  margin: 0.5em 0;
+}
+
+.prose strong {
+  font-weight: 700;
+}
+
+.prose em {
+  font-style: italic;
+}
+
+.prose u {
+  text-decoration: underline;
+}
+
+.prose p {
+  margin: 1em 0;
+}
+
+.prose.dark\:prose-invert {
+  color: #ededed;
+}
+
+/* Highlight preview styles - force black text */
+.highlight-preview,
+.highlight-preview * {
+  color: #000000 !important;
+}
+
+@media (prefers-color-scheme: dark) {
+  .highlight-preview,
+  .highlight-preview * {
+    color: #ffffff !important;
+  }
+}
+
+/* Highlight content styles - force black text for all highlight displays */
+.highlight-content,
+.highlight-content * {
+  color: #000000 !important;
+}
+
+@media (prefers-color-scheme: dark) {
+  .highlight-content,
+  .highlight-content * {
+    color: #ffffff !important;
+  }
+}
+
+/* List styles for highlight content */
+.highlight-content ul,
+.highlight-content ol {
+  margin: 0.75em 0;
+  padding-left: 2em;
+  list-style-position: outside;
+}
+
+.highlight-content ul {
+  list-style-type: disc;
+}
+
+.highlight-content ol {
+  list-style-type: decimal;
+}
+
+.highlight-content li {
+  margin: 0.5em 0;
+  display: list-item;
+}
+
+.highlight-content ul ul,
+.highlight-content ol ol,
+.highlight-content ul ol,
+.highlight-content ol ul {
+  margin-top: 0.5em;
+  margin-bottom: 0.5em;
+}
+
+.highlight-content ul ul {
+  list-style-type: circle;
+}
+
+.highlight-content ul ul ul {
+  list-style-type: square;
+}
+
+/* Animation for daily summary highlights */
+@keyframes slideIn {
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes slideOut {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+    max-height: 1000px;
+    margin-bottom: 1rem;
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-20px);
+    max-height: 0;
+    margin-bottom: 0;
+    padding-top: 0;
+    padding-bottom: 0;
+  }
+}
+
+.highlight-sliding-out {
+  animation: slideOut 0.4s ease-in-out forwards;
+  overflow: hidden;
+}
+
+.rated-overlay {
+  position: relative;
+}
+
+/* Confetti Animation */
+@keyframes confetti-fall {
+  0% {
+    transform: translateY(-100vh) rotate(0deg);
+    opacity: 1;
+  }
+  100% {
+    transform: translateY(100vh) rotate(720deg);
+    opacity: 0;
+  }
+}
+
+.confetti {
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  background-color: #ff6b6b;
+  animation: confetti-fall 3s linear infinite;
+  border-radius: 2px;
+}
+
+.confetti:nth-child(odd) {
+  width: 8px;
+  height: 8px;
+  animation-duration: 2.5s;
+}
+
+.confetti:nth-child(3n) {
+  width: 12px;
+  height: 12px;
+  animation-duration: 3.5s;
+  border-radius: 50%;
+}
+
+.confetti:nth-child(4n) {
+  width: 6px;
+  height: 6px;
+  animation-duration: 2s;
+}
+
