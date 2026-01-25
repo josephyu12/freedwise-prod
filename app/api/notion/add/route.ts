@@ -156,194 +156,262 @@ function htmlToNotionBlocks(html: string): any[] {
 
   const blocks: any[] = []
   
-  // First, extract text that appears before lists (not wrapped in tags)
-  // This handles cases like "Yogi Berra Bangers:\n<ul>..."
-  const textBeforeLists: string[] = []
-  const listStartRegex = /(<ul|<ol)/
-  const listStartMatch = listStartRegex.exec(html)
-  if (listStartMatch && listStartMatch.index > 0) {
-    const textBefore = html.substring(0, listStartMatch.index).trim()
-    if (textBefore && !textBefore.match(/<[^>]+>/)) {
-      // Text before list that's not in any HTML tags
-      const lines = textBefore.split(/\n/).map(l => l.trim()).filter(l => l.length > 0)
-      textBeforeLists.push(...lines)
-    }
+  // Process content sequentially to maintain order
+  // Find all major content blocks with their positions
+  interface ContentBlock {
+    index: number
+    type: 'ul' | 'ol' | 'h1' | 'h2' | 'h3' | 'blockquote' | 'pre' | 'p' | 'text'
+    content: string
+    fullMatch: string
   }
   
-  // Extract list items
-  const ulRegex = /<ul[^>]*>(.*?)<\/ul>/gis
-  const olRegex = /<ol[^>]*>(.*?)<\/ol>/gis
+  const contentBlocks: ContentBlock[] = []
   
-  // Process unordered lists
+  // Find all lists with their positions
+  const ulRegex = /<ul[^>]*>(.*?)<\/ul>/gis
   let ulMatch
   while ((ulMatch = ulRegex.exec(html)) !== null) {
-    const listContent = ulMatch[1]
-    const liRegex = /<li[^>]*>(.*?)<\/li>/gis
-    let liMatch
-    while ((liMatch = liRegex.exec(listContent)) !== null) {
-      const richText = htmlToNotionRichText(liMatch[1])
-      if (richText.length > 0) {
-        blocks.push({
-          type: 'bulleted_list_item',
-          bulleted_list_item: { rich_text: richText },
-        })
-      }
-    }
+    contentBlocks.push({
+      index: ulMatch.index,
+      type: 'ul',
+      content: ulMatch[1],
+      fullMatch: ulMatch[0],
+    })
   }
   
-  // Process ordered lists
+  const olRegex = /<ol[^>]*>(.*?)<\/ol>/gis
   let olMatch
   while ((olMatch = olRegex.exec(html)) !== null) {
-    const listContent = olMatch[1]
-    const liRegex = /<li[^>]*>(.*?)<\/li>/gis
-    let liMatch
-    while ((liMatch = liRegex.exec(listContent)) !== null) {
-      const richText = htmlToNotionRichText(liMatch[1])
-      if (richText.length > 0) {
-        blocks.push({
-          type: 'numbered_list_item',
-          numbered_list_item: { rich_text: richText },
-        })
-      }
-    }
+    contentBlocks.push({
+      index: olMatch.index,
+      type: 'ol',
+      content: olMatch[1],
+      fullMatch: olMatch[0],
+    })
   }
   
-  // Add text that appeared before lists (at the beginning, before list items)
-  if (textBeforeLists.length > 0) {
-    for (const line of textBeforeLists) {
-      const richText = htmlToNotionRichText(line)
-      if (richText.length > 0) {
-        blocks.unshift({
-          type: 'paragraph',
-          paragraph: { rich_text: richText },
-        })
-      }
-    }
-  }
-  
-  // Remove processed lists from HTML
-  let remainingHtml = html
-    .replace(/<ul[^>]*>.*?<\/ul>/gis, '')
-    .replace(/<ol[^>]*>.*?<\/ol>/gis, '')
-  
-  // Process headings
+  // Find headings
   const h1Regex = /<h1[^>]*>(.*?)<\/h1>/gi
   let h1Match
-  while ((h1Match = h1Regex.exec(remainingHtml)) !== null) {
-    const richText = htmlToNotionRichText(h1Match[1])
-    if (richText.length > 0) {
-      blocks.push({
-        type: 'heading_1',
-        heading_1: { rich_text: richText },
-      })
-    }
-    remainingHtml = remainingHtml.replace(h1Match[0], '')
+  while ((h1Match = h1Regex.exec(html)) !== null) {
+    contentBlocks.push({
+      index: h1Match.index,
+      type: 'h1',
+      content: h1Match[1],
+      fullMatch: h1Match[0],
+    })
   }
   
   const h2Regex = /<h2[^>]*>(.*?)<\/h2>/gi
   let h2Match
-  while ((h2Match = h2Regex.exec(remainingHtml)) !== null) {
-    const richText = htmlToNotionRichText(h2Match[1])
-    if (richText.length > 0) {
-      blocks.push({
-        type: 'heading_2',
-        heading_2: { rich_text: richText },
-      })
-    }
-    remainingHtml = remainingHtml.replace(h2Match[0], '')
+  while ((h2Match = h2Regex.exec(html)) !== null) {
+    contentBlocks.push({
+      index: h2Match.index,
+      type: 'h2',
+      content: h2Match[1],
+      fullMatch: h2Match[0],
+    })
   }
   
   const h3Regex = /<h3[^>]*>(.*?)<\/h3>/gi
   let h3Match
-  while ((h3Match = h3Regex.exec(remainingHtml)) !== null) {
-    const richText = htmlToNotionRichText(h3Match[1])
-    if (richText.length > 0) {
-      blocks.push({
-        type: 'heading_3',
-        heading_3: { rich_text: richText },
-      })
-    }
-    remainingHtml = remainingHtml.replace(h3Match[0], '')
+  while ((h3Match = h3Regex.exec(html)) !== null) {
+    contentBlocks.push({
+      index: h3Match.index,
+      type: 'h3',
+      content: h3Match[1],
+      fullMatch: h3Match[0],
+    })
   }
   
-  // Process blockquotes
+  // Find blockquotes
   const blockquoteRegex = /<blockquote[^>]*>(.*?)<\/blockquote>/gi
   let blockquoteMatch
-  while ((blockquoteMatch = blockquoteRegex.exec(remainingHtml)) !== null) {
-    const richText = htmlToNotionRichText(blockquoteMatch[1])
-    if (richText.length > 0) {
-      blocks.push({
-        type: 'quote',
-        quote: { rich_text: richText },
-      })
-    }
-    remainingHtml = remainingHtml.replace(blockquoteMatch[0], '')
+  while ((blockquoteMatch = blockquoteRegex.exec(html)) !== null) {
+    contentBlocks.push({
+      index: blockquoteMatch.index,
+      type: 'blockquote',
+      content: blockquoteMatch[1],
+      fullMatch: blockquoteMatch[0],
+    })
   }
   
-  // Process code blocks
+  // Find code blocks
   const preRegex = /<pre[^>]*>(.*?)<\/pre>/gis
   let preMatch
-  while ((preMatch = preRegex.exec(remainingHtml)) !== null) {
-    const code = remainingHtml.substring(preMatch.index, preMatch.index + preMatch[0].length)
-      .replace(/<[^>]*>/g, '')
-      .trim()
-    if (code) {
-      blocks.push({
-        type: 'code',
-        code: {
-          rich_text: [{
-            type: 'text',
-            text: { content: code },
-            annotations: {
-              bold: false,
-              italic: false,
-              strikethrough: false,
-              underline: false,
-              code: false,
-              color: 'default',
-            },
-            plain_text: code,
-          }],
-          language: 'plain text',
-        },
-      })
-    }
-    remainingHtml = remainingHtml.replace(preMatch[0], '')
+  while ((preMatch = preRegex.exec(html)) !== null) {
+    contentBlocks.push({
+      index: preMatch.index,
+      type: 'pre',
+      content: preMatch[1],
+      fullMatch: preMatch[0],
+    })
   }
   
-  // Process paragraphs (what's left)
+  // Find paragraphs
   const pRegex = /<p[^>]*>(.*?)<\/p>/gi
   let pMatch
-  while ((pMatch = pRegex.exec(remainingHtml)) !== null) {
-    const richText = htmlToNotionRichText(pMatch[1])
-    if (richText.length > 0 || pMatch[1].trim() === '') {
-      blocks.push({
-        type: 'paragraph',
-        paragraph: { rich_text: richText },
-      })
+  while ((pMatch = pRegex.exec(html)) !== null) {
+    contentBlocks.push({
+      index: pMatch.index,
+      type: 'p',
+      content: pMatch[1],
+      fullMatch: pMatch[0],
+    })
+  }
+  
+  // Sort by position
+  contentBlocks.sort((a, b) => a.index - b.index)
+  
+  // Process blocks in order, handling text between them
+  let lastIndex = 0
+  for (const block of contentBlocks) {
+    // Check for text before this block
+    if (block.index > lastIndex) {
+      const textBefore = html.substring(lastIndex, block.index).trim()
+      if (textBefore) {
+        // Remove any HTML tags to get plain text
+        const plainText = textBefore.replace(/<[^>]*>/g, '').trim()
+        if (plainText) {
+          const richText = htmlToNotionRichText(plainText)
+          if (richText.length > 0) {
+            blocks.push({
+              type: 'paragraph',
+              paragraph: { rich_text: richText },
+            })
+          }
+        }
+      }
+    }
+    
+    // Process the block itself
+    switch (block.type) {
+      case 'ul': {
+        const liRegex = /<li[^>]*>(.*?)<\/li>/gis
+        let liMatch
+        while ((liMatch = liRegex.exec(block.content)) !== null) {
+          const richText = htmlToNotionRichText(liMatch[1])
+          if (richText.length > 0) {
+            blocks.push({
+              type: 'bulleted_list_item',
+              bulleted_list_item: { rich_text: richText },
+            })
+          }
+        }
+        break
+      }
+      case 'ol': {
+        const liRegex = /<li[^>]*>(.*?)<\/li>/gis
+        let liMatch
+        while ((liMatch = liRegex.exec(block.content)) !== null) {
+          const richText = htmlToNotionRichText(liMatch[1])
+          if (richText.length > 0) {
+            blocks.push({
+              type: 'numbered_list_item',
+              numbered_list_item: { rich_text: richText },
+            })
+          }
+        }
+        break
+      }
+      case 'h1': {
+        const richText = htmlToNotionRichText(block.content)
+        if (richText.length > 0) {
+          blocks.push({
+            type: 'heading_1',
+            heading_1: { rich_text: richText },
+          })
+        }
+        break
+      }
+      case 'h2': {
+        const richText = htmlToNotionRichText(block.content)
+        if (richText.length > 0) {
+          blocks.push({
+            type: 'heading_2',
+            heading_2: { rich_text: richText },
+          })
+        }
+        break
+      }
+      case 'h3': {
+        const richText = htmlToNotionRichText(block.content)
+        if (richText.length > 0) {
+          blocks.push({
+            type: 'heading_3',
+            heading_3: { rich_text: richText },
+          })
+        }
+        break
+      }
+      case 'blockquote': {
+        const richText = htmlToNotionRichText(block.content)
+        if (richText.length > 0) {
+          blocks.push({
+            type: 'quote',
+            quote: { rich_text: richText },
+          })
+        }
+        break
+      }
+      case 'pre': {
+        const code = block.content.replace(/<[^>]*>/g, '').trim()
+        if (code) {
+          blocks.push({
+            type: 'code',
+            code: {
+              rich_text: [{
+                type: 'text',
+                text: { content: code },
+                annotations: {
+                  bold: false,
+                  italic: false,
+                  strikethrough: false,
+                  underline: false,
+                  code: false,
+                  color: 'default',
+                },
+                plain_text: code,
+              }],
+              language: 'plain text',
+            },
+          })
+        }
+        break
+      }
+      case 'p': {
+        const richText = htmlToNotionRichText(block.content)
+        if (richText.length > 0 || block.content.trim() === '') {
+          blocks.push({
+            type: 'paragraph',
+            paragraph: { rich_text: richText },
+          })
+        }
+        break
+      }
+    }
+    
+    lastIndex = block.index + block.fullMatch.length
+  }
+  
+  // Check for text after the last block
+  if (lastIndex < html.length) {
+    const textAfter = html.substring(lastIndex).trim()
+    if (textAfter) {
+      const plainText = textAfter.replace(/<[^>]*>/g, '').trim()
+      if (plainText) {
+        const richText = htmlToNotionRichText(plainText)
+        if (richText.length > 0) {
+          blocks.push({
+            type: 'paragraph',
+            paragraph: { rich_text: richText },
+          })
+        }
+      }
     }
   }
   
-  // Remove processed <p> tags from remainingHtml
-  remainingHtml = remainingHtml.replace(/<p[^>]*>.*?<\/p>/gi, '')
-  
-  // Process any remaining text that's not in tags
-  // (Text before lists is already handled above, so this catches other cases)
-  const textWithoutTags = remainingHtml
-    .replace(/<[^>]*>/g, '') // Remove all remaining HTML tags
-    .trim()
-  
-  if (textWithoutTags && !textBeforeLists.includes(textWithoutTags)) {
-    const richText = htmlToNotionRichText(textWithoutTags)
-    if (richText.length > 0) {
-      blocks.push({
-        type: 'paragraph',
-        paragraph: { rich_text: richText },
-      })
-    }
-  }
-  
-  // If no blocks were created, create a paragraph with the remaining content
+  // If no blocks were created, create a paragraph with the entire content
   if (blocks.length === 0) {
     const plainText = html.replace(/<[^>]*>/g, '').trim()
     if (plainText) {
