@@ -5,7 +5,7 @@ import { createClient } from '@/lib/supabase/client'
 import { DailySummary, DailySummaryHighlight } from '@/types/database'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { format, startOfMonth, endOfMonth, eachDayOfInterval, getDay, isSameMonth, isSameDay } from 'date-fns'
+import { format, startOfMonth, endOfMonth, eachDayOfInterval, getDay, isSameMonth, isSameDay, addMonths, subMonths } from 'date-fns'
 import RichTextEditor from '@/components/RichTextEditor'
 import PinDialog from '@/components/PinDialog'
 import { Pin, PinOff } from 'lucide-react'
@@ -14,22 +14,29 @@ function CalendarView({
   selectedDate,
   onDateSelect,
   monthReviewStatus,
+  displayMonth,
+  onDisplayMonthChange,
+  monthsWithAssignments,
 }: {
   selectedDate: string
   onDateSelect: (date: string) => void
   monthReviewStatus: Map<string, 'completed' | 'partial' | 'none'>
+  displayMonth: Date
+  onDisplayMonthChange: (month: Date) => void
+  monthsWithAssignments: Set<string> // Set of month strings in 'YYYY-MM' format
 }) {
-  // Parse date string as local date to avoid timezone issues
-  const [year, month, day] = selectedDate.split('-').map(Number)
-  const dateObj = new Date(year, month - 1, day)
-  const monthStart = startOfMonth(dateObj)
-  const monthEnd = endOfMonth(dateObj)
+  const monthStart = startOfMonth(displayMonth)
+  const monthEnd = endOfMonth(displayMonth)
   const days = eachDayOfInterval({ start: monthStart, end: monthEnd })
   const weekDays = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
   
   // Get first day of week for the month
   const firstDayOfWeek = getDay(monthStart)
   const emptyDays = Array(firstDayOfWeek).fill(null)
+
+  // Check if this month has assignments
+  const monthKey = format(displayMonth, 'yyyy-MM')
+  const hasAssignments = monthsWithAssignments.has(monthKey)
 
   const getStatusText = (dayDate: Date) => {
     // Format as YYYY-MM-DD using local timezone
@@ -40,11 +47,43 @@ function CalendarView({
     return 'Not started'
   }
 
+  const handlePreviousMonth = () => {
+    onDisplayMonthChange(subMonths(displayMonth, 1))
+  }
+
+  const handleNextMonth = () => {
+    onDisplayMonthChange(addMonths(displayMonth, 1))
+  }
+
+  // Parse selected date for comparison
+  const [selYear, selMonth, selDay] = selectedDate.split('-').map(Number)
+  const selectedDateObj = new Date(selYear, selMonth - 1, selDay)
+
   return (
     <div>
-      <h3 className="text-lg font-semibold mb-4 text-gray-900 dark:text-white">
-        {format(dateObj, 'MMMM yyyy')}
-      </h3>
+      <div className="flex items-center justify-between mb-4">
+        <button
+          onClick={handlePreviousMonth}
+          className="p-2 rounded hover:bg-gray-100 dark:hover:bg-gray-700 transition"
+          aria-label="Previous month"
+        >
+          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+          </svg>
+        </button>
+        <h3 className="text-lg font-semibold text-gray-900 dark:text-white">
+          {format(displayMonth, 'MMMM yyyy')}
+        </h3>
+        <button
+          onClick={handleNextMonth}
+          className="p-2 rounded hover:bg-gray-100 dark:hover:bg-gray-700 transition"
+          aria-label="Next month"
+        >
+          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+          </svg>
+        </button>
+      </div>
       <div className="grid grid-cols-7 gap-1">
         {weekDays.map((day) => (
           <div key={day} className="text-center text-xs font-semibold text-gray-600 dark:text-gray-400 p-2">
@@ -57,18 +96,23 @@ function CalendarView({
         {days.map((day) => {
           // Format as YYYY-MM-DD using local timezone
           const dateStr = `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, '0')}-${String(day.getDate()).padStart(2, '0')}`
-          // Compare dates in local timezone
-          const [selYear, selMonth, selDay] = selectedDate.split('-').map(Number)
-          const selectedDateObj = new Date(selYear, selMonth - 1, selDay)
           const isSelected = isSameDay(day, selectedDateObj)
           const status = monthReviewStatus.get(dateStr)
+          const isDisabled = !hasAssignments
           
           return (
             <button
               key={dateStr}
-              onClick={() => onDateSelect(dateStr)}
+              onClick={() => {
+                if (!isDisabled) {
+                  onDateSelect(dateStr)
+                }
+              }}
+              disabled={isDisabled}
               className={`p-2 rounded transition-all ${
-                isSelected
+                isDisabled
+                  ? 'bg-gray-50 dark:bg-gray-900 text-gray-400 dark:text-gray-600 cursor-not-allowed'
+                  : isSelected
                   ? 'bg-blue-500 text-white ring-2 ring-blue-300'
                   : status === 'completed'
                   ? 'bg-green-100 dark:bg-green-900 text-green-800 dark:text-green-200 hover:bg-green-200 dark:hover:bg-green-800'
@@ -76,10 +120,10 @@ function CalendarView({
                   ? 'bg-yellow-100 dark:bg-yellow-900 text-yellow-800 dark:text-yellow-200 hover:bg-yellow-200 dark:hover:bg-yellow-800'
                   : 'bg-gray-100 dark:bg-gray-700 text-gray-800 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-600'
               }`}
-              title={getStatusText(day)}
+              title={isDisabled ? 'No assignments for this month' : getStatusText(day)}
             >
               <div className="text-sm font-medium">{format(day, 'd')}</div>
-              {status && (
+              {!isDisabled && status && (
                 <div className={`w-2 h-2 mx-auto mt-1 rounded-full ${
                   status === 'completed' ? 'bg-green-600' : 'bg-yellow-600'
                 }`} />
@@ -122,6 +166,11 @@ export default function DailyPage() {
   const [pendingPinHighlightId, setPendingPinHighlightId] = useState<string | null>(null)
   const [showCompletionDialog, setShowCompletionDialog] = useState(false)
   const [hasShownCompletionDialog, setHasShownCompletionDialog] = useState(false)
+  const [displayMonth, setDisplayMonth] = useState(() => {
+    const [year, month] = format(new Date(), 'yyyy-MM-dd').split('-').map(Number)
+    return new Date(year, month - 1, 1)
+  })
+  const [monthsWithAssignments, setMonthsWithAssignments] = useState<Set<string>>(new Set())
   const supabase = createClient()
   const router = useRouter()
 
@@ -355,16 +404,13 @@ export default function DailyPage() {
     }
   }, [ensureDailySummary, supabase])
 
-  const loadMonthReviewStatus = useCallback(async (selectedDate: string) => {
+  const loadMonthReviewStatus = useCallback(async (monthToLoad: Date) => {
     try {
       const { data: { user } } = await supabase.auth.getUser()
       if (!user) return
 
-      // Parse date string as local date to avoid timezone issues
-      const [year, month, day] = selectedDate.split('-').map(Number)
-      const dateObj = new Date(year, month - 1, day)
-      const yearNum = dateObj.getFullYear()
-      const monthNum = dateObj.getMonth() + 1
+      const yearNum = monthToLoad.getFullYear()
+      const monthNum = monthToLoad.getMonth() + 1
       const daysInMonth = new Date(yearNum, monthNum, 0).getDate()
       const startDate = `${yearNum}-${String(monthNum).padStart(2, '0')}-01`
       const endDate = `${yearNum}-${String(monthNum).padStart(2, '0')}-${String(daysInMonth).padStart(2, '0')}`
@@ -418,6 +464,36 @@ export default function DailyPage() {
     }
   }, [supabase])
 
+  // Load all months with assignments
+  const loadMonthsWithAssignments = useCallback(async () => {
+    try {
+      const { data: { user } } = await supabase.auth.getUser()
+      if (!user) return
+
+      // Get all daily summaries to find which months have assignments
+      const { data: summaries, error: summariesError } = await supabase
+        .from('daily_summaries')
+        .select('date')
+        .eq('user_id', user.id)
+        .order('date', { ascending: false })
+
+      if (summariesError) throw summariesError
+
+      // Extract unique months (YYYY-MM format)
+      const monthsSet = new Set<string>()
+      if (summaries) {
+        for (const summary of summaries) {
+          const [year, month] = summary.date.split('-')
+          monthsSet.add(`${year}-${month}`)
+        }
+      }
+
+      setMonthsWithAssignments(monthsSet)
+    } catch (error) {
+      console.error('Error loading months with assignments:', error)
+    }
+  }, [supabase])
+
   useEffect(() => {
     loadDailySummary(date)
     setHasShownCompletionDialog(false)
@@ -451,8 +527,21 @@ export default function DailyPage() {
   }, [allHighlightsRated, hasShownCompletionDialog])
 
   useEffect(() => {
-    loadMonthReviewStatus(date)
-  }, [date, loadMonthReviewStatus])
+    loadMonthReviewStatus(displayMonth)
+  }, [displayMonth, loadMonthReviewStatus])
+
+  useEffect(() => {
+    loadMonthsWithAssignments()
+  }, [loadMonthsWithAssignments])
+
+  // Update display month when date changes (if date is in a different month)
+  useEffect(() => {
+    const [year, month] = date.split('-').map(Number)
+    const dateMonth = new Date(year, month - 1, 1)
+    if (!isSameMonth(dateMonth, displayMonth)) {
+      setDisplayMonth(dateMonth)
+    }
+  }, [date, displayMonth])
 
   // Load pinned highlights
   useEffect(() => {
@@ -575,7 +664,10 @@ export default function DailyPage() {
       }
 
       // Reload month review status to update calendar
-      await loadMonthReviewStatus(date)
+      const [year, month] = date.split('-').map(Number)
+      const dateMonth = new Date(year, month - 1, 1)
+      await loadMonthReviewStatus(dateMonth)
+      await loadMonthsWithAssignments()
     } catch (error) {
       console.error('Error updating rating:', error)
       // Revert optimistic update on error
@@ -635,7 +727,9 @@ export default function DailyPage() {
 
       // Reload summary to reflect changes
       await loadDailySummary(date)
-      await loadMonthReviewStatus(date)
+      const [year, month] = date.split('-').map(Number)
+      const dateMonth = new Date(year, month - 1, 1)
+      await loadMonthReviewStatus(dateMonth)
       handleCancelEdit()
     } catch (error) {
       console.error('Error updating highlight:', error)
@@ -672,7 +766,10 @@ export default function DailyPage() {
 
       // Reload summary to reflect changes
       await loadDailySummary(date)
-      await loadMonthReviewStatus(date)
+      const [year, month] = date.split('-').map(Number)
+      const dateMonth = new Date(year, month - 1, 1)
+      await loadMonthReviewStatus(dateMonth)
+      await loadMonthsWithAssignments()
     } catch (error) {
       console.error('Error deleting highlight:', error)
       alert('Failed to delete highlight. Please try again.')
@@ -690,7 +787,10 @@ export default function DailyPage() {
 
       // Reload summary to reflect changes
       await loadDailySummary(date)
-      await loadMonthReviewStatus(date)
+      const [year, month] = date.split('-').map(Number)
+      const dateMonth = new Date(year, month - 1, 1)
+      await loadMonthReviewStatus(dateMonth)
+      await loadMonthsWithAssignments()
     } catch (error) {
       console.error('Error archiving highlight:', error)
       alert('Failed to archive highlight. Please try again.')
@@ -820,6 +920,9 @@ export default function DailyPage() {
                 selectedDate={date}
                 onDateSelect={setDate}
                 monthReviewStatus={monthReviewStatus}
+                displayMonth={displayMonth}
+                onDisplayMonthChange={setDisplayMonth}
+                monthsWithAssignments={monthsWithAssignments}
               />
             </div>
           </div>

@@ -487,12 +487,40 @@ export async function GET(request: NextRequest) {
               (reviewedHighlightsData || []).map((r: any) => r.highlight_id)
             )
 
+            // Get existing assignments to identify reviewed highlights (those with ratings)
+            const startDate = `${year}-${String(month).padStart(2, '0')}-01`
+            const endDate = `${year}-${String(month).padStart(2, '0')}-${String(daysInMonth).padStart(2, '0')}`
+
+            const { data: existingSummariesForFilter } = await supabase
+              .from('daily_summaries')
+              .select('id')
+              .eq('user_id', user.id)
+              .gte('date', startDate)
+              .lte('date', endDate)
+
+            const reviewedHighlightIdsFromRatings = new Set<string>()
+            if (existingSummariesForFilter && existingSummariesForFilter.length > 0) {
+              const summaryIdsForFilter = existingSummariesForFilter.map((s: any) => s.id)
+              const { data: assignmentsWithRatings } = await supabase
+                .from('daily_summary_highlights')
+                .select('highlight_id')
+                .in('daily_summary_id', summaryIdsForFilter)
+                .not('rating', 'is', null)
+              
+              if (assignmentsWithRatings) {
+                for (const assignment of assignmentsWithRatings) {
+                  reviewedHighlightIdsFromRatings.add(assignment.highlight_id)
+                }
+              }
+            }
+
             // Filter out highlights that have already been reviewed this month
+            // (either in highlight_months_reviewed or have a rating in daily_summary_highlights)
             const allHighlights = (allHighlightsData as Array<{
               id: string
               text: string
               html_content: string | null
-            }>).filter((h) => !reviewedHighlightIds.has(h.id))
+            }>).filter((h) => !reviewedHighlightIds.has(h.id) && !reviewedHighlightIdsFromRatings.has(h.id))
 
             if (allHighlights.length > 0) {
               // Calculate score (character count) for each highlight
@@ -547,35 +575,122 @@ export async function GET(request: NextRequest) {
                 days[minDayIndex].totalScore += highlight.score
               }
 
-              // Delete existing assignments for this month
-              const startDate = `${year}-${String(month).padStart(2, '0')}-01`
-              const endDate = `${year}-${String(month).padStart(2, '0')}-${String(daysInMonth).padStart(2, '0')}`
-
+              // Get existing assignments and preserve those for reviewed highlights
               const { data: existingSummaries } = await supabase
                 .from('daily_summaries')
-                .select('id')
+                .select('id, date')
                 .eq('user_id', user.id)
                 .gte('date', startDate)
                 .lte('date', endDate)
 
+              // Get all existing assignments with their ratings to identify reviewed highlights
+              const preservedAssignments = new Map<string, { date: string; summaryId: string }>() // highlight_id -> { date, summaryId }
+              
               if (existingSummaries && existingSummaries.length > 0) {
                 const summaryIds = existingSummaries.map((s: any) => s.id)
-                await supabase.from('daily_summary_highlights').delete().in('daily_summary_id', summaryIds)
-                await supabase.from('daily_summaries').delete().in('id', summaryIds)
+                
+                // Get all assignments with ratings (reviewed highlights)
+                const { data: existingAssignments } = await supabase
+                  .from('daily_summary_highlights')
+                  .select('id, highlight_id, daily_summary_id, rating')
+                  .in('daily_summary_id', summaryIds)
+
+                // Preserve assignments for highlights that have been reviewed (have a rating)
+                if (existingAssignments) {
+                  for (const assignment of existingAssignments) {
+                    if (assignment.rating !== null) {
+                      // This highlight has been reviewed, preserve its assignment
+                      const summary = existingSummaries.find((s: any) => s.id === assignment.daily_summary_id)
+                      if (summary) {
+                        preservedAssignments.set(assignment.highlight_id, {
+                          date: summary.date,
+                          summaryId: summary.id,
+                        })
+                      }
+                    }
+                  }
+                }
+
+                // Remove assignments for non-reviewed highlights only
+                const nonReviewedAssignmentIds = (existingAssignments || [])
+                  .filter((a: any) => a.rating === null)
+                  .map((a: any) => a.id)
+
+                if (nonReviewedAssignmentIds.length > 0) {
+                  await supabase
+                    .from('daily_summary_highlights')
+                    .delete()
+                    .in('id', nonReviewedAssignmentIds)
+                }
+
+                // Delete daily_summaries that no longer have any assignments
+                const { data: remainingAssignments } = await supabase
+                  .from('daily_summary_highlights')
+                  .select('daily_summary_id')
+                  .in('daily_summary_id', summaryIds)
+
+                const summariesWithAssignments = new Set(
+                  (remainingAssignments || []).map((a: any) => a.daily_summary_id)
+                )
+
+                const summariesToDelete = existingSummaries
+                  .filter((s: any) => !summariesWithAssignments.has(s.id))
+                  .map((s: any) => s.id)
+
+                if (summariesToDelete.length > 0) {
+                  await supabase
+                    .from('daily_summaries')
+                    .delete()
+                    .in('id', summariesToDelete)
+                }
               }
 
-              // Recreate assignments
-              for (const assignment of days) {
+              // Account for preserved assignments when redistributing
+              const daysWithPreserved = days.map((day) => {
+                const date = `${year}-${String(month).padStart(2, '0')}-${String(day.day).padStart(2, '0')}`
+                
+                // Check if there are preserved assignments for this day
+                let preservedScore = 0
+                for (const [highlightId, preserved] of preservedAssignments.entries()) {
+                  if (preserved.date === date) {
+                    const highlight = highlightsWithScore.find((h) => h.id === highlightId)
+                    if (highlight) {
+                      preservedScore += highlight.score
+                    }
+                  }
+                }
+
+                return {
+                  ...day,
+                  totalScore: day.totalScore + preservedScore,
+                }
+              })
+
+              // Recreate assignments for non-reviewed highlights
+              for (const assignment of daysWithPreserved) {
                 if (assignment.highlights.length === 0) continue
                 const date = `${year}-${String(month).padStart(2, '0')}-${String(assignment.day).padStart(2, '0')}`
-                const { data: summaryData } = await (supabase
-                  .from('daily_summaries') as any)
-                  .insert([{ date, user_id: user.id }])
-                  .select()
-                  .single()
-                if (summaryData) {
+                
+                // Check if summary already exists (might have preserved assignments)
+                let summaryId: string | null = null
+                const existingSummary = existingSummaries?.find((s: any) => s.date === date)
+                
+                if (existingSummary) {
+                  summaryId = existingSummary.id
+                } else {
+                  const { data: summaryData } = await (supabase
+                    .from('daily_summaries') as any)
+                    .insert([{ date, user_id: user.id }])
+                    .select()
+                    .single()
+                  if (summaryData) {
+                    summaryId = summaryData.id
+                  }
+                }
+                
+                if (summaryId) {
                   const summaryHighlights = assignment.highlights.map((h) => ({
-                    daily_summary_id: summaryData.id,
+                    daily_summary_id: summaryId,
                     highlight_id: h.id,
                   }))
                   await (supabase.from('daily_summary_highlights') as any).insert(summaryHighlights)

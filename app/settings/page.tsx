@@ -165,6 +165,10 @@ export default function SettingsPage() {
             <p className="text-gray-600 dark:text-gray-300 mb-6">
               Connect your Notion workspace to automatically sync highlights. Your credentials are stored securely and only used for your account.
             </p>
+            <p className="text-gray-600 dark:text-gray-300 mb-6">
+              <b>NOTE: This is a one-way sync. Changes to your Notion page will not be reflected in the app.</b>
+            </p>
+
 
             <form onSubmit={handleSave} className="space-y-6">
               <div className="flex items-center gap-3">

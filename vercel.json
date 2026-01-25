@@ -1,10 +1,6 @@
 {
   "crons": [
     {
-      "path": "/api/notion/auto-import",
-      "schedule": "0 9 * * *"
-    },
-    {
       "path": "/api/daily/prepare-next-month",
       "schedule": "0 0 24 * *"
     }
