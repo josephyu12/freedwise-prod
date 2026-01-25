@@ -14,13 +14,26 @@ export default function RichTextEditor({ value, htmlValue, onChange, placeholder
   const [isFocused, setIsFocused] = useState(false)
 
   useEffect(() => {
-    if (editorRef.current && htmlValue !== undefined) {
-      editorRef.current.innerHTML = htmlValue || value || ''
-    } else if (editorRef.current && !htmlValue && value) {
-      editorRef.current.textContent = value
+    if (editorRef.current) {
+      // Only update if the content has actually changed to avoid cursor position issues
+      const currentHtml = editorRef.current.innerHTML
+      const currentText = editorRef.current.textContent || ''
+      
+      if (htmlValue !== undefined) {
+        const newHtml = htmlValue || value || ''
+        if (currentHtml !== newHtml) {
+          editorRef.current.innerHTML = newHtml
+        }
+      } else if (!htmlValue && value !== undefined) {
+        if (currentText !== value) {
+          editorRef.current.textContent = value
+        }
+      } else if (!value && !htmlValue) {
+        // Clear the editor when both are empty
+        editorRef.current.innerHTML = ''
+      }
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []) // Only run on mount to set initial value
+  }, [value, htmlValue]) // Update when value or htmlValue changes
 
   const handleInput = () => {
     if (editorRef.current) {

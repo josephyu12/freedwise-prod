@@ -156,6 +156,20 @@ function htmlToNotionBlocks(html: string): any[] {
 
   const blocks: any[] = []
   
+  // First, extract text that appears before lists (not wrapped in tags)
+  // This handles cases like "Yogi Berra Bangers:\n<ul>..."
+  const textBeforeLists: string[] = []
+  const listStartRegex = /(<ul|<ol)/
+  const listStartMatch = listStartRegex.exec(html)
+  if (listStartMatch && listStartMatch.index > 0) {
+    const textBefore = html.substring(0, listStartMatch.index).trim()
+    if (textBefore && !textBefore.match(/<[^>]+>/)) {
+      // Text before list that's not in any HTML tags
+      const lines = textBefore.split(/\n/).map(l => l.trim()).filter(l => l.length > 0)
+      textBeforeLists.push(...lines)
+    }
+  }
+  
   // Extract list items
   const ulRegex = /<ul[^>]*>(.*?)<\/ul>/gis
   const olRegex = /<ol[^>]*>(.*?)<\/ol>/gis
@@ -189,6 +203,19 @@ function htmlToNotionBlocks(html: string): any[] {
         blocks.push({
           type: 'numbered_list_item',
           numbered_list_item: { rich_text: richText },
+        })
+      }
+    }
+  }
+  
+  // Add text that appeared before lists (at the beginning, before list items)
+  if (textBeforeLists.length > 0) {
+    for (const line of textBeforeLists) {
+      const richText = htmlToNotionRichText(line)
+      if (richText.length > 0) {
+        blocks.unshift({
+          type: 'paragraph',
+          paragraph: { rich_text: richText },
         })
       }
     }
@@ -297,9 +324,28 @@ function htmlToNotionBlocks(html: string): any[] {
     }
   }
   
+  // Remove processed <p> tags from remainingHtml
+  remainingHtml = remainingHtml.replace(/<p[^>]*>.*?<\/p>/gi, '')
+  
+  // Process any remaining text that's not in tags
+  // (Text before lists is already handled above, so this catches other cases)
+  const textWithoutTags = remainingHtml
+    .replace(/<[^>]*>/g, '') // Remove all remaining HTML tags
+    .trim()
+  
+  if (textWithoutTags && !textBeforeLists.includes(textWithoutTags)) {
+    const richText = htmlToNotionRichText(textWithoutTags)
+    if (richText.length > 0) {
+      blocks.push({
+        type: 'paragraph',
+        paragraph: { rich_text: richText },
+      })
+    }
+  }
+  
   // If no blocks were created, create a paragraph with the remaining content
   if (blocks.length === 0) {
-    const plainText = remainingHtml.replace(/<[^>]*>/g, '').trim()
+    const plainText = html.replace(/<[^>]*>/g, '').trim()
     if (plainText) {
       const richText = htmlToNotionRichText(html)
       blocks.push({
