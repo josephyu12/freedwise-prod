@@ -482,7 +482,8 @@ export default function DailyPage() {
       // Extract unique months (YYYY-MM format)
       const monthsSet = new Set<string>()
       if (summaries) {
-        for (const summary of summaries) {
+        const typedSummaries = summaries as Array<{ date: string }>
+        for (const summary of typedSummaries) {
           const [year, month] = summary.date.split('-')
           monthsSet.add(`${year}-${month}`)
         }

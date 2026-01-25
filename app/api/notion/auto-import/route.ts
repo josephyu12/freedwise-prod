@@ -500,7 +500,8 @@ export async function GET(request: NextRequest) {
 
             const reviewedHighlightIdsFromRatings = new Set<string>()
             if (existingSummariesForFilter && existingSummariesForFilter.length > 0) {
-              const summaryIdsForFilter = existingSummariesForFilter.map((s: any) => s.id)
+              const typedSummariesForFilter = existingSummariesForFilter as Array<{ id: string }>
+              const summaryIdsForFilter = typedSummariesForFilter.map((s) => s.id)
               const { data: assignmentsWithRatings } = await supabase
                 .from('daily_summary_highlights')
                 .select('highlight_id')
@@ -508,7 +509,7 @@ export async function GET(request: NextRequest) {
                 .not('rating', 'is', null)
               
               if (assignmentsWithRatings) {
-                for (const assignment of assignmentsWithRatings) {
+                for (const assignment of assignmentsWithRatings as Array<{ highlight_id: string }>) {
                   reviewedHighlightIdsFromRatings.add(assignment.highlight_id)
                 }
               }
@@ -586,8 +587,14 @@ export async function GET(request: NextRequest) {
               // Get all existing assignments with their ratings to identify reviewed highlights
               const preservedAssignments = new Map<string, { date: string; summaryId: string }>() // highlight_id -> { date, summaryId }
               
+              // Type the summaries outside the if block so it's accessible later
+              const typedSummaries = (existingSummaries || []) as Array<{
+                id: string
+                date: string
+              }>
+              
               if (existingSummaries && existingSummaries.length > 0) {
-                const summaryIds = existingSummaries.map((s: any) => s.id)
+                const summaryIds = typedSummaries.map((s) => s.id)
                 
                 // Get all assignments with ratings (reviewed highlights)
                 const { data: existingAssignments } = await supabase
@@ -596,11 +603,18 @@ export async function GET(request: NextRequest) {
                   .in('daily_summary_id', summaryIds)
 
                 // Preserve assignments for highlights that have been reviewed (have a rating)
+                let nonReviewedAssignmentIds: string[] = []
                 if (existingAssignments) {
-                  for (const assignment of existingAssignments) {
+                  const typedAssignments = existingAssignments as Array<{
+                    id: string
+                    highlight_id: string
+                    daily_summary_id: string
+                    rating: number | null
+                  }>
+                  for (const assignment of typedAssignments) {
                     if (assignment.rating !== null) {
                       // This highlight has been reviewed, preserve its assignment
-                      const summary = existingSummaries.find((s: any) => s.id === assignment.daily_summary_id)
+                      const summary = typedSummaries.find((s) => s.id === assignment.daily_summary_id)
                       if (summary) {
                         preservedAssignments.set(assignment.highlight_id, {
                           date: summary.date,
@@ -609,12 +623,12 @@ export async function GET(request: NextRequest) {
                       }
                     }
                   }
-                }
 
-                // Remove assignments for non-reviewed highlights only
-                const nonReviewedAssignmentIds = (existingAssignments || [])
-                  .filter((a: any) => a.rating === null)
-                  .map((a: any) => a.id)
+                  // Remove assignments for non-reviewed highlights only
+                  nonReviewedAssignmentIds = typedAssignments
+                    .filter((a) => a.rating === null)
+                    .map((a) => a.id)
+                }
 
                 if (nonReviewedAssignmentIds.length > 0) {
                   await supabase
@@ -629,13 +643,16 @@ export async function GET(request: NextRequest) {
                   .select('daily_summary_id')
                   .in('daily_summary_id', summaryIds)
 
+                const typedRemainingAssignments = (remainingAssignments || []) as Array<{
+                  daily_summary_id: string
+                }>
                 const summariesWithAssignments = new Set(
-                  (remainingAssignments || []).map((a: any) => a.daily_summary_id)
+                  typedRemainingAssignments.map((a) => a.daily_summary_id)
                 )
 
-                const summariesToDelete = existingSummaries
-                  .filter((s: any) => !summariesWithAssignments.has(s.id))
-                  .map((s: any) => s.id)
+                const summariesToDelete = typedSummaries
+                  .filter((s) => !summariesWithAssignments.has(s.id))
+                  .map((s) => s.id)
 
                 if (summariesToDelete.length > 0) {
                   await supabase
@@ -673,7 +690,7 @@ export async function GET(request: NextRequest) {
                 
                 // Check if summary already exists (might have preserved assignments)
                 let summaryId: string | null = null
-                const existingSummary = existingSummaries?.find((s: any) => s.date === date)
+                const existingSummary = typedSummaries?.find((s) => s.date === date)
                 
                 if (existingSummary) {
                   summaryId = existingSummary.id
