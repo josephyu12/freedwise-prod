@@ -35,7 +35,9 @@ function CalendarView({
   const emptyDays = Array(firstDayOfWeek).fill(null)
 
   // Check if this month has assignments
-  const monthKey = format(displayMonth, 'yyyy-MM')
+  // Normalize displayMonth to start of month for consistent comparison
+  const normalizedDisplayMonth = startOfMonth(displayMonth)
+  const monthKey = format(normalizedDisplayMonth, 'yyyy-MM')
   const hasAssignments = monthsWithAssignments.has(monthKey)
 
   const getStatusText = (dayDate: Date) => {
@@ -48,11 +50,13 @@ function CalendarView({
   }
 
   const handlePreviousMonth = () => {
-    onDisplayMonthChange(subMonths(displayMonth, 1))
+    const newMonth = subMonths(displayMonth, 1)
+    onDisplayMonthChange(newMonth)
   }
 
   const handleNextMonth = () => {
-    onDisplayMonthChange(addMonths(displayMonth, 1))
+    const newMonth = addMonths(displayMonth, 1)
+    onDisplayMonthChange(newMonth)
   }
 
   // Parse selected date for comparison
@@ -167,9 +171,14 @@ export default function DailyPage() {
   const [showCompletionDialog, setShowCompletionDialog] = useState(false)
   const [hasShownCompletionDialog, setHasShownCompletionDialog] = useState(false)
   const [displayMonth, setDisplayMonth] = useState(() => {
-    const [year, month] = format(new Date(), 'yyyy-MM-dd').split('-').map(Number)
-    return new Date(year, month - 1, 1)
+    const now = new Date()
+    return startOfMonth(now)
   })
+  
+  // Normalize displayMonth setter to always use start of month
+  const handleDisplayMonthChange = useCallback((newMonth: Date) => {
+    setDisplayMonth(startOfMonth(newMonth))
+  }, [])
   const [monthsWithAssignments, setMonthsWithAssignments] = useState<Set<string>>(new Set())
   const supabase = createClient()
   const router = useRouter()
@@ -409,8 +418,10 @@ export default function DailyPage() {
       const { data: { user } } = await supabase.auth.getUser()
       if (!user) return
 
-      const yearNum = monthToLoad.getFullYear()
-      const monthNum = monthToLoad.getMonth() + 1
+      // Normalize to start of month to ensure consistent behavior
+      const normalizedMonth = startOfMonth(monthToLoad)
+      const yearNum = normalizedMonth.getFullYear()
+      const monthNum = normalizedMonth.getMonth() + 1
       const daysInMonth = new Date(yearNum, monthNum, 0).getDate()
       const startDate = `${yearNum}-${String(monthNum).padStart(2, '0')}-01`
       const endDate = `${yearNum}-${String(monthNum).padStart(2, '0')}-${String(daysInMonth).padStart(2, '0')}`
@@ -536,13 +547,17 @@ export default function DailyPage() {
   }, [loadMonthsWithAssignments])
 
   // Update display month when date changes (if date is in a different month)
+  // Only sync when date changes, not when displayMonth changes (to avoid conflicts with manual navigation)
   useEffect(() => {
     const [year, month] = date.split('-').map(Number)
-    const dateMonth = new Date(year, month - 1, 1)
-    if (!isSameMonth(dateMonth, displayMonth)) {
+    const dateMonth = startOfMonth(new Date(year, month - 1, 1))
+    const currentDisplayMonth = startOfMonth(displayMonth)
+    // Only update if the date's month is different from the displayed month
+    if (!isSameMonth(dateMonth, currentDisplayMonth)) {
       setDisplayMonth(dateMonth)
     }
-  }, [date, displayMonth])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [date]) // Only depend on date - we check displayMonth inside but don't want to re-run when it changes
 
   // Load pinned highlights
   useEffect(() => {
@@ -918,11 +933,12 @@ export default function DailyPage() {
           <div className="mb-6">
             <div className="bg-white dark:bg-gray-800 p-4 rounded-lg shadow-lg">
               <CalendarView
+                key={format(displayMonth, 'yyyy-MM')} // Force re-render when month changes
                 selectedDate={date}
                 onDateSelect={setDate}
                 monthReviewStatus={monthReviewStatus}
                 displayMonth={displayMonth}
-                onDisplayMonthChange={setDisplayMonth}
+                onDisplayMonthChange={handleDisplayMonthChange}
                 monthsWithAssignments={monthsWithAssignments}
               />
             </div>
