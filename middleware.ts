@@ -1,7 +1,17 @@
-import { type NextRequest } from 'next/server'
+import { type NextRequest, NextResponse } from 'next/server'
 import { updateSession } from '@/lib/supabase/middleware'
 
 export async function middleware(request: NextRequest) {
+  // Allow cron job endpoints to bypass authentication
+  const pathname = request.nextUrl.pathname
+  if (pathname.startsWith('/api/daily/prepare-next-month') || 
+      pathname.startsWith('/api/notion/auto-import')) {
+    // Always allow cron endpoints through - they handle their own authentication
+    // The route handlers will check for x-vercel-cron header or CRON_SECRET
+    return NextResponse.next()
+  }
+  
+  // For all other routes, use normal session update
   return await updateSession(request)
 }
 
