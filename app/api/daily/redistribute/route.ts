@@ -33,6 +33,19 @@ export async function POST(request: NextRequest) {
       })
     }
 
+    // Always use remaining days in current month (from today to end of month)
+    const remainingDaysInMonth = daysInMonth - dayOfMonth + 1 // Days from today to end of month (inclusive)
+    const startDay = dayOfMonth // Start from today
+
+    // Check if we should also assign to next month (if on or after 24th)
+    const shouldAssignToNextMonth = dayOfMonth >= 24
+    let nextMonthYear = year
+    let nextMonth = month + 1
+    if (nextMonth > 12) {
+      nextMonth = 1
+      nextMonthYear = year + 1
+    }
+
     const monthYear = `${year}-${String(month).padStart(2, '0')}`
 
     // Get all unarchived highlights for this user
@@ -272,15 +285,18 @@ export async function POST(request: NextRequest) {
       const shuffledHighlights = seededShuffle(highlightsToRedistribute, seed)
       const sortedHighlights = [...shuffledHighlights].sort((a, b) => b.score - a.score)
       const totalScore = highlightsToRedistribute.reduce((sum, h) => sum + h.score, 0)
-      const targetScorePerDay = totalScore / daysInMonth
+      
+      // Always assign to remaining days in current month (from today onwards)
+      const targetScorePerDay = totalScore / remainingDaysInMonth
 
       // Initialize days, but account for preserved assignments
+      // Only include remaining days (from today to end of month)
       const days: Array<{
         day: number
         highlights: typeof highlightsToRedistribute
         totalScore: number
-      }> = Array.from({ length: daysInMonth }, (_, i) => {
-        const day = i + 1
+      }> = Array.from({ length: remainingDaysInMonth }, (_, i) => {
+        const day = startDay + i
         const date = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
         
         // Check if there are preserved assignments for this day
@@ -301,7 +317,7 @@ export async function POST(request: NextRequest) {
         }
       })
 
-      // Assign non-reviewed highlights
+      // Assign non-reviewed highlights to current month (remaining days)
       for (const highlight of sortedHighlights) {
         let minDayIndex = 0
         let minScore = days[0].totalScore
@@ -365,13 +381,175 @@ export async function POST(request: NextRequest) {
     // Highlights should only be marked as reviewed when they receive a rating
     // in the daily review page (handleRatingChange in app/daily/page.tsx)
 
+    // If after 24th, also assign to next month
+    let nextMonthAssignments: any[] = []
+    if (shouldAssignToNextMonth && highlightsToRedistribute.length > 0) {
+      const nextMonthDaysInMonth = new Date(nextMonthYear, nextMonth, 0).getDate()
+      const nextMonthYearStr = `${nextMonthYear}-${String(nextMonth).padStart(2, '0')}`
+      
+      // Get highlights that have already been reviewed for next month
+      const { data: nextMonthReviewedData } = await supabase
+        .from('highlight_months_reviewed')
+        .select('highlight_id')
+        .eq('month_year', nextMonthYearStr)
+
+      const nextMonthReviewedIds = new Set(
+        (nextMonthReviewedData || []).map((r: any) => r.highlight_id)
+      )
+      
+      // Get existing assignments for next month to identify reviewed highlights
+      const nextMonthStartDate = `${nextMonthYear}-${String(nextMonth).padStart(2, '0')}-01`
+      const nextMonthEndDate = `${nextMonthYear}-${String(nextMonth).padStart(2, '0')}-${String(nextMonthDaysInMonth).padStart(2, '0')}`
+      
+      const { data: nextMonthSummaries } = await supabase
+        .from('daily_summaries')
+        .select('id')
+        .eq('user_id', user.id)
+        .gte('date', nextMonthStartDate)
+        .lte('date', nextMonthEndDate)
+
+      const nextMonthReviewedIdsFromRatings = new Set<string>()
+      if (nextMonthSummaries && nextMonthSummaries.length > 0) {
+        const nextMonthSummaryIds = (nextMonthSummaries as Array<{ id: string }>).map((s) => s.id)
+        const { data: nextMonthAssignmentsWithRatings } = await supabase
+          .from('daily_summary_highlights')
+          .select('highlight_id')
+          .in('daily_summary_id', nextMonthSummaryIds)
+          .not('rating', 'is', null)
+        
+        if (nextMonthAssignmentsWithRatings) {
+          for (const assignment of nextMonthAssignmentsWithRatings as Array<{ highlight_id: string }>) {
+            nextMonthReviewedIdsFromRatings.add(assignment.highlight_id)
+          }
+        }
+      }
+
+      // Filter out highlights already reviewed for next month
+      const highlightsForNextMonth = highlightsToRedistribute.filter(
+        (h) => !nextMonthReviewedIds.has(h.id) && !nextMonthReviewedIdsFromRatings.has(h.id)
+      )
+
+      if (highlightsForNextMonth.length > 0) {
+        // Calculate assignments for next month
+        const nextMonthSeed = nextMonthYear * 100 + nextMonth
+        const nextMonthShuffled = seededShuffle(highlightsForNextMonth, nextMonthSeed)
+        const nextMonthSorted = [...nextMonthShuffled].sort((a, b) => b.score - a.score)
+        const nextMonthTotalScore = highlightsForNextMonth.reduce((sum, h) => sum + h.score, 0)
+        const nextMonthTargetScorePerDay = nextMonthTotalScore / nextMonthDaysInMonth
+
+        const nextMonthDays: Array<{
+          day: number
+          highlights: typeof highlightsForNextMonth
+          totalScore: number
+        }> = Array.from({ length: nextMonthDaysInMonth }, (_, i) => ({
+          day: i + 1,
+          highlights: [],
+          totalScore: 0,
+        }))
+
+        // Assign highlights to next month
+        for (const highlight of nextMonthSorted) {
+          let minDayIndex = 0
+          let minScore = nextMonthDays[0].totalScore
+
+          for (let i = 1; i < nextMonthDays.length; i++) {
+            if (nextMonthDays[i].totalScore < minScore) {
+              minScore = nextMonthDays[i].totalScore
+              minDayIndex = i
+            }
+          }
+
+          nextMonthDays[minDayIndex].highlights.push(highlight)
+          nextMonthDays[minDayIndex].totalScore += highlight.score
+        }
+
+        // Get existing summaries for next month
+        const { data: existingNextMonthSummaries } = await supabase
+          .from('daily_summaries')
+          .select('id, date')
+          .eq('user_id', user.id)
+          .gte('date', nextMonthStartDate)
+          .lte('date', nextMonthEndDate)
+
+        const typedNextMonthSummaries = (existingNextMonthSummaries || []) as Array<{
+          id: string
+          date: string
+        }>
+
+        // Create or update assignments for next month
+        for (const assignment of nextMonthDays) {
+          if (assignment.highlights.length === 0) continue
+
+          const date = `${nextMonthYear}-${String(nextMonth).padStart(2, '0')}-${String(assignment.day).padStart(2, '0')}`
+
+          // Check if summary already exists
+          let summaryId: string | null = null
+          const existingSummary = typedNextMonthSummaries.find((s) => s.date === date)
+          
+          if (existingSummary) {
+            summaryId = existingSummary.id
+          } else {
+            // Create new summary
+            const { data: summaryData, error: summaryError } = await (supabase
+              .from('daily_summaries') as any)
+              .insert([{ date, user_id: user.id }])
+              .select()
+              .single()
+
+            if (summaryError) throw summaryError
+            summaryId = summaryData.id
+          }
+
+          // Check if highlights are already assigned to this summary
+          const { data: existingAssignments } = await supabase
+            .from('daily_summary_highlights')
+            .select('highlight_id')
+            .eq('daily_summary_id', summaryId)
+            .in('highlight_id', assignment.highlights.map((h) => h.id))
+
+          const existingHighlightIds = new Set(
+            (existingAssignments || []).map((a: any) => a.highlight_id)
+          )
+
+          // Only add highlights that aren't already assigned
+          const newHighlights = assignment.highlights.filter(
+            (h) => !existingHighlightIds.has(h.id)
+          )
+
+          if (newHighlights.length > 0) {
+            const summaryHighlights = newHighlights.map((h) => ({
+              daily_summary_id: summaryId,
+              highlight_id: h.id,
+            }))
+
+            const { error: linkError } = await (supabase
+              .from('daily_summary_highlights') as any)
+              .insert(summaryHighlights)
+
+            if (linkError) throw linkError
+
+            nextMonthAssignments.push({
+              day: assignment.day,
+              date,
+              highlightCount: newHighlights.length,
+              totalScore: newHighlights.reduce((sum, h) => sum + h.score, 0),
+            })
+          }
+        }
+      }
+    }
+
     const redistributedCount = highlightsToRedistribute.length > 0 ? highlightsToRedistribute.length : 0
     return NextResponse.json({
-      message: `Redistributed ${redistributedCount} highlights across ${daysInMonth} days`,
+      message: shouldAssignToNextMonth
+        ? `Redistributed ${redistributedCount} highlights across remaining ${remainingDaysInMonth} days of current month (from day ${dayOfMonth}) and next month`
+        : `Redistributed ${redistributedCount} highlights across remaining ${remainingDaysInMonth} days of current month (from day ${dayOfMonth})`,
       assignments: createdAssignments || [],
+      nextMonthAssignments: nextMonthAssignments || [],
       totalHighlights: redistributedCount,
-      daysInMonth,
+      daysInMonth: remainingDaysInMonth,
       preservedCount: preservedAssignments.size,
+      assignedToNextMonth: shouldAssignToNextMonth,
     })
   } catch (error: any) {
     console.error('Error redistributing highlights:', error)
