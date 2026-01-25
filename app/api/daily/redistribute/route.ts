@@ -500,6 +500,12 @@ export async function POST(request: NextRequest) {
             summaryId = summaryData.id
           }
 
+          // Only proceed if we have a valid summaryId
+          if (!summaryId) {
+            console.error(`[REDISTRIBUTE] Failed to get or create summary for date ${date}`)
+            continue
+          }
+
           // Check if highlights are already assigned to this summary
           const { data: existingAssignments } = await supabase
             .from('daily_summary_highlights')
@@ -518,7 +524,7 @@ export async function POST(request: NextRequest) {
 
           if (newHighlights.length > 0) {
             const summaryHighlights = newHighlights.map((h) => ({
-              daily_summary_id: summaryId,
+              daily_summary_id: summaryId!,
               highlight_id: h.id,
             }))
 
