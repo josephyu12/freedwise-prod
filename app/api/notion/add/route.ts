@@ -29,6 +29,7 @@ function htmlToNotionRichText(html: string): any[] {
     bold: boolean
     italic: boolean
     underline: boolean
+    strikethrough: boolean
     code: boolean
     link?: string
   }
@@ -39,6 +40,7 @@ function htmlToNotionRichText(html: string): any[] {
     bold: false,
     italic: false,
     underline: false,
+    strikethrough: false,
     code: false,
   }
 
@@ -46,6 +48,7 @@ function htmlToNotionRichText(html: string): any[] {
   const boldStack: boolean[] = []
   const italicStack: boolean[] = []
   const underlineStack: boolean[] = []
+  const strikethroughStack: boolean[] = []
   const codeStack: boolean[] = []
   let currentLink: string | null = null
 
@@ -90,6 +93,12 @@ function htmlToNotionRichText(html: string): any[] {
         } else {
           underlineStack.push(true)
         }
+      } else if (tagName === 's' || tagName === 'strike' || tagName === 'del') {
+        if (isClosing) {
+          strikethroughStack.pop()
+        } else {
+          strikethroughStack.push(true)
+        }
       } else if (tagName === 'code') {
         if (isClosing) {
           codeStack.pop()
@@ -116,6 +125,7 @@ function htmlToNotionRichText(html: string): any[] {
         bold: boldStack.length > 0,
         italic: italicStack.length > 0,
         underline: underlineStack.length > 0,
+        strikethrough: strikethroughStack.length > 0,
         code: codeStack.length > 0,
       }
       
@@ -123,6 +133,7 @@ function htmlToNotionRichText(html: string): any[] {
         currentSegment.bold !== newFormatting.bold ||
         currentSegment.italic !== newFormatting.italic ||
         currentSegment.underline !== newFormatting.underline ||
+        currentSegment.strikethrough !== newFormatting.strikethrough ||
         currentSegment.code !== newFormatting.code ||
         (currentLink !== null && currentSegment.link !== currentLink) ||
         (currentLink === null && currentSegment.link !== undefined)
@@ -134,6 +145,7 @@ function htmlToNotionRichText(html: string): any[] {
           bold: newFormatting.bold,
           italic: newFormatting.italic,
           underline: newFormatting.underline,
+          strikethrough: newFormatting.strikethrough,
           code: newFormatting.code,
         }
       } else {
@@ -141,6 +153,7 @@ function htmlToNotionRichText(html: string): any[] {
         currentSegment.bold = newFormatting.bold
         currentSegment.italic = newFormatting.italic
         currentSegment.underline = newFormatting.underline
+        currentSegment.strikethrough = newFormatting.strikethrough
         currentSegment.code = newFormatting.code
       }
       
@@ -180,7 +193,7 @@ function htmlToNotionRichText(html: string): any[] {
           annotations: {
         bold: segment.bold,
         italic: segment.italic,
-            strikethrough: false,
+            strikethrough: segment.strikethrough,
         underline: segment.underline,
         code: segment.code,
             color: 'default',

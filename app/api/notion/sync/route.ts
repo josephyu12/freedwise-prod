@@ -9,10 +9,6 @@ function htmlToNotionRichText(html: string): any[] {
     return []
   }
 
-  console.log(`[HTML PARSER] Input HTML:`, html.substring(0, 300))
-  console.log(`[HTML PARSER] Contains <u>:`, html.includes('<u>'))
-  console.log(`[HTML PARSER] Contains <strong>:`, html.includes('<strong>') || html.includes('<b>'))
-
   // Helper to decode HTML entities (server-safe)
   function decodeHtmlEntities(text: string): string {
     return text
@@ -34,6 +30,7 @@ function htmlToNotionRichText(html: string): any[] {
     bold: boolean
     italic: boolean
     underline: boolean
+    strikethrough: boolean
     code: boolean
     link?: string
   }
@@ -44,6 +41,7 @@ function htmlToNotionRichText(html: string): any[] {
     bold: false,
     italic: false,
     underline: false,
+    strikethrough: false,
     code: false,
   }
 
@@ -51,6 +49,7 @@ function htmlToNotionRichText(html: string): any[] {
   const boldStack: boolean[] = []
   const italicStack: boolean[] = []
   const underlineStack: boolean[] = []
+  const strikethroughStack: boolean[] = []
   const codeStack: boolean[] = []
   let currentLink: string | null = null
 
@@ -95,6 +94,12 @@ function htmlToNotionRichText(html: string): any[] {
         } else {
           underlineStack.push(true)
         }
+      } else if (tagName === 's' || tagName === 'strike' || tagName === 'del') {
+        if (isClosing) {
+          strikethroughStack.pop()
+        } else {
+          strikethroughStack.push(true)
+        }
       } else if (tagName === 'code') {
         if (isClosing) {
           codeStack.pop()
@@ -121,6 +126,7 @@ function htmlToNotionRichText(html: string): any[] {
         bold: boldStack.length > 0,
         italic: italicStack.length > 0,
         underline: underlineStack.length > 0,
+        strikethrough: strikethroughStack.length > 0,
         code: codeStack.length > 0,
       }
       
@@ -128,6 +134,7 @@ function htmlToNotionRichText(html: string): any[] {
         currentSegment.bold !== newFormatting.bold ||
         currentSegment.italic !== newFormatting.italic ||
         currentSegment.underline !== newFormatting.underline ||
+        currentSegment.strikethrough !== newFormatting.strikethrough ||
         currentSegment.code !== newFormatting.code ||
         (currentLink !== null && currentSegment.link !== currentLink) ||
         (currentLink === null && currentSegment.link !== undefined)
@@ -139,6 +146,7 @@ function htmlToNotionRichText(html: string): any[] {
           bold: newFormatting.bold,
           italic: newFormatting.italic,
           underline: newFormatting.underline,
+          strikethrough: newFormatting.strikethrough,
           code: newFormatting.code,
         }
       } else {
@@ -146,6 +154,7 @@ function htmlToNotionRichText(html: string): any[] {
         currentSegment.bold = newFormatting.bold
         currentSegment.italic = newFormatting.italic
         currentSegment.underline = newFormatting.underline
+        currentSegment.strikethrough = newFormatting.strikethrough
         currentSegment.code = newFormatting.code
       }
       
@@ -158,11 +167,6 @@ function htmlToNotionRichText(html: string): any[] {
   if (currentSegment.text) {
     segments.push({ ...currentSegment, link: currentLink || undefined })
   }
-
-  console.log(`[HTML PARSER] Created ${segments.length} segments`)
-  segments.forEach((seg, idx) => {
-    console.log(`[HTML PARSER] Segment ${idx}: text="${seg.text.substring(0, 50)}", bold=${seg.bold}, italic=${seg.italic}, underline=${seg.underline}`)
-  })
 
   // Convert segments to Notion rich text format
   const richText: any[] = []
@@ -190,7 +194,7 @@ function htmlToNotionRichText(html: string): any[] {
       annotations: {
         bold: segment.bold,
         italic: segment.italic,
-        strikethrough: false,
+        strikethrough: segment.strikethrough,
         underline: segment.underline,
         code: segment.code,
         color: 'default',
@@ -361,10 +365,6 @@ function htmlToNotionBlocks(html: string): any[] {
     }]
   }
 
-  console.log(`[HTML TO BLOCKS] Starting with HTML:`, html.substring(0, 300))
-  console.log(`[HTML TO BLOCKS] HTML contains <u>:`, html.includes('<u>'))
-  console.log(`[HTML TO BLOCKS] HTML contains <p>:`, html.includes('<p>'))
-
   const blocks: any[] = []
   
   // Process content sequentially to maintain order
@@ -509,8 +509,6 @@ function htmlToNotionBlocks(html: string): any[] {
   const pRegex = /<p[^>]*>(.*?)<\/p>/gi
   let pMatch
   while ((pMatch = pRegex.exec(html)) !== null) {
-    console.log(`[HTML TO BLOCKS] Found paragraph, extracted content:`, pMatch[1].substring(0, 200))
-    console.log(`[HTML TO BLOCKS] Extracted content contains <u>:`, pMatch[1].includes('<u>'))
     contentBlocks.push({
       index: pMatch.index,
       type: 'p',
@@ -529,11 +527,8 @@ function htmlToNotionBlocks(html: string): any[] {
     if (block.index > lastIndex) {
       const textBefore = html.substring(lastIndex, block.index).trim()
       if (textBefore) {
-        console.log(`[HTML TO BLOCKS] Found text before block:`, textBefore.substring(0, 200))
-        console.log(`[HTML TO BLOCKS] Text before contains <u>:`, textBefore.includes('<u>'))
         // IMPORTANT: Don't strip HTML tags - pass the full HTML to preserve formatting!
         const richText = htmlToNotionRichText(textBefore)
-        console.log(`[HTML TO BLOCKS] Text before parser returned ${richText.length} segments`)
         if (richText.length > 0) {
           blocks.push({
             type: 'paragraph',
@@ -619,10 +614,7 @@ function htmlToNotionBlocks(html: string): any[] {
         break
       }
       case 'p': {
-        console.log(`[HTML TO BLOCKS] Processing paragraph block, content:`, block.content.substring(0, 300))
-        console.log(`[HTML TO BLOCKS] Paragraph content contains <u>:`, block.content.includes('<u>'))
         const richText = htmlToNotionRichText(block.content)
-        console.log(`[HTML TO BLOCKS] Paragraph parser returned ${richText.length} segments`)
         if (richText.length > 0 || block.content.trim() === '') {
           blocks.push({
             type: 'paragraph',
@@ -640,11 +632,8 @@ function htmlToNotionBlocks(html: string): any[] {
   if (lastIndex < html.length) {
     const textAfter = html.substring(lastIndex).trim()
     if (textAfter) {
-      console.log(`[HTML TO BLOCKS] Found text after last block:`, textAfter.substring(0, 200))
-      console.log(`[HTML TO BLOCKS] Text after contains <u>:`, textAfter.includes('<u>'))
       // IMPORTANT: Don't strip HTML tags - pass the full HTML to preserve formatting!
       const richText = htmlToNotionRichText(textAfter)
-      console.log(`[HTML TO BLOCKS] Text after parser returned ${richText.length} segments`)
       if (richText.length > 0) {
         blocks.push({
           type: 'paragraph',
@@ -656,12 +645,9 @@ function htmlToNotionBlocks(html: string): any[] {
   
   // If no blocks were created, create a paragraph with the entire content
   if (blocks.length === 0) {
-    console.log(`[HTML TO BLOCKS] No blocks found, using fallback. HTML:`, html.substring(0, 300))
     const plainText = html.replace(/<[^>]*>/g, '').trim()
     if (plainText) {
-      console.log(`[HTML TO BLOCKS] Calling htmlToNotionRichText with HTML containing <u>:`, html.includes('<u>'))
       const richText = htmlToNotionRichText(html)
-      console.log(`[HTML TO BLOCKS] Got ${richText.length} rich text segments from parser`)
       blocks.push({
         type: 'paragraph',
         paragraph: { rich_text: richText },
@@ -670,7 +656,6 @@ function htmlToNotionBlocks(html: string): any[] {
   }
   
   if (blocks.length === 0) {
-    console.log(`[HTML TO BLOCKS] Still no blocks, using final fallback`)
     return [{
       type: 'paragraph',
       paragraph: { rich_text: htmlToNotionRichText(html) },
@@ -722,11 +707,7 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
       }
 
       // Convert new content to Notion blocks
-      console.log(`[SYNC UPDATE] NEW HTML content:`, queueItem.html_content?.substring(0, 200) || 'N/A')
-      console.log(`[SYNC UPDATE] NEW text:`, queueItem.text?.substring(0, 200) || 'N/A')
-      console.log(`[SYNC UPDATE] ORIGINAL HTML (for matching):`, queueItem.original_html_content?.substring(0, 200) || 'N/A')
       const newBlocks = htmlToNotionBlocks(queueItem.html_content || queueItem.text)
-      console.log(`[SYNC UPDATE] Converted to ${newBlocks.length} Notion blocks`)
       
       // Fetch all blocks from Notion page
       const allBlocks: any[] = []
@@ -805,7 +786,7 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
         
         // Determine if we should end the current group
         let shouldEndGroup = false
-        
+
         if (isEmpty && currentHighlightBlocks.length > 0) {
           // Empty paragraph ends the group
           shouldEndGroup = true
@@ -856,7 +837,7 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
           
           // If this was an empty paragraph, skip it and continue
           if (isEmpty) {
-            continue
+          continue
           }
         }
 
@@ -914,11 +895,11 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
               
               // Ensure rich_text exists and is an array
               if (blockData && blockData.rich_text && Array.isArray(blockData.rich_text)) {
-                await notion.blocks.update({
+        await notion.blocks.update({
                   block_id: matchingBlocks[i].id,
                   [blockType]: blockData,
-                })
-              } else {
+        })
+      } else {
                 console.warn(`Block ${i} (${blockType}) missing rich_text array, skipping update`)
               }
             } else {
@@ -929,8 +910,8 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
               if (insertAfterId) {
                 // Notion doesn't support inserting after a specific block directly
                 // So we'll append and then reorder if needed, or just append to page
-                await notion.blocks.children.append({
-                  block_id: notionSettings.notion_page_id,
+          await notion.blocks.children.append({
+            block_id: notionSettings.notion_page_id,
                   children: [newBlocks[i]],
                 })
               } else {
@@ -948,9 +929,9 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
         
         // Delete extra old blocks if there are more old than new
         for (let i = minLength; i < matchingBlocks.length; i++) {
-          try {
-            await notion.blocks.delete({ block_id: matchingBlocks[i].id })
-          } catch (error) {
+        try {
+          await notion.blocks.delete({ block_id: matchingBlocks[i].id })
+        } catch (error) {
             console.warn(`Failed to delete extra old block ${i}:`, error)
           }
         }
@@ -962,19 +943,17 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
           try {
             // Notion API doesn't support inserting after a specific block
             // So we append to the page - they should appear in the right place if we're updating in order
-            await notion.blocks.children.append({
-              block_id: notionSettings.notion_page_id,
-              children: [newBlocks[i]],
-            })
-          } catch (error) {
+          await notion.blocks.children.append({
+            block_id: notionSettings.notion_page_id,
+            children: [newBlocks[i]],
+          })
+        } catch (error) {
             console.warn(`Failed to append new list item ${i}:`, error)
           }
         }
       } else {
         // Non-list update: Update ALL matching blocks in place to preserve structure
         const minLength = Math.min(matchingBlocks.length, newBlocks.length)
-        
-        console.log(`[SYNC UPDATE] Updating ${minLength} blocks (${matchingBlocks.length} old, ${newBlocks.length} new)`)
         
         // Update matching blocks in place
         for (let i = 0; i < minLength; i++) {
@@ -984,26 +963,14 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
               const blockType = matchingBlocks[i].type
               const blockData = newBlocks[i][blockType]
               
-              // Log what we're about to update
-              console.log(`[SYNC UPDATE] Block ${i}: type=${blockType}, block_id=${matchingBlocks[i].id}`)
-              console.log(`[SYNC UPDATE] Rich text segments: ${blockData?.rich_text?.length || 0}`)
-              if (blockData?.rich_text && blockData.rich_text.length > 0) {
-                // Log ALL segments, not just the first
-                blockData.rich_text.forEach((segment: any, idx: number) => {
-                  console.log(`[SYNC UPDATE] Segment ${idx}: text="${segment.text?.content?.substring(0, 50) || ''}", bold=${segment.annotations?.bold || false}, italic=${segment.annotations?.italic || false}, underline=${segment.annotations?.underline || false}`)
-                })
-              }
-              
               // Ensure rich_text exists and is an array
               if (blockData && blockData.rich_text && Array.isArray(blockData.rich_text)) {
-                const result = await notion.blocks.update({
+                await notion.blocks.update({
                   block_id: matchingBlocks[i].id,
                   [blockType]: blockData,
                 })
-                console.log(`[SYNC UPDATE] Successfully updated block ${i} (${blockType})`)
               } else {
                 console.warn(`[SYNC UPDATE] Block ${i} (${blockType}) missing rich_text array, skipping update`)
-                console.warn(`[SYNC UPDATE] Block data:`, JSON.stringify(blockData, null, 2))
               }
             } else {
               // Type changed, delete and recreate
@@ -1207,7 +1174,7 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
         
         // Determine if we should end the current group
         let shouldEndGroup = false
-        
+
         if (isEmpty && currentHighlightBlocks.length > 0) {
           // Empty paragraph ends the group
           shouldEndGroup = true
@@ -1242,7 +1209,7 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
             matchingBlocks.push(...currentHighlightBlocks)
             // The empty line after is the current block (if it's empty)
             if (isEmpty) {
-              emptyLineAfter = block
+            emptyLineAfter = block
             }
             foundMatch = true
             break
@@ -1250,13 +1217,13 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
 
           // Reset for next group - the empty line before the next group is this one (if it's empty)
           if (isEmpty) {
-            emptyLineBefore = block
+          emptyLineBefore = block
           }
           currentHighlightBlocks = []
           
           // If this was an empty paragraph, skip it and continue
           if (isEmpty) {
-            continue
+          continue
           }
         }
 

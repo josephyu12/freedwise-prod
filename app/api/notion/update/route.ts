@@ -42,6 +42,7 @@ function htmlToNotionRichText(html: string): any[] {
     bold: boolean
     italic: boolean
     underline: boolean
+    strikethrough: boolean
     code: boolean
     link?: string
   }
@@ -52,6 +53,7 @@ function htmlToNotionRichText(html: string): any[] {
     bold: false,
     italic: false,
     underline: false,
+    strikethrough: false,
     code: false,
   }
 
@@ -59,6 +61,7 @@ function htmlToNotionRichText(html: string): any[] {
   const boldStack: boolean[] = []
   const italicStack: boolean[] = []
   const underlineStack: boolean[] = []
+  const strikethroughStack: boolean[] = []
   const codeStack: boolean[] = []
   let currentLink: string | null = null
 
@@ -103,6 +106,12 @@ function htmlToNotionRichText(html: string): any[] {
         } else {
           underlineStack.push(true)
         }
+      } else if (tagName === 's' || tagName === 'strike' || tagName === 'del') {
+        if (isClosing) {
+          strikethroughStack.pop()
+        } else {
+          strikethroughStack.push(true)
+        }
       } else if (tagName === 'code') {
         if (isClosing) {
           codeStack.pop()
@@ -129,6 +138,7 @@ function htmlToNotionRichText(html: string): any[] {
         bold: boldStack.length > 0,
         italic: italicStack.length > 0,
         underline: underlineStack.length > 0,
+        strikethrough: strikethroughStack.length > 0,
         code: codeStack.length > 0,
       }
       
@@ -136,6 +146,7 @@ function htmlToNotionRichText(html: string): any[] {
         currentSegment.bold !== newFormatting.bold ||
         currentSegment.italic !== newFormatting.italic ||
         currentSegment.underline !== newFormatting.underline ||
+        currentSegment.strikethrough !== newFormatting.strikethrough ||
         currentSegment.code !== newFormatting.code ||
         (currentLink !== null && currentSegment.link !== currentLink) ||
         (currentLink === null && currentSegment.link !== undefined)
@@ -147,6 +158,7 @@ function htmlToNotionRichText(html: string): any[] {
           bold: newFormatting.bold,
           italic: newFormatting.italic,
           underline: newFormatting.underline,
+          strikethrough: newFormatting.strikethrough,
           code: newFormatting.code,
         }
       } else {
@@ -154,6 +166,7 @@ function htmlToNotionRichText(html: string): any[] {
         currentSegment.bold = newFormatting.bold
         currentSegment.italic = newFormatting.italic
         currentSegment.underline = newFormatting.underline
+        currentSegment.strikethrough = newFormatting.strikethrough
         currentSegment.code = newFormatting.code
       }
       
@@ -193,7 +206,7 @@ function htmlToNotionRichText(html: string): any[] {
       annotations: {
         bold: segment.bold,
         italic: segment.italic,
-        strikethrough: false,
+        strikethrough: segment.strikethrough,
         underline: segment.underline,
         code: segment.code,
         color: 'default',
@@ -637,24 +650,14 @@ export async function POST(request: NextRequest) {
             const blockType = matchingBlocks[i].type
             const blockData = newBlocks[i][blockType]
             
-            // Log what we're about to update
-            console.log(`[UPDATE DIRECT] Block ${i}: type=${blockType}, block_id=${matchingBlocks[i].id}`)
-            console.log(`[UPDATE DIRECT] Rich text segments: ${blockData?.rich_text?.length || 0}`)
-            if (blockData?.rich_text && blockData.rich_text.length > 0) {
-              const firstSegment = blockData.rich_text[0]
-              console.log(`[UPDATE DIRECT] First segment: text="${firstSegment.text?.content?.substring(0, 50) || ''}", bold=${firstSegment.annotations?.bold || false}, underline=${firstSegment.annotations?.underline || false}`)
-            }
-            
             // Ensure rich_text exists and is an array
             if (blockData && blockData.rich_text && Array.isArray(blockData.rich_text)) {
-              const result = await notion.blocks.update({
+              await notion.blocks.update({
                 block_id: matchingBlocks[i].id,
                 [blockType]: blockData,
               })
-              console.log(`[UPDATE DIRECT] Successfully updated block ${i} (${blockType})`)
             } else {
               console.warn(`[UPDATE DIRECT] Block ${i} (${blockType}) missing rich_text array, skipping update`)
-              console.warn(`[UPDATE DIRECT] Block data:`, JSON.stringify(blockData, null, 2))
             }
           } else {
             // Type changed, delete and recreate
