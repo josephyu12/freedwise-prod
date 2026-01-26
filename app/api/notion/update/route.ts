@@ -514,13 +514,36 @@ export async function POST(request: NextRequest) {
     let currentHighlightBlocks: any[] = []
     let foundMatch = false
 
+    // Helper to check if a block is a list item
+    const isListItem = (block: any) => 
+      block.type === 'bulleted_list_item' || block.type === 'numbered_list_item'
+    
+    // Helper to check if a block is an empty paragraph
+    const isEmptyParagraph = (block: any) =>
+      block.type === 'paragraph' &&
+      (!block.paragraph?.rich_text || block.paragraph.rich_text.length === 0)
+
     for (let i = 0; i < blocks.length; i++) {
       const block = blocks[i]
-      const isParagraph = block.type === 'paragraph'
-      const isEmpty = isParagraph &&
-        (!block.paragraph.rich_text || block.paragraph.rich_text.length === 0)
-
+      const isEmpty = isEmptyParagraph(block)
+      const isList = isListItem(block)
+      
+      // Determine if we should end the current group
+      let shouldEndGroup = false
+      
       if (isEmpty && currentHighlightBlocks.length > 0) {
+        // Empty paragraph ends the group
+        shouldEndGroup = true
+      } else if (currentHighlightBlocks.length > 0) {
+        // Check for type transition: list to non-list or vice versa
+        const currentIsList = isListItem(currentHighlightBlocks[0])
+        if (currentIsList !== isList) {
+          // Transition from list to non-list (or vice versa) ends the group
+          shouldEndGroup = true
+        }
+      }
+      
+      if (shouldEndGroup) {
         // Check if this group of blocks matches
         const combinedText = normalizeText(
           currentHighlightBlocks
@@ -528,38 +551,54 @@ export async function POST(request: NextRequest) {
             .join(' ')
         )
 
-        if (combinedText === normalizedOriginalText || 
-            combinedText === normalizedOriginalPlainText ||
-            (normalizedOriginalPlainText && (
-              combinedText.includes(normalizedOriginalPlainText) || 
-              normalizedOriginalPlainText.includes(combinedText)
+        // Match using normalized text comparison (strip HTML tags for comparison)
+        const normalizedCombined = combinedText.replace(/<[^>]*>/g, '').trim()
+        const normalizedOriginalNoHtml = normalizedOriginalText.replace(/<[^>]*>/g, '').trim()
+        const normalizedOriginalPlainNoHtml = normalizedOriginalPlainText.replace(/<[^>]*>/g, '').trim()
+
+        if (normalizedCombined === normalizedOriginalNoHtml || 
+            normalizedCombined === normalizedOriginalPlainNoHtml ||
+            (normalizedOriginalPlainNoHtml && (
+              normalizedCombined.includes(normalizedOriginalPlainNoHtml) || 
+              normalizedOriginalPlainNoHtml.includes(normalizedCombined)
             ))) {
           matchingBlocks.push(...currentHighlightBlocks)
           foundMatch = true
+          break
         }
 
         currentHighlightBlocks = []
-        continue
+        
+        // If this was an empty paragraph, skip it and continue
+        if (isEmpty) {
+          continue
+        }
       }
 
+      // Add block to current group (unless it's an empty paragraph at the start)
       if (!isEmpty || currentHighlightBlocks.length > 0) {
         currentHighlightBlocks.push(block)
       }
     }
 
     // Check the last group
-    if (currentHighlightBlocks.length > 0) {
+    if (!foundMatch && currentHighlightBlocks.length > 0) {
       const combinedText = normalizeText(
         currentHighlightBlocks
           .map(getBlockText)
           .join(' ')
       )
 
-      if (combinedText === normalizedOriginalText || 
-          combinedText === normalizedOriginalPlainText ||
-          (normalizedOriginalPlainText && (
-            combinedText.includes(normalizedOriginalPlainText) || 
-            normalizedOriginalPlainText.includes(combinedText)
+      // Match using normalized text comparison (strip HTML tags for comparison)
+      const normalizedCombined = combinedText.replace(/<[^>]*>/g, '').trim()
+      const normalizedOriginalNoHtml = normalizedOriginalText.replace(/<[^>]*>/g, '').trim()
+      const normalizedOriginalPlainNoHtml = normalizedOriginalPlainText.replace(/<[^>]*>/g, '').trim()
+
+      if (normalizedCombined === normalizedOriginalNoHtml || 
+          normalizedCombined === normalizedOriginalPlainNoHtml ||
+          (normalizedOriginalPlainNoHtml && (
+            normalizedCombined.includes(normalizedOriginalPlainNoHtml) || 
+            normalizedOriginalPlainNoHtml.includes(normalizedCombined)
           ))) {
         matchingBlocks.push(...currentHighlightBlocks)
         foundMatch = true

@@ -752,18 +752,42 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
       const normalizedOriginalPlainText = normalizeText(originalPlainText)
       
       // Find matching blocks (blocks that contain the original text)
-      // Group blocks by empty line separators (like in the import logic)
+      // Group blocks by empty line separators OR by block type transitions
+      // List items (bulleted/numbered) should be grouped together
       const matchingBlocks: any[] = []
       let currentHighlightBlocks: any[] = []
       let foundMatch = false
 
+      // Helper to check if a block is a list item
+      const isListItem = (block: any) => 
+        block.type === 'bulleted_list_item' || block.type === 'numbered_list_item'
+      
+      // Helper to check if a block is an empty paragraph
+      const isEmptyParagraph = (block: any) =>
+        block.type === 'paragraph' &&
+        (!block.paragraph?.rich_text || block.paragraph.rich_text.length === 0)
+
       for (let i = 0; i < allBlocks.length; i++) {
         const block = allBlocks[i]
-        const isParagraph = block.type === 'paragraph'
-        const isEmpty = isParagraph &&
-          (!block.paragraph?.rich_text || block.paragraph.rich_text.length === 0)
-
+        const isEmpty = isEmptyParagraph(block)
+        const isList = isListItem(block)
+        
+        // Determine if we should end the current group
+        let shouldEndGroup = false
+        
         if (isEmpty && currentHighlightBlocks.length > 0) {
+          // Empty paragraph ends the group
+          shouldEndGroup = true
+        } else if (currentHighlightBlocks.length > 0) {
+          // Check for type transition: list to non-list or vice versa
+          const currentIsList = isListItem(currentHighlightBlocks[0])
+          if (currentIsList !== isList) {
+            // Transition from list to non-list (or vice versa) ends the group
+            shouldEndGroup = true
+          }
+        }
+        
+        if (shouldEndGroup) {
           // Check if this group of blocks matches the original highlight
           const combinedText = normalizeText(
             currentHighlightBlocks
@@ -771,12 +795,16 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
               .join(' ')
           )
 
-          // Match using normalized text comparison
-          if (combinedText === normalizedOriginalText || 
-              combinedText === normalizedOriginalPlainText ||
-              (normalizedOriginalPlainText && (
-                combinedText.includes(normalizedOriginalPlainText) || 
-                normalizedOriginalPlainText.includes(combinedText)
+          // Match using normalized text comparison (strip HTML tags for comparison)
+          const normalizedCombined = combinedText.replace(/<[^>]*>/g, '').trim()
+          const normalizedOriginalNoHtml = normalizedOriginalText.replace(/<[^>]*>/g, '').trim()
+          const normalizedOriginalPlainNoHtml = normalizedOriginalPlainText.replace(/<[^>]*>/g, '').trim()
+
+          if (normalizedCombined === normalizedOriginalNoHtml || 
+              normalizedCombined === normalizedOriginalPlainNoHtml ||
+              (normalizedOriginalPlainNoHtml && (
+                normalizedCombined.includes(normalizedOriginalPlainNoHtml) || 
+                normalizedOriginalPlainNoHtml.includes(normalizedCombined)
               ))) {
             matchingBlocks.push(...currentHighlightBlocks)
             foundMatch = true
@@ -784,9 +812,14 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
           }
 
           currentHighlightBlocks = []
-          continue
+          
+          // If this was an empty paragraph, skip it and continue
+          if (isEmpty) {
+            continue
+          }
         }
 
+        // Add block to current group (unless it's an empty paragraph at the start)
         if (!isEmpty || currentHighlightBlocks.length > 0) {
           currentHighlightBlocks.push(block)
         }
@@ -800,11 +833,16 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
             .join(' ')
         )
 
-        if (combinedText === normalizedOriginalText || 
-            combinedText === normalizedOriginalPlainText ||
-            (normalizedOriginalPlainText && (
-              combinedText.includes(normalizedOriginalPlainText) || 
-              normalizedOriginalPlainText.includes(combinedText)
+        // Match using normalized text comparison (strip HTML tags for comparison)
+        const normalizedCombined = combinedText.replace(/<[^>]*>/g, '').trim()
+        const normalizedOriginalNoHtml = normalizedOriginalText.replace(/<[^>]*>/g, '').trim()
+        const normalizedOriginalPlainNoHtml = normalizedOriginalPlainText.replace(/<[^>]*>/g, '').trim()
+
+        if (normalizedCombined === normalizedOriginalNoHtml || 
+            normalizedCombined === normalizedOriginalPlainNoHtml ||
+            (normalizedOriginalPlainNoHtml && (
+              normalizedCombined.includes(normalizedOriginalPlainNoHtml) || 
+              normalizedOriginalPlainNoHtml.includes(normalizedCombined)
             ))) {
           matchingBlocks.push(...currentHighlightBlocks)
           foundMatch = true
@@ -1000,20 +1038,44 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
       }
 
       // Find matching blocks (blocks that contain the text to delete)
-      // Group blocks by empty line separators (like in the import logic)
+      // Group blocks by empty line separators OR by block type transitions
+      // List items (bulleted/numbered) should be grouped together
       const matchingBlocks: any[] = []
       let currentHighlightBlocks: any[] = []
       let foundMatch = false
       let emptyLineBefore: any | null = null
       let emptyLineAfter: any | null = null
 
+      // Helper to check if a block is a list item
+      const isListItem = (block: any) => 
+        block.type === 'bulleted_list_item' || block.type === 'numbered_list_item'
+      
+      // Helper to check if a block is an empty paragraph
+      const isEmptyParagraph = (block: any) =>
+        block.type === 'paragraph' &&
+        (!block.paragraph?.rich_text || block.paragraph.rich_text.length === 0)
+
       for (let i = 0; i < allBlocks.length; i++) {
         const block = allBlocks[i]
-        const isParagraph = block.type === 'paragraph'
-        const isEmpty = isParagraph &&
-          (!block.paragraph?.rich_text || block.paragraph.rich_text.length === 0)
-
+        const isEmpty = isEmptyParagraph(block)
+        const isList = isListItem(block)
+        
+        // Determine if we should end the current group
+        let shouldEndGroup = false
+        
         if (isEmpty && currentHighlightBlocks.length > 0) {
+          // Empty paragraph ends the group
+          shouldEndGroup = true
+        } else if (currentHighlightBlocks.length > 0) {
+          // Check for type transition: list to non-list or vice versa
+          const currentIsList = isListItem(currentHighlightBlocks[0])
+          if (currentIsList !== isList) {
+            // Transition from list to non-list (or vice versa) ends the group
+            shouldEndGroup = true
+          }
+        }
+        
+        if (shouldEndGroup) {
           // Check if this group of blocks matches the highlight to delete
           const combinedText = normalizeText(
             currentHighlightBlocks
@@ -1021,25 +1083,39 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
               .join(' ')
           )
 
-          if (combinedText === normalizedDeleteText || 
-              combinedText === normalizedDeletePlainText ||
-              (normalizedDeletePlainText && (
-                combinedText.includes(normalizedDeletePlainText) || 
-                normalizedDeletePlainText.includes(combinedText)
+          // Match using normalized text comparison (strip HTML tags for comparison)
+          const normalizedCombined = combinedText.replace(/<[^>]*>/g, '').trim()
+          const normalizedDeleteNoHtml = normalizedDeleteText.replace(/<[^>]*>/g, '').trim()
+          const normalizedDeletePlainNoHtml = normalizedDeletePlainText.replace(/<[^>]*>/g, '').trim()
+
+          if (normalizedCombined === normalizedDeleteNoHtml || 
+              normalizedCombined === normalizedDeletePlainNoHtml ||
+              (normalizedDeletePlainNoHtml && (
+                normalizedCombined.includes(normalizedDeletePlainNoHtml) || 
+                normalizedDeletePlainNoHtml.includes(normalizedCombined)
               ))) {
             matchingBlocks.push(...currentHighlightBlocks)
-            // The empty line after is the current block
-            emptyLineAfter = block
+            // The empty line after is the current block (if it's empty)
+            if (isEmpty) {
+              emptyLineAfter = block
+            }
             foundMatch = true
             break
           }
 
-          // Reset for next group - the empty line before the next group is this one
-          emptyLineBefore = block
+          // Reset for next group - the empty line before the next group is this one (if it's empty)
+          if (isEmpty) {
+            emptyLineBefore = block
+          }
           currentHighlightBlocks = []
-          continue
+          
+          // If this was an empty paragraph, skip it and continue
+          if (isEmpty) {
+            continue
+          }
         }
 
+        // Add block to current group (unless it's an empty paragraph at the start)
         if (!isEmpty) {
           // Non-empty block - add to current group
           currentHighlightBlocks.push(block)
@@ -1059,11 +1135,16 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
             .join(' ')
         )
 
-        if (combinedText === normalizedDeleteText || 
-            combinedText === normalizedDeletePlainText ||
-            (normalizedDeletePlainText && (
-              combinedText.includes(normalizedDeletePlainText) || 
-              normalizedDeletePlainText.includes(combinedText)
+        // Match using normalized text comparison (strip HTML tags for comparison)
+        const normalizedCombined = combinedText.replace(/<[^>]*>/g, '').trim()
+        const normalizedDeleteNoHtml = normalizedDeleteText.replace(/<[^>]*>/g, '').trim()
+        const normalizedDeletePlainNoHtml = normalizedDeletePlainText.replace(/<[^>]*>/g, '').trim()
+
+        if (normalizedCombined === normalizedDeleteNoHtml || 
+            normalizedCombined === normalizedDeletePlainNoHtml ||
+            (normalizedDeletePlainNoHtml && (
+              normalizedCombined.includes(normalizedDeletePlainNoHtml) || 
+              normalizedDeletePlainNoHtml.includes(normalizedCombined)
             ))) {
           matchingBlocks.push(...currentHighlightBlocks)
           foundMatch = true
