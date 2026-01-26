@@ -695,8 +695,9 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
       }
 
       // Convert new content to Notion blocks
-      console.log(`[SYNC UPDATE] Original HTML content:`, queueItem.html_content?.substring(0, 200) || 'N/A')
-      console.log(`[SYNC UPDATE] Original text:`, queueItem.text?.substring(0, 200) || 'N/A')
+      console.log(`[SYNC UPDATE] NEW HTML content:`, queueItem.html_content?.substring(0, 200) || 'N/A')
+      console.log(`[SYNC UPDATE] NEW text:`, queueItem.text?.substring(0, 200) || 'N/A')
+      console.log(`[SYNC UPDATE] ORIGINAL HTML (for matching):`, queueItem.original_html_content?.substring(0, 200) || 'N/A')
       const newBlocks = htmlToNotionBlocks(queueItem.html_content || queueItem.text)
       console.log(`[SYNC UPDATE] Converted to ${newBlocks.length} Notion blocks`)
       
@@ -960,8 +961,10 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
               console.log(`[SYNC UPDATE] Block ${i}: type=${blockType}, block_id=${matchingBlocks[i].id}`)
               console.log(`[SYNC UPDATE] Rich text segments: ${blockData?.rich_text?.length || 0}`)
               if (blockData?.rich_text && blockData.rich_text.length > 0) {
-                const firstSegment = blockData.rich_text[0]
-                console.log(`[SYNC UPDATE] First segment: text="${firstSegment.text?.content?.substring(0, 50) || ''}", bold=${firstSegment.annotations?.bold || false}, underline=${firstSegment.annotations?.underline || false}`)
+                // Log ALL segments, not just the first
+                blockData.rich_text.forEach((segment: any, idx: number) => {
+                  console.log(`[SYNC UPDATE] Segment ${idx}: text="${segment.text?.content?.substring(0, 50) || ''}", bold=${segment.annotations?.bold || false}, italic=${segment.annotations?.italic || false}, underline=${segment.annotations?.underline || false}`)
+                })
               }
               
               // Ensure rich_text exists and is an array
