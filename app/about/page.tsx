@@ -24,7 +24,8 @@ export default function AboutPage() {
               </h2>
               <p className="text-gray-700 dark:text-gray-300 leading-relaxed">
                 This project was created with the belief that notes are only useful if often read, 
-                and this way we can automatically distribute them across for easy daily review.
+                and through this system notes are automatically distributed for easy daily review,
+                encouraging sustainable habits of both note-taking and note-reviewing. 
               </p>
             </div>
 
