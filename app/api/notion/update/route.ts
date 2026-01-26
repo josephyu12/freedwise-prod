@@ -634,10 +634,18 @@ export async function POST(request: NextRequest) {
         try {
           if (matchingBlocks[i].type === newBlocks[i].type) {
             // Same type, update in place (this preserves the block and updates formatting)
-            await notion.blocks.update({
-              block_id: matchingBlocks[i].id,
-              [matchingBlocks[i].type]: newBlocks[i][matchingBlocks[i].type],
-            })
+            const blockType = matchingBlocks[i].type
+            const blockData = newBlocks[i][blockType]
+            
+            // Ensure rich_text exists and is an array
+            if (blockData && blockData.rich_text && Array.isArray(blockData.rich_text)) {
+              await notion.blocks.update({
+                block_id: matchingBlocks[i].id,
+                [blockType]: blockData,
+              })
+            } else {
+              console.warn(`Block ${i} (${blockType}) missing rich_text array, skipping update`)
+            }
           } else {
             // Type changed, delete and recreate
             await notion.blocks.delete({ block_id: matchingBlocks[i].id })
@@ -646,8 +654,9 @@ export async function POST(request: NextRequest) {
               children: [newBlocks[i]],
             })
           }
-        } catch (error) {
-          console.warn(`Failed to update block ${i}:`, error)
+        } catch (error: any) {
+          console.error(`Failed to update block ${i} (${matchingBlocks[i]?.type}):`, error.message || error, error.response?.data || '')
+          // Continue with other blocks even if one fails
         }
       }
       
