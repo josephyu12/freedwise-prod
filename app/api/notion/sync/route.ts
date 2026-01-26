@@ -930,45 +930,49 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
           }
         }
       } else {
-        // Non-list update: Update the first block and delete/add others as needed
-        const firstBlock = matchingBlocks[0]
-        const firstNewBlock = newBlocks[0]
-
-        if (firstBlock.type === firstNewBlock?.type) {
-          // Same type, update in place
-          await notion.blocks.update({
-            block_id: firstBlock.id,
-            [firstBlock.type]: firstNewBlock[firstBlock.type],
-          })
-        } else {
-          // Different type, delete and recreate
-          await notion.blocks.delete({ block_id: firstBlock.id })
-          if (firstNewBlock) {
-            await notion.blocks.children.append({
-              block_id: notionSettings.notion_page_id,
-              children: [firstNewBlock],
-            })
+        // Non-list update: Update ALL matching blocks in place to preserve structure
+        const minLength = Math.min(matchingBlocks.length, newBlocks.length)
+        
+        // Update matching blocks in place
+        for (let i = 0; i < minLength; i++) {
+          try {
+            if (matchingBlocks[i].type === newBlocks[i].type) {
+              // Same type, update in place (this preserves the block and updates formatting)
+              await notion.blocks.update({
+                block_id: matchingBlocks[i].id,
+                [matchingBlocks[i].type]: newBlocks[i][matchingBlocks[i].type],
+              })
+            } else {
+              // Type changed, delete and recreate
+              await notion.blocks.delete({ block_id: matchingBlocks[i].id })
+              await notion.blocks.children.append({
+                block_id: notionSettings.notion_page_id,
+                children: [newBlocks[i]],
+              })
+            }
+          } catch (error) {
+            console.warn(`Failed to update block ${i}:`, error)
           }
         }
-
-        // Delete remaining old blocks
-        for (let i = 1; i < matchingBlocks.length; i++) {
+        
+        // Delete extra old blocks if there are more old than new
+        for (let i = minLength; i < matchingBlocks.length; i++) {
           try {
             await notion.blocks.delete({ block_id: matchingBlocks[i].id })
           } catch (error) {
-            console.warn(`Failed to delete block ${matchingBlocks[i].id}:`, error)
+            console.warn(`Failed to delete extra old block ${i}:`, error)
           }
         }
-
-        // Add remaining new blocks
-        for (let i = 1; i < newBlocks.length; i++) {
+        
+        // Add extra new blocks if there are more new than old
+        for (let i = minLength; i < newBlocks.length; i++) {
           try {
             await notion.blocks.children.append({
               block_id: notionSettings.notion_page_id,
               children: [newBlocks[i]],
             })
           } catch (error) {
-            console.warn(`Failed to append block:`, error)
+            console.warn(`Failed to append new block ${i}:`, error)
           }
         }
       }
