@@ -134,7 +134,158 @@ export default function RichTextEditor({ value, htmlValue, onChange, placeholder
     handleInput()
   }
 
+  const indentList = () => {
+    if (!editorRef.current) return
+    
+    const selection = window.getSelection()
+    if (!selection || selection.rangeCount === 0) return
+    
+    const range = selection.getRangeAt(0)
+    const container = range.commonAncestorContainer
+    const listItem = container.nodeType === Node.ELEMENT_NODE
+      ? (container as Element).closest('li')
+      : container.parentElement?.closest('li')
+    
+    if (listItem) {
+      const list = listItem.parentElement
+      if (list && (list.tagName === 'UL' || list.tagName === 'OL')) {
+        // Check if previous sibling is a list item
+        const prevSibling = listItem.previousElementSibling
+        if (prevSibling && prevSibling.tagName === 'LI') {
+          // Save cursor position relative to the list item content
+          const offset = range.startOffset
+          const startContainer = range.startContainer
+          
+          // Move current item into previous item as nested list
+          let nestedList = prevSibling.querySelector('ul, ol')
+          if (!nestedList) {
+            // Create a nested list of the same type as the parent
+            nestedList = document.createElement(list.tagName.toLowerCase() as 'ul' | 'ol')
+            prevSibling.appendChild(nestedList)
+          }
+          nestedList.appendChild(listItem)
+          
+          // Try to restore cursor position
+          try {
+            if (startContainer.nodeType === Node.TEXT_NODE && startContainer.parentElement === listItem) {
+              const newRange = document.createRange()
+              newRange.setStart(startContainer, Math.min(offset, startContainer.textContent?.length || 0))
+              newRange.collapse(true)
+              selection.removeAllRanges()
+              selection.addRange(newRange)
+            } else {
+              // Fallback: set cursor at start of list item
+              const textNode = listItem.firstChild
+              if (textNode && textNode.nodeType === Node.TEXT_NODE) {
+                const newRange = document.createRange()
+                newRange.setStart(textNode, 0)
+                newRange.collapse(true)
+                selection.removeAllRanges()
+                selection.addRange(newRange)
+              }
+            }
+          } catch (e) {
+            // If cursor restoration fails, just focus the editor
+            editorRef.current.focus()
+          }
+          
+          handleInput()
+        }
+      }
+    }
+  }
+
+  const outdentList = () => {
+    if (!editorRef.current) return
+    
+    const selection = window.getSelection()
+    if (!selection || selection.rangeCount === 0) return
+    
+    const range = selection.getRangeAt(0)
+    const container = range.commonAncestorContainer
+    const listItem = container.nodeType === Node.ELEMENT_NODE
+      ? (container as Element).closest('li')
+      : container.parentElement?.closest('li')
+    
+    if (listItem) {
+      const list = listItem.parentElement
+      if (list && (list.tagName === 'UL' || list.tagName === 'OL')) {
+        const parentList = list.parentElement
+        if (parentList && parentList.tagName === 'LI') {
+          // Save cursor position
+          const offset = range.startOffset
+          const startContainer = range.startContainer
+          
+          // Move item up one level - insert after the parent list item
+          const grandparentList = parentList.parentElement
+          if (grandparentList && (grandparentList.tagName === 'UL' || grandparentList.tagName === 'OL')) {
+            // Insert the list item after the parent list item
+            if (parentList.nextSibling) {
+              grandparentList.insertBefore(listItem, parentList.nextSibling)
+            } else {
+              grandparentList.appendChild(listItem)
+            }
+            // Remove empty nested list if it's now empty
+            if (list.children.length === 0) {
+              list.remove()
+            }
+            
+            // Try to restore cursor position
+            try {
+              if (startContainer.nodeType === Node.TEXT_NODE && startContainer.parentElement === listItem) {
+                const newRange = document.createRange()
+                newRange.setStart(startContainer, Math.min(offset, startContainer.textContent?.length || 0))
+                newRange.collapse(true)
+                selection.removeAllRanges()
+                selection.addRange(newRange)
+              } else {
+                // Fallback: set cursor at start of list item
+                const textNode = listItem.firstChild
+                if (textNode && textNode.nodeType === Node.TEXT_NODE) {
+                  const newRange = document.createRange()
+                  newRange.setStart(textNode, 0)
+                  newRange.collapse(true)
+                  selection.removeAllRanges()
+                  selection.addRange(newRange)
+                }
+              }
+            } catch (e) {
+              // If cursor restoration fails, just focus the editor
+              editorRef.current.focus()
+            }
+            
+            handleInput()
+          }
+        } else if (list && (list.tagName === 'UL' || list.tagName === 'OL')) {
+          // Already at top level, can't outdent further
+        }
+      }
+    }
+  }
+
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    // Handle Tab key for indenting/outdenting lists
+    if (e.key === 'Tab' && editorRef.current) {
+      const selection = window.getSelection()
+      if (selection && selection.rangeCount > 0) {
+        const range = selection.getRangeAt(0)
+        const container = range.commonAncestorContainer
+        const listItem = container.nodeType === Node.ELEMENT_NODE
+          ? (container as Element).closest('li')
+          : container.parentElement?.closest('li')
+        
+        if (listItem) {
+          e.preventDefault()
+          if (e.shiftKey) {
+            outdentList()
+          } else {
+            indentList()
+          }
+          return
+        }
+      }
+    }
+    
     // Handle Enter key in lists
     if (e.key === 'Enter' && editorRef.current) {
       const selection = window.getSelection()
@@ -204,6 +355,23 @@ export default function RichTextEditor({ value, htmlValue, onChange, placeholder
           title="Numbered List"
         >
           1.
+        </button>
+        <div className="w-px bg-gray-300 dark:bg-gray-600 mx-1" />
+        <button
+          type="button"
+          onClick={indentList}
+          className="px-3 py-1 text-sm bg-white dark:bg-gray-600 rounded hover:bg-gray-100 dark:hover:bg-gray-500 transition"
+          title="Indent (Tab)"
+        >
+          →
+        </button>
+        <button
+          type="button"
+          onClick={outdentList}
+          className="px-3 py-1 text-sm bg-white dark:bg-gray-600 rounded hover:bg-gray-100 dark:hover:bg-gray-500 transition"
+          title="Outdent (Shift+Tab)"
+        >
+          ←
         </button>
       </div>
       <div
