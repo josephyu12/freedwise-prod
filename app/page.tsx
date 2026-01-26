@@ -78,6 +78,15 @@ export default function Home() {
         return
       }
 
+      // Helper function to normalize text (strip HTML tags, trim, lowercase, normalize whitespace)
+      const normalizeText = (text: string | null): string => {
+        if (!text) return ''
+        // Strip HTML tags first
+        const plainText = text.replace(/<[^>]*>/g, '')
+        // Trim, lowercase, and normalize whitespace
+        return plainText.trim().toLowerCase().replace(/\s+/g, ' ')
+      }
+
       // Check for duplicate highlights
       const { data: existingHighlights, error: checkError } = await (supabase
         .from('highlights') as any)
@@ -87,10 +96,18 @@ export default function Home() {
       if (checkError) {
         console.error('Error checking for duplicates:', checkError)
       } else if (existingHighlights && existingHighlights.length > 0) {
-        // Check if any existing highlight has the same text or html_content
-        const isDuplicate = existingHighlights.some((h: any) => 
-          h.text === highlightText || h.html_content === highlightHtml
-        )
+        // Normalize the new highlight's text and HTML
+        const normalizedText = normalizeText(highlightText)
+        const normalizedHtml = normalizeText(highlightHtml)
+        
+        // Check if any existing highlight has the same normalized text or html_content
+        const isDuplicate = existingHighlights.some((h: any) => {
+          const existingText = normalizeText(h.text)
+          const existingHtml = normalizeText(h.html_content)
+          // Check if normalized text matches, or if normalized HTML matches
+          return (normalizedText && (normalizedText === existingText || normalizedText === existingHtml)) ||
+                 (normalizedHtml && (normalizedHtml === existingText || normalizedHtml === existingHtml))
+        })
         
         if (isDuplicate) {
           setSaving(false)

@@ -105,20 +105,30 @@ export default function ImportPage() {
         fetchCursor += pageSize
       }
 
+      // Helper function to normalize text (strip HTML tags, trim, lowercase, normalize whitespace)
+      const normalizeText = (text: string): string => {
+        if (!text) return ''
+        // Strip HTML tags first
+        const plainText = text.replace(/<[^>]*>/g, '')
+        // Trim, lowercase, and normalize whitespace
+        return plainText.trim().toLowerCase().replace(/\s+/g, ' ')
+      }
+
       // Create a set of existing highlight texts (normalized for comparison)
-      const existingTexts = new Set(
-        (existingHighlights || []).map((h) => {
-          // Normalize text for comparison (trim and lowercase)
-          const text = h.text?.trim().toLowerCase() || ''
-          const html = h.html_content?.trim().toLowerCase() || ''
-          return text || html
-        })
-      )
+      // Add both text and html_content (normalized) to catch duplicates regardless of which field matches
+      const existingTexts = new Set<string>()
+      for (const h of existingHighlights || []) {
+        const textNormalized = normalizeText(h.text || '')
+        const htmlNormalized = normalizeText(h.html_content || '')
+        // Add both to the set (if they're different)
+        if (textNormalized) existingTexts.add(textNormalized)
+        if (htmlNormalized && htmlNormalized !== textNormalized) existingTexts.add(htmlNormalized)
+      }
 
       // Filter out duplicates
       const newHighlights = preview.filter((highlight) => {
-        const textNormalized = highlight.text.trim().toLowerCase()
-        const htmlNormalized = highlight.html.trim().toLowerCase()
+        const textNormalized = normalizeText(highlight.text)
+        const htmlNormalized = normalizeText(highlight.html)
         const textMatch = textNormalized && existingTexts.has(textNormalized)
         const htmlMatch = htmlNormalized && existingTexts.has(htmlNormalized)
         return !textMatch && !htmlMatch

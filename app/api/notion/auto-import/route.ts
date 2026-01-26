@@ -319,8 +319,14 @@ export async function GET(request: NextRequest) {
       fetchCursor += pageSize
     }
 
-    // Helper function to normalize text for comparison
-    const normalize = (text: string) => text.trim().toLowerCase().replace(/\s+/g, ' ')
+    // Helper function to normalize text for comparison (strip HTML tags, trim, lowercase, normalize whitespace)
+    const normalize = (text: string) => {
+      if (!text) return ''
+      // Strip HTML tags first
+      const plainText = text.replace(/<[^>]*>/g, '')
+      // Trim, lowercase, and normalize whitespace
+      return plainText.trim().toLowerCase().replace(/\s+/g, ' ')
+    }
     
     // Helper function to calculate similarity (simple Levenshtein-like approach)
     const calculateSimilarity = (str1: string, str2: string): number => {

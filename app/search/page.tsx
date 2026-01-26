@@ -258,12 +258,27 @@ export default function SearchPage() {
         if (checkError) {
           console.error('Error checking for duplicates:', checkError)
         } else if (existingHighlights && existingHighlights.length > 0) {
-          // Check if any other highlight has the same text or html_content
-          const trimmedEditText = editText.trim()
-          const trimmedEditHtml = editHtmlContent.trim()
-          const isDuplicate = existingHighlights.some((h: any) => 
-            h.text === trimmedEditText || h.html_content === trimmedEditHtml
-          )
+          // Helper function to normalize text (strip HTML tags, trim, lowercase, normalize whitespace)
+          const normalizeText = (text: string | null): string => {
+            if (!text) return ''
+            // Strip HTML tags first
+            const plainText = text.replace(/<[^>]*>/g, '')
+            // Trim, lowercase, and normalize whitespace
+            return plainText.trim().toLowerCase().replace(/\s+/g, ' ')
+          }
+          
+          // Normalize the edited text and HTML
+          const normalizedEditText = normalizeText(editText)
+          const normalizedEditHtml = normalizeText(editHtmlContent)
+          
+          // Check if any other highlight has the same normalized text or html_content
+          const isDuplicate = existingHighlights.some((h: any) => {
+            const existingText = normalizeText(h.text)
+            const existingHtml = normalizeText(h.html_content)
+            // Check if normalized text matches, or if normalized HTML matches
+            return (normalizedEditText && (normalizedEditText === existingText || normalizedEditText === existingHtml)) ||
+                   (normalizedEditHtml && (normalizedEditHtml === existingText || normalizedEditHtml === existingHtml))
+          })
           
           if (isDuplicate) {
             alert('Error: Your edits make this highlight the same as another highlight.')
@@ -632,7 +647,7 @@ export default function SearchPage() {
                               className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-700"
                             />
                             <span className="text-sm text-gray-700 dark:text-gray-300">
-                              Don't sync to Notion
+                              Don&apos;t sync to Notion
                             </span>
                           </label>
                         </div>
@@ -822,7 +837,7 @@ export default function SearchPage() {
                               className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-700"
                             />
                             <span className="text-sm text-gray-700 dark:text-gray-300">
-                              Don't sync to Notion
+                              Don&apos;t sync to Notion
                             </span>
                           </label>
                         </div>
