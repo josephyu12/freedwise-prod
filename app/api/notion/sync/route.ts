@@ -778,11 +778,21 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
         if (isEmpty && currentHighlightBlocks.length > 0) {
           // Empty paragraph ends the group
           shouldEndGroup = true
-        } else if (currentHighlightBlocks.length > 0) {
-          // Check for type transition: list to non-list or vice versa
-          const currentIsList = isListItem(currentHighlightBlocks[0])
-          if (currentIsList !== isList) {
-            // Transition from list to non-list (or vice versa) ends the group
+        } else if (currentHighlightBlocks.length > 0 && !isEmpty) {
+          // Check for type transition: but allow paragraph -> list transitions
+          // (paragraphs from divs can precede lists in the same highlight)
+          const lastBlock = currentHighlightBlocks[currentHighlightBlocks.length - 1]
+          const currentIsList = isListItem(lastBlock)
+          const currentIsParagraph = lastBlock.type === 'paragraph'
+          
+          // End group if:
+          // 1. Transition from list to non-list (but allow list to paragraph if it's the first block)
+          // 2. Transition from non-list to list, but NOT if current is paragraph (allow paragraph -> list)
+          if (currentIsList && !isList) {
+            // List to non-list ends the group
+            shouldEndGroup = true
+          } else if (!currentIsList && isList && !currentIsParagraph) {
+            // Non-list to list ends the group, UNLESS current is a paragraph (allow paragraph -> list)
             shouldEndGroup = true
           }
         }
@@ -854,45 +864,112 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
       }
 
       // Update the matching blocks with new content
-      // Update the first block and delete/add others as needed
-      const firstBlock = matchingBlocks[0]
-      const firstNewBlock = newBlocks[0]
-
-      if (firstBlock.type === firstNewBlock?.type) {
-        // Same type, update in place
-        await notion.blocks.update({
-          block_id: firstBlock.id,
-          [firstBlock.type]: firstNewBlock[firstBlock.type],
-        })
+      // For list items, update all matching items in place to preserve grouping
+      const isListUpdate = matchingBlocks.length > 0 && 
+        (matchingBlocks[0].type === 'bulleted_list_item' || matchingBlocks[0].type === 'numbered_list_item')
+      
+      if (isListUpdate && newBlocks.length > 0 && 
+          (newBlocks[0].type === 'bulleted_list_item' || newBlocks[0].type === 'numbered_list_item')) {
+        // Update list items in place - update each matching block with corresponding new block
+        const minLength = Math.min(matchingBlocks.length, newBlocks.length)
+        
+        // Update matching blocks in place
+        for (let i = 0; i < minLength; i++) {
+          try {
+            if (matchingBlocks[i].type === newBlocks[i].type) {
+              await notion.blocks.update({
+                block_id: matchingBlocks[i].id,
+                [matchingBlocks[i].type]: newBlocks[i][matchingBlocks[i].type],
+              })
+            } else {
+              // Type changed, delete and recreate
+              await notion.blocks.delete({ block_id: matchingBlocks[i].id })
+              // Insert after the previous block (or after the last updated block)
+              const insertAfterId = i > 0 ? matchingBlocks[i - 1].id : null
+              if (insertAfterId) {
+                // Notion doesn't support inserting after a specific block directly
+                // So we'll append and then reorder if needed, or just append to page
+                await notion.blocks.children.append({
+                  block_id: notionSettings.notion_page_id,
+                  children: [newBlocks[i]],
+                })
+              } else {
+                await notion.blocks.children.append({
+                  block_id: notionSettings.notion_page_id,
+                  children: [newBlocks[i]],
+                })
+              }
+            }
+          } catch (error) {
+            console.warn(`Failed to update list item ${i}:`, error)
+          }
+        }
+        
+        // Delete extra old blocks if there are more old than new
+        for (let i = minLength; i < matchingBlocks.length; i++) {
+          try {
+            await notion.blocks.delete({ block_id: matchingBlocks[i].id })
+          } catch (error) {
+            console.warn(`Failed to delete extra old block ${i}:`, error)
+          }
+        }
+        
+        // Add extra new blocks if there are more new than old
+        // Insert them after the last matching block
+        const lastMatchingBlockId = matchingBlocks.length > 0 ? matchingBlocks[matchingBlocks.length - 1].id : null
+        for (let i = minLength; i < newBlocks.length; i++) {
+          try {
+            // Notion API doesn't support inserting after a specific block
+            // So we append to the page - they should appear in the right place if we're updating in order
+            await notion.blocks.children.append({
+              block_id: notionSettings.notion_page_id,
+              children: [newBlocks[i]],
+            })
+          } catch (error) {
+            console.warn(`Failed to append new list item ${i}:`, error)
+          }
+        }
       } else {
-        // Different type, delete and recreate
-        await notion.blocks.delete({ block_id: firstBlock.id })
-        if (firstNewBlock) {
-          await notion.blocks.children.append({
-            block_id: notionSettings.notion_page_id,
-            children: [firstNewBlock],
-          })
-        }
-      }
+        // Non-list update: Update the first block and delete/add others as needed
+        const firstBlock = matchingBlocks[0]
+        const firstNewBlock = newBlocks[0]
 
-      // Delete remaining old blocks
-      for (let i = 1; i < matchingBlocks.length; i++) {
-        try {
-          await notion.blocks.delete({ block_id: matchingBlocks[i].id })
-        } catch (error) {
-          console.warn(`Failed to delete block ${matchingBlocks[i].id}:`, error)
-        }
-      }
-
-      // Add remaining new blocks
-      for (let i = 1; i < newBlocks.length; i++) {
-        try {
-          await notion.blocks.children.append({
-            block_id: notionSettings.notion_page_id,
-            children: [newBlocks[i]],
+        if (firstBlock.type === firstNewBlock?.type) {
+          // Same type, update in place
+          await notion.blocks.update({
+            block_id: firstBlock.id,
+            [firstBlock.type]: firstNewBlock[firstBlock.type],
           })
-        } catch (error) {
-          console.warn(`Failed to append block:`, error)
+        } else {
+          // Different type, delete and recreate
+          await notion.blocks.delete({ block_id: firstBlock.id })
+          if (firstNewBlock) {
+            await notion.blocks.children.append({
+              block_id: notionSettings.notion_page_id,
+              children: [firstNewBlock],
+            })
+          }
+        }
+
+        // Delete remaining old blocks
+        for (let i = 1; i < matchingBlocks.length; i++) {
+          try {
+            await notion.blocks.delete({ block_id: matchingBlocks[i].id })
+          } catch (error) {
+            console.warn(`Failed to delete block ${matchingBlocks[i].id}:`, error)
+          }
+        }
+
+        // Add remaining new blocks
+        for (let i = 1; i < newBlocks.length; i++) {
+          try {
+            await notion.blocks.children.append({
+              block_id: notionSettings.notion_page_id,
+              children: [newBlocks[i]],
+            })
+          } catch (error) {
+            console.warn(`Failed to append block:`, error)
+          }
         }
       }
     } else if (queueItem.operation_type === 'delete') {
