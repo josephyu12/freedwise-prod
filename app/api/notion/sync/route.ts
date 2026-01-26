@@ -943,6 +943,8 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
         // Non-list update: Update ALL matching blocks in place to preserve structure
         const minLength = Math.min(matchingBlocks.length, newBlocks.length)
         
+        console.log(`[SYNC UPDATE] Updating ${minLength} blocks (${matchingBlocks.length} old, ${newBlocks.length} new)`)
+        
         // Update matching blocks in place
         for (let i = 0; i < minLength; i++) {
           try {
@@ -951,14 +953,24 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
               const blockType = matchingBlocks[i].type
               const blockData = newBlocks[i][blockType]
               
+              // Log what we're about to update
+              console.log(`[SYNC UPDATE] Block ${i}: type=${blockType}, block_id=${matchingBlocks[i].id}`)
+              console.log(`[SYNC UPDATE] Rich text segments: ${blockData?.rich_text?.length || 0}`)
+              if (blockData?.rich_text && blockData.rich_text.length > 0) {
+                const firstSegment = blockData.rich_text[0]
+                console.log(`[SYNC UPDATE] First segment: text="${firstSegment.text?.content?.substring(0, 50) || ''}", bold=${firstSegment.annotations?.bold || false}, underline=${firstSegment.annotations?.underline || false}`)
+              }
+              
               // Ensure rich_text exists and is an array
               if (blockData && blockData.rich_text && Array.isArray(blockData.rich_text)) {
-                await notion.blocks.update({
+                const result = await notion.blocks.update({
                   block_id: matchingBlocks[i].id,
                   [blockType]: blockData,
                 })
+                console.log(`[SYNC UPDATE] Successfully updated block ${i} (${blockType})`)
               } else {
-                console.warn(`Block ${i} (${blockType}) missing rich_text array, skipping update`)
+                console.warn(`[SYNC UPDATE] Block ${i} (${blockType}) missing rich_text array, skipping update`)
+                console.warn(`[SYNC UPDATE] Block data:`, JSON.stringify(blockData, null, 2))
               }
             } else {
               // Type changed, delete and recreate
