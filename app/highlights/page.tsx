@@ -384,6 +384,27 @@ export default function HighlightsPage() {
         return
       }
 
+      // Check for duplicate highlights
+      const { data: existingHighlights, error: checkError } = await (supabase
+        .from('highlights') as any)
+        .select('id, text, html_content')
+        .eq('user_id', user.id)
+
+      if (checkError) {
+        console.error('Error checking for duplicates:', checkError)
+      } else if (existingHighlights && existingHighlights.length > 0) {
+        // Check if any existing highlight has the same text or html_content
+        const isDuplicate = existingHighlights.some((h: any) => 
+          h.text === highlightText || h.html_content === highlightHtml
+        )
+        
+        if (isDuplicate) {
+          setSaving(false)
+          alert('Error: Highlight already added.')
+          return
+        }
+      }
+
       // Clear form immediately for better UX
       setText('')
       setHtmlContent('')
@@ -607,6 +628,33 @@ export default function HighlightsPage() {
       const originalHighlight = highlights.find((h) => h.id === editingId)
       const originalText = originalHighlight?.text || null
       const originalHtmlContent = originalHighlight?.html_content || null
+
+      // Check for duplicate highlights (excluding current one)
+      const { data: { user } } = await supabase.auth.getUser()
+      if (user) {
+        const { data: existingHighlights, error: checkError } = await (supabase
+          .from('highlights') as any)
+          .select('id, text, html_content')
+          .eq('user_id', user.id)
+          .neq('id', editingId)
+
+        if (checkError) {
+          console.error('Error checking for duplicates:', checkError)
+        } else if (existingHighlights && existingHighlights.length > 0) {
+          // Check if any other highlight has the same text or html_content
+          const trimmedEditText = editText.trim()
+          const trimmedEditHtml = editHtmlContent.trim()
+          const isDuplicate = existingHighlights.some((h: any) => 
+            h.text === trimmedEditText || h.html_content === trimmedEditHtml
+          )
+          
+          if (isDuplicate) {
+            setUpdatingNotion(false)
+            alert('Error: Your edits make this highlight the same as another highlight.')
+            return
+          }
+        }
+      }
 
       // Update in database
       const { error: updateError } = await (supabase

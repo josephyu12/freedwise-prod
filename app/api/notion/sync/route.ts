@@ -564,6 +564,21 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
 
       // Function to extract plain text from a block
       const getBlockText = (block: any): string => {
+        // Handle different block types
+        if (block.type === 'bulleted_list_item' && block.bulleted_list_item?.rich_text) {
+          return block.bulleted_list_item.rich_text
+            .map((t: any) => t.plain_text || '')
+            .join('')
+            .trim()
+            .toLowerCase()
+        }
+        if (block.type === 'numbered_list_item' && block.numbered_list_item?.rich_text) {
+          return block.numbered_list_item.rich_text
+            .map((t: any) => t.plain_text || '')
+            .join('')
+            .trim()
+            .toLowerCase()
+        }
         if (block[block.type]?.rich_text) {
           return block[block.type].rich_text
             .map((t: any) => t.plain_text || '')
@@ -573,7 +588,21 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
         }
         return ''
       }
+      
+      // Function to normalize text for comparison (remove extra whitespace, normalize quotes, etc.)
+      const normalizeText = (text: string): string => {
+        return text
+          .replace(/\s+/g, ' ') // Normalize whitespace
+          .replace(/[""]/g, '"') // Normalize quotes
+          .replace(/['']/g, "'") // Normalize apostrophes
+          .trim()
+          .toLowerCase()
+      }
 
+      // Normalize the original text for comparison
+      const normalizedOriginalText = normalizeText(originalText || originalPlainText)
+      const normalizedOriginalPlainText = normalizeText(originalPlainText)
+      
       // Find matching blocks (blocks that contain the original text)
       // Group blocks by empty line separators (like in the import logic)
       const matchingBlocks: any[] = []
@@ -588,14 +617,19 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
 
         if (isEmpty && currentHighlightBlocks.length > 0) {
           // Check if this group of blocks matches the original highlight
-          const combinedText = currentHighlightBlocks
-            .map(getBlockText)
-            .join(' ')
-            .trim()
-            .toLowerCase()
+          const combinedText = normalizeText(
+            currentHighlightBlocks
+              .map(getBlockText)
+              .join(' ')
+          )
 
-          if (combinedText === originalText || combinedText === originalPlainText || 
-              combinedText.includes(originalPlainText) || originalPlainText.includes(combinedText)) {
+          // Match using normalized text comparison
+          if (combinedText === normalizedOriginalText || 
+              combinedText === normalizedOriginalPlainText ||
+              (normalizedOriginalPlainText && (
+                combinedText.includes(normalizedOriginalPlainText) || 
+                normalizedOriginalPlainText.includes(combinedText)
+              ))) {
             matchingBlocks.push(...currentHighlightBlocks)
             foundMatch = true
             break
@@ -612,14 +646,18 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
 
       // Check the last group if we haven't found a match
       if (!foundMatch && currentHighlightBlocks.length > 0) {
-        const combinedText = currentHighlightBlocks
-          .map(getBlockText)
-          .join(' ')
-          .trim()
-          .toLowerCase()
+        const combinedText = normalizeText(
+          currentHighlightBlocks
+            .map(getBlockText)
+            .join(' ')
+        )
 
-        if (combinedText === originalText || combinedText === originalPlainText ||
-            combinedText.includes(originalPlainText) || originalPlainText.includes(combinedText)) {
+        if (combinedText === normalizedOriginalText || 
+            combinedText === normalizedOriginalPlainText ||
+            (normalizedOriginalPlainText && (
+              combinedText.includes(normalizedOriginalPlainText) || 
+              normalizedOriginalPlainText.includes(combinedText)
+            ))) {
           matchingBlocks.push(...currentHighlightBlocks)
           foundMatch = true
         }
@@ -695,6 +733,21 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
 
       // Function to extract plain text from a block
       const getBlockText = (block: any): string => {
+        // Handle different block types
+        if (block.type === 'bulleted_list_item' && block.bulleted_list_item?.rich_text) {
+          return block.bulleted_list_item.rich_text
+            .map((t: any) => t.plain_text || '')
+            .join('')
+            .trim()
+            .toLowerCase()
+        }
+        if (block.type === 'numbered_list_item' && block.numbered_list_item?.rich_text) {
+          return block.numbered_list_item.rich_text
+            .map((t: any) => t.plain_text || '')
+            .join('')
+            .trim()
+            .toLowerCase()
+        }
         if (block[block.type]?.rich_text) {
           return block[block.type].rich_text
             .map((t: any) => t.plain_text || '')
@@ -704,6 +757,20 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
         }
         return ''
       }
+      
+      // Function to normalize text for comparison (remove extra whitespace, normalize quotes, etc.)
+      const normalizeText = (text: string): string => {
+        return text
+          .replace(/\s+/g, ' ') // Normalize whitespace
+          .replace(/[""]/g, '"') // Normalize quotes
+          .replace(/['']/g, "'") // Normalize apostrophes
+          .trim()
+          .toLowerCase()
+      }
+      
+      // Normalize the delete text for comparison
+      const normalizedDeleteText = normalizeText(deleteText || deletePlainText)
+      const normalizedDeletePlainText = normalizeText(deletePlainText)
 
       // Find matching blocks (blocks that contain the text to delete)
       // Group blocks by empty line separators (like in the import logic)
@@ -721,14 +788,18 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
 
         if (isEmpty && currentHighlightBlocks.length > 0) {
           // Check if this group of blocks matches the highlight to delete
-          const combinedText = currentHighlightBlocks
-            .map(getBlockText)
-            .join(' ')
-            .trim()
-            .toLowerCase()
+          const combinedText = normalizeText(
+            currentHighlightBlocks
+              .map(getBlockText)
+              .join(' ')
+          )
 
-          if (combinedText === deleteText || combinedText === deletePlainText || 
-              combinedText.includes(deletePlainText) || deletePlainText.includes(combinedText)) {
+          if (combinedText === normalizedDeleteText || 
+              combinedText === normalizedDeletePlainText ||
+              (normalizedDeletePlainText && (
+                combinedText.includes(normalizedDeletePlainText) || 
+                normalizedDeletePlainText.includes(combinedText)
+              ))) {
             matchingBlocks.push(...currentHighlightBlocks)
             // The empty line after is the current block
             emptyLineAfter = block
@@ -755,14 +826,18 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
 
       // Check the last group if we haven't found a match
       if (!foundMatch && currentHighlightBlocks.length > 0) {
-        const combinedText = currentHighlightBlocks
-          .map(getBlockText)
-          .join(' ')
-          .trim()
-          .toLowerCase()
+        const combinedText = normalizeText(
+          currentHighlightBlocks
+            .map(getBlockText)
+            .join(' ')
+        )
 
-        if (combinedText === deleteText || combinedText === deletePlainText ||
-            combinedText.includes(deletePlainText) || deletePlainText.includes(combinedText)) {
+        if (combinedText === normalizedDeleteText || 
+            combinedText === normalizedDeletePlainText ||
+            (normalizedDeletePlainText && (
+              combinedText.includes(normalizedDeletePlainText) || 
+              normalizedDeletePlainText.includes(combinedText)
+            ))) {
           matchingBlocks.push(...currentHighlightBlocks)
           foundMatch = true
         }

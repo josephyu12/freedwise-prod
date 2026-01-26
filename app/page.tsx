@@ -78,6 +78,27 @@ export default function Home() {
         return
       }
 
+      // Check for duplicate highlights
+      const { data: existingHighlights, error: checkError } = await (supabase
+        .from('highlights') as any)
+        .select('id, text, html_content')
+        .eq('user_id', user.id)
+
+      if (checkError) {
+        console.error('Error checking for duplicates:', checkError)
+      } else if (existingHighlights && existingHighlights.length > 0) {
+        // Check if any existing highlight has the same text or html_content
+        const isDuplicate = existingHighlights.some((h: any) => 
+          h.text === highlightText || h.html_content === highlightHtml
+        )
+        
+        if (isDuplicate) {
+          setSaving(false)
+          alert('Error: Highlight already added.')
+          return
+        }
+      }
+
       // Clear form immediately for better UX
       setText('')
       setHtmlContent('')
