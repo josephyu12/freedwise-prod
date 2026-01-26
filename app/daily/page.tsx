@@ -775,6 +775,10 @@ export default function DailyPage() {
 
       // Add to Notion sync queue (if configured and not skipped)
       if (!skipNotionSync) {
+        console.log('[CLIENT] Adding to sync queue - HTML:', editHtmlContent.trim().substring(0, 200))
+        console.log('[CLIENT] HTML contains <strong>:', editHtmlContent.includes('<strong>'))
+        console.log('[CLIENT] HTML contains <b>:', editHtmlContent.includes('<b>'))
+        console.log('[CLIENT] HTML contains <u>:', editHtmlContent.includes('<u>'))
         await addToSyncQueue(
           highlightId,
           'update',

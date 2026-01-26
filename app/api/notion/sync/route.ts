@@ -695,7 +695,10 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
       }
 
       // Convert new content to Notion blocks
+      console.log(`[SYNC UPDATE] Original HTML content:`, queueItem.html_content?.substring(0, 200) || 'N/A')
+      console.log(`[SYNC UPDATE] Original text:`, queueItem.text?.substring(0, 200) || 'N/A')
       const newBlocks = htmlToNotionBlocks(queueItem.html_content || queueItem.text)
+      console.log(`[SYNC UPDATE] Converted to ${newBlocks.length} Notion blocks`)
       
       // Fetch all blocks from Notion page
       const allBlocks: any[] = []
