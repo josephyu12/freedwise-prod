@@ -222,6 +222,128 @@ function htmlToNotionRichText(html: string): any[] {
   return richText.length > 0 ? richText : []
 }
 
+// Helper function to parse list items, handling nested lists properly
+function parseListItem(liHtml: string): { text: string; nestedLists: Array<{ type: 'ul' | 'ol'; content: string }> } {
+  const nestedLists: Array<{ type: 'ul' | 'ol'; content: string }> = []
+  let text = liHtml
+  
+  // Find and extract nested lists
+  const nestedUlRegex = /<ul[^>]*>(.*?)<\/ul>/gis
+  const nestedOlRegex = /<ol[^>]*>(.*?)<\/ol>/gis
+  
+  // Find all nested UL lists
+  let match
+  const ulMatches: Array<{ start: number; end: number; content: string }> = []
+  while ((match = nestedUlRegex.exec(liHtml)) !== null) {
+    ulMatches.push({
+      start: match.index,
+      end: match.index + match[0].length,
+      content: match[1]
+    })
+  }
+  
+  // Find all nested OL lists
+  const olMatches: Array<{ start: number; end: number; content: string }> = []
+  while ((match = nestedOlRegex.exec(liHtml)) !== null) {
+    olMatches.push({
+      start: match.index,
+      end: match.index + match[0].length,
+      content: match[1]
+    })
+  }
+  
+  // Combine and sort by position
+  const allMatches = [
+    ...ulMatches.map(m => ({ ...m, type: 'ul' as const })),
+    ...olMatches.map(m => ({ ...m, type: 'ol' as const }))
+  ].sort((a, b) => a.start - b.start)
+  
+  // Remove nested lists from text and collect them
+  let offset = 0
+  for (const m of allMatches) {
+    nestedLists.push({ type: m.type, content: m.content })
+    // Remove from text
+    const before = text.substring(0, m.start - offset)
+    const after = text.substring(m.end - offset)
+    text = before + after
+    offset += (m.end - m.start)
+  }
+  
+  return { text: text.trim(), nestedLists }
+}
+
+// Helper function to process list items, handling nested lists
+function processListItems(listContent: string, listType: 'ul' | 'ol', blocks: any[]): void {
+  // Parse list items by finding <li> tags and handling nested structures
+  let pos = 0
+  const liStartRegex = /<li[^>]*>/gi
+  
+  while (pos < listContent.length) {
+    const remaining = listContent.substring(pos)
+    const liStartMatch = liStartRegex.exec(remaining)
+    
+    if (!liStartMatch) break
+    
+    const liStartPos = pos + liStartMatch.index + liStartMatch[0].length
+    let depth = 0
+    let liEndPos = liStartPos
+    let found = false
+    
+    // Find the matching </li> tag, accounting for nested <li> tags
+    for (let i = liStartPos; i < listContent.length; i++) {
+      if (listContent.substring(i).startsWith('<li')) {
+        depth++
+        i += 2 // Skip past '<li'
+      } else if (listContent.substring(i).startsWith('</li>')) {
+        if (depth === 0) {
+          liEndPos = i
+          found = true
+          break
+        }
+        depth--
+        i += 4 // Skip past '</li>'
+      }
+    }
+    
+    if (!found) break
+    
+    // Extract the list item content
+    const liContent = listContent.substring(liStartPos, liEndPos)
+    const { text, nestedLists } = parseListItem(liContent)
+    
+    // Process the text content
+    const richText = htmlToNotionRichText(text)
+    
+    // Create the list item block
+    const listItemType = listType === 'ul' ? 'bulleted_list_item' : 'numbered_list_item'
+    const listItemBlock: any = {
+      type: listItemType,
+      [listItemType]: {
+        rich_text: richText.length > 0 ? richText : []
+      }
+    }
+    
+    // Process nested lists if they exist
+    if (nestedLists.length > 0) {
+      const children: any[] = []
+      for (const nested of nestedLists) {
+        processListItems(nested.content, nested.type, children)
+      }
+      if (children.length > 0) {
+        listItemBlock[listItemType].children = children
+      }
+    }
+    
+    // Only add if there's content or children
+    if (richText.length > 0 || (listItemBlock[listItemType].children && listItemBlock[listItemType].children.length > 0)) {
+      blocks.push(listItemBlock)
+    }
+    
+    pos = liEndPos + 5 // Move past </li>
+    liStartRegex.lastIndex = 0 // Reset regex
+  }
+}
+
 function htmlToNotionBlocks(html: string): any[] {
   if (!html || html.trim() === '') {
     return [{
@@ -243,26 +365,72 @@ function htmlToNotionBlocks(html: string): any[] {
   
   const contentBlocks: ContentBlock[] = []
   
-  // Find all lists with their positions
-  const ulRegex = /<ul[^>]*>(.*?)<\/ul>/gis
-  let ulMatch
-  while ((ulMatch = ulRegex.exec(html)) !== null) {
+  // Helper function to find top-level lists (not nested)
+  function findTopLevelLists(html: string, tag: 'ul' | 'ol'): Array<{ index: number; content: string; fullMatch: string }> {
+    const results: Array<{ index: number; content: string; fullMatch: string }> = []
+    const openTag = `<${tag}`
+    const closeTag = `</${tag}>`
+    let pos = 0
+    
+    while (pos < html.length) {
+      const openIndex = html.indexOf(openTag, pos)
+      if (openIndex === -1) break
+      
+      // Find the end of the opening tag
+      const tagEndIndex = html.indexOf('>', openIndex)
+      if (tagEndIndex === -1) break
+      
+      // Track depth to find matching closing tag
+      let depth = 1
+      let contentStart = tagEndIndex + 1
+      let found = false
+      
+      for (let i = contentStart; i < html.length; i++) {
+        if (html.substring(i).startsWith(openTag)) {
+          depth++
+          i += openTag.length - 1
+        } else if (html.substring(i).startsWith(closeTag)) {
+          depth--
+          if (depth === 0) {
+            const content = html.substring(contentStart, i)
+            const fullMatch = html.substring(openIndex, i + closeTag.length)
+            results.push({
+              index: openIndex,
+              content,
+              fullMatch
+            })
+            pos = i + closeTag.length
+            found = true
+            break
+          }
+          i += closeTag.length - 1
+        }
+      }
+      
+      if (!found) break
+    }
+    
+    return results
+  }
+  
+  // Find all top-level lists with their positions
+  const ulLists = findTopLevelLists(html, 'ul')
+  for (const ul of ulLists) {
     contentBlocks.push({
-      index: ulMatch.index,
+      index: ul.index,
       type: 'ul',
-      content: ulMatch[1],
-      fullMatch: ulMatch[0],
+      content: ul.content,
+      fullMatch: ul.fullMatch,
     })
   }
   
-  const olRegex = /<ol[^>]*>(.*?)<\/ol>/gis
-  let olMatch
-  while ((olMatch = olRegex.exec(html)) !== null) {
+  const olLists = findTopLevelLists(html, 'ol')
+  for (const ol of olLists) {
     contentBlocks.push({
-      index: olMatch.index,
+      index: ol.index,
       type: 'ol',
-      content: olMatch[1],
-      fullMatch: olMatch[0],
+      content: ol.content,
+      fullMatch: ol.fullMatch,
     })
   }
   
@@ -363,31 +531,11 @@ function htmlToNotionBlocks(html: string): any[] {
     // Process the block itself
     switch (block.type) {
       case 'ul': {
-        const liRegex = /<li[^>]*>(.*?)<\/li>/gis
-        let liMatch
-        while ((liMatch = liRegex.exec(block.content)) !== null) {
-          const richText = htmlToNotionRichText(liMatch[1])
-          if (richText.length > 0) {
-            blocks.push({
-              type: 'bulleted_list_item',
-              bulleted_list_item: { rich_text: richText },
-            })
-          }
-        }
+        processListItems(block.content, 'ul', blocks)
         break
       }
       case 'ol': {
-        const liRegex = /<li[^>]*>(.*?)<\/li>/gis
-        let liMatch
-        while ((liMatch = liRegex.exec(block.content)) !== null) {
-          const richText = htmlToNotionRichText(liMatch[1])
-          if (richText.length > 0) {
-            blocks.push({
-              type: 'numbered_list_item',
-              numbered_list_item: { rich_text: richText },
-            })
-          }
-        }
+        processListItems(block.content, 'ol', blocks)
         break
       }
       case 'h1': {
