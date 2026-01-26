@@ -361,6 +361,10 @@ function htmlToNotionBlocks(html: string): any[] {
     }]
   }
 
+  console.log(`[HTML TO BLOCKS] Starting with HTML:`, html.substring(0, 300))
+  console.log(`[HTML TO BLOCKS] HTML contains <u>:`, html.includes('<u>'))
+  console.log(`[HTML TO BLOCKS] HTML contains <p>:`, html.includes('<p>'))
+
   const blocks: any[] = []
   
   // Process content sequentially to maintain order
@@ -505,6 +509,8 @@ function htmlToNotionBlocks(html: string): any[] {
   const pRegex = /<p[^>]*>(.*?)<\/p>/gi
   let pMatch
   while ((pMatch = pRegex.exec(html)) !== null) {
+    console.log(`[HTML TO BLOCKS] Found paragraph, extracted content:`, pMatch[1].substring(0, 200))
+    console.log(`[HTML TO BLOCKS] Extracted content contains <u>:`, pMatch[1].includes('<u>'))
     contentBlocks.push({
       index: pMatch.index,
       type: 'p',
@@ -634,15 +640,16 @@ function htmlToNotionBlocks(html: string): any[] {
   if (lastIndex < html.length) {
     const textAfter = html.substring(lastIndex).trim()
     if (textAfter) {
-      const plainText = textAfter.replace(/<[^>]*>/g, '').trim()
-      if (plainText) {
-        const richText = htmlToNotionRichText(plainText)
-        if (richText.length > 0) {
-          blocks.push({
-            type: 'paragraph',
-            paragraph: { rich_text: richText },
-          })
-        }
+      console.log(`[HTML TO BLOCKS] Found text after last block:`, textAfter.substring(0, 200))
+      console.log(`[HTML TO BLOCKS] Text after contains <u>:`, textAfter.includes('<u>'))
+      // IMPORTANT: Don't strip HTML tags - pass the full HTML to preserve formatting!
+      const richText = htmlToNotionRichText(textAfter)
+      console.log(`[HTML TO BLOCKS] Text after parser returned ${richText.length} segments`)
+      if (richText.length > 0) {
+        blocks.push({
+          type: 'paragraph',
+          paragraph: { rich_text: richText },
+        })
       }
     }
   }
