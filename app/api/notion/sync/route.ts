@@ -9,6 +9,10 @@ function htmlToNotionRichText(html: string): any[] {
     return []
   }
 
+  console.log(`[HTML PARSER] Input HTML:`, html.substring(0, 300))
+  console.log(`[HTML PARSER] Contains <u>:`, html.includes('<u>'))
+  console.log(`[HTML PARSER] Contains <strong>:`, html.includes('<strong>') || html.includes('<b>'))
+
   // Helper to decode HTML entities (server-safe)
   function decodeHtmlEntities(text: string): string {
     return text
@@ -154,6 +158,11 @@ function htmlToNotionRichText(html: string): any[] {
   if (currentSegment.text) {
     segments.push({ ...currentSegment, link: currentLink || undefined })
   }
+
+  console.log(`[HTML PARSER] Created ${segments.length} segments`)
+  segments.forEach((seg, idx) => {
+    console.log(`[HTML PARSER] Segment ${idx}: text="${seg.text.substring(0, 50)}", bold=${seg.bold}, italic=${seg.italic}, underline=${seg.underline}`)
+  })
 
   // Convert segments to Notion rich text format
   const richText: any[] = []
@@ -514,16 +523,16 @@ function htmlToNotionBlocks(html: string): any[] {
     if (block.index > lastIndex) {
       const textBefore = html.substring(lastIndex, block.index).trim()
       if (textBefore) {
-        // Remove any HTML tags to get plain text
-        const plainText = textBefore.replace(/<[^>]*>/g, '').trim()
-        if (plainText) {
-          const richText = htmlToNotionRichText(plainText)
-          if (richText.length > 0) {
-            blocks.push({
-              type: 'paragraph',
-              paragraph: { rich_text: richText },
-            })
-          }
+        console.log(`[HTML TO BLOCKS] Found text before block:`, textBefore.substring(0, 200))
+        console.log(`[HTML TO BLOCKS] Text before contains <u>:`, textBefore.includes('<u>'))
+        // IMPORTANT: Don't strip HTML tags - pass the full HTML to preserve formatting!
+        const richText = htmlToNotionRichText(textBefore)
+        console.log(`[HTML TO BLOCKS] Text before parser returned ${richText.length} segments`)
+        if (richText.length > 0) {
+          blocks.push({
+            type: 'paragraph',
+            paragraph: { rich_text: richText },
+          })
         }
       }
     }
@@ -604,7 +613,10 @@ function htmlToNotionBlocks(html: string): any[] {
         break
       }
       case 'p': {
+        console.log(`[HTML TO BLOCKS] Processing paragraph block, content:`, block.content.substring(0, 300))
+        console.log(`[HTML TO BLOCKS] Paragraph content contains <u>:`, block.content.includes('<u>'))
         const richText = htmlToNotionRichText(block.content)
+        console.log(`[HTML TO BLOCKS] Paragraph parser returned ${richText.length} segments`)
         if (richText.length > 0 || block.content.trim() === '') {
           blocks.push({
             type: 'paragraph',
@@ -637,9 +649,12 @@ function htmlToNotionBlocks(html: string): any[] {
   
   // If no blocks were created, create a paragraph with the entire content
   if (blocks.length === 0) {
+    console.log(`[HTML TO BLOCKS] No blocks found, using fallback. HTML:`, html.substring(0, 300))
     const plainText = html.replace(/<[^>]*>/g, '').trim()
     if (plainText) {
+      console.log(`[HTML TO BLOCKS] Calling htmlToNotionRichText with HTML containing <u>:`, html.includes('<u>'))
       const richText = htmlToNotionRichText(html)
+      console.log(`[HTML TO BLOCKS] Got ${richText.length} rich text segments from parser`)
       blocks.push({
         type: 'paragraph',
         paragraph: { rich_text: richText },
@@ -647,10 +662,15 @@ function htmlToNotionBlocks(html: string): any[] {
     }
   }
   
-  return blocks.length > 0 ? blocks : [{
-    type: 'paragraph',
-    paragraph: { rich_text: htmlToNotionRichText(html) },
-  }]
+  if (blocks.length === 0) {
+    console.log(`[HTML TO BLOCKS] Still no blocks, using final fallback`)
+    return [{
+      type: 'paragraph',
+      paragraph: { rich_text: htmlToNotionRichText(html) },
+    }]
+  }
+  
+  return blocks
 }
 
 // Process a single queue item
