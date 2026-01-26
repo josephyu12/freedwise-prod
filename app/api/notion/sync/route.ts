@@ -859,13 +859,6 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
       }
     } else if (queueItem.operation_type === 'delete') {
       // For delete, use the text/html_content stored in the queue item to find the block
-      const deleteText = (queueItem.html_content || queueItem.text || '').trim().toLowerCase()
-      const deletePlainText = (queueItem.text || '').trim().toLowerCase()
-
-      if (!deleteText && !deletePlainText) {
-        throw new Error('Cannot delete highlight: no text content available to find in Notion')
-      }
-
       // Fetch all blocks from Notion page
       const allBlocks: any[] = []
       let cursor = undefined
@@ -879,6 +872,84 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
         cursor = response.next_cursor || undefined
       } while (cursor)
 
+      // Function to extract plain text from HTML content (mimics how Notion blocks are structured)
+      // This converts HTML to the same format as what we extract from Notion blocks
+      const htmlToBlockText = (html: string): string => {
+        if (!html) return ''
+        
+        // Simple HTML to text converter
+        const stripHtml = (html: string): string => {
+          return html
+            .replace(/<[^>]*>/g, '')
+            .replace(/&nbsp;/g, ' ')
+            .replace(/&amp;/g, '&')
+            .replace(/&lt;/g, '<')
+            .replace(/&gt;/g, '>')
+            .replace(/&quot;/g, '"')
+            .replace(/&#39;/g, "'")
+            .trim()
+        }
+        
+        const textParts: string[] = []
+        
+        // Extract text before any HTML tags (like "Yogi Berra Bangers:" before <div>)
+        // This handles cases where text appears directly before structured content
+        const textBeforeTags = html.match(/^([^<]+?)(?=<[^>]+>)/)
+        if (textBeforeTags && textBeforeTags[1]) {
+          const beforeText = stripHtml(textBeforeTags[1])
+          if (beforeText) {
+            textParts.push(beforeText)
+          }
+        }
+        
+        // Extract paragraphs
+        const pRegex = /<p[^>]*>(.*?)<\/p>/gi
+        let pMatch
+        while ((pMatch = pRegex.exec(html)) !== null) {
+          const pText = stripHtml(pMatch[1])
+          if (pText) {
+            textParts.push(pText)
+          }
+        }
+        
+        // Extract list items from <ul> or <ol>
+        const ulMatch = html.match(/<ul[^>]*>(.*?)<\/ul>/gis)
+        if (ulMatch) {
+          for (const match of ulMatch) {
+            const liRegex = /<li[^>]*>(.*?)<\/li>/gis
+            let liMatch
+            while ((liMatch = liRegex.exec(match)) !== null) {
+              const liText = stripHtml(liMatch[1])
+              if (liText) {
+                textParts.push(liText)
+              }
+            }
+          }
+        }
+        
+        const olMatch = html.match(/<ol[^>]*>(.*?)<\/ol>/gis)
+        if (olMatch) {
+          for (const match of olMatch) {
+            const liRegex = /<li[^>]*>(.*?)<\/li>/gis
+            let liMatch
+            while ((liMatch = liRegex.exec(match)) !== null) {
+              const liText = stripHtml(liMatch[1])
+              if (liText) {
+                textParts.push(liText)
+              }
+            }
+          }
+        }
+        
+        // If no structured content found, just strip HTML
+        if (textParts.length === 0) {
+          return stripHtml(html)
+        }
+        
+        // Join parts with spaces (same as how we join Notion blocks)
+        return textParts.join(' ')
+      }
+      
       // Function to extract plain text from a block
       const getBlockText = (block: any): string => {
         // Handle different block types
@@ -916,9 +987,17 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
           .toLowerCase()
       }
       
+      // Convert HTML content to block text format (same as what we extract from Notion)
+      const deleteTextFromHtml = queueItem.html_content ? htmlToBlockText(queueItem.html_content) : ''
+      const deleteTextFromPlain = queueItem.text || ''
+      
       // Normalize the delete text for comparison
-      const normalizedDeleteText = normalizeText(deleteText || deletePlainText)
-      const normalizedDeletePlainText = normalizeText(deletePlainText)
+      const normalizedDeleteText = normalizeText(deleteTextFromHtml || deleteTextFromPlain)
+      const normalizedDeletePlainText = normalizeText(deleteTextFromPlain)
+
+      if (!normalizedDeleteText && !normalizedDeletePlainText) {
+        throw new Error('Cannot delete highlight: no text content available to find in Notion')
+      }
 
       // Find matching blocks (blocks that contain the text to delete)
       // Group blocks by empty line separators (like in the import logic)

@@ -2,15 +2,196 @@ import { NextRequest, NextResponse } from 'next/server'
 import { Client } from '@notionhq/client'
 import { createClient } from '@/lib/supabase/server'
 
-// Convert HTML to Notion rich text format (simplified version)
+// Convert HTML to Notion rich text format (properly handles nested formatting)
 function htmlToNotionRichText(html: string): any[] {
   if (!html || html.trim() === '') {
     return []
   }
 
-  // Simple HTML to text converter
-  function stripHtml(html: string): string {
-    return html
+  // Helper to decode HTML entities (server-safe)
+  function decodeHtmlEntities(text: string): string {
+    return text
+      .replace(/&nbsp;/g, ' ')
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'")
+      .replace(/&#x27;/g, "'")
+      .replace(/&#x2F;/g, '/')
+      .replace(/&#x60;/g, '`')
+      .replace(/&#x3D;/g, '=')
+  }
+
+  // Parse HTML and extract text segments with their formatting
+  interface TextSegment {
+    text: string
+    bold: boolean
+    italic: boolean
+    underline: boolean
+    code: boolean
+    link?: string
+  }
+
+  const segments: TextSegment[] = []
+  let currentSegment: TextSegment = {
+    text: '',
+    bold: false,
+    italic: false,
+    underline: false,
+    code: false,
+  }
+
+  // Stacks to track nested formatting tags
+  const boldStack: boolean[] = []
+  const italicStack: boolean[] = []
+  const underlineStack: boolean[] = []
+  const codeStack: boolean[] = []
+  let currentLink: string | null = null
+
+  // Parse HTML character by character, tracking formatting state
+  let i = 0
+  while (i < html.length) {
+    if (html[i] === '<') {
+      const tagEnd = html.indexOf('>', i)
+      if (tagEnd === -1) {
+        // Malformed tag, treat as text
+        currentSegment.text += html[i]
+        i++
+        continue
+      }
+      
+      const tag = html.substring(i, tagEnd + 1)
+      const tagNameMatch = tag.match(/<\/?(\w+)/i)
+      if (!tagNameMatch) {
+        i = tagEnd + 1
+        continue
+      }
+      
+      const tagName = tagNameMatch[1].toLowerCase()
+      const isClosing = tag.startsWith('</')
+      
+      // Handle formatting tags - update stacks first
+      if (tagName === 'strong' || tagName === 'b') {
+        if (isClosing) {
+          boldStack.pop()
+        } else {
+          boldStack.push(true)
+        }
+      } else if (tagName === 'em' || tagName === 'i') {
+        if (isClosing) {
+          italicStack.pop()
+        } else {
+          italicStack.push(true)
+        }
+      } else if (tagName === 'u') {
+        if (isClosing) {
+          underlineStack.pop()
+        } else {
+          underlineStack.push(true)
+        }
+      } else if (tagName === 'code') {
+        if (isClosing) {
+          codeStack.pop()
+        } else {
+          codeStack.push(true)
+        }
+      } else if (tagName === 'a') {
+        if (isClosing) {
+          currentLink = null
+        } else {
+          // Extract href
+          const hrefMatch = tag.match(/href=["']([^"']+)["']/i)
+          if (hrefMatch) {
+            currentLink = hrefMatch[1]
+          }
+        }
+      }
+      
+      i = tagEnd + 1
+    } else {
+      // Regular text character - check if we need to start a new segment
+      // due to formatting change
+      const newFormatting = {
+        bold: boldStack.length > 0,
+        italic: italicStack.length > 0,
+        underline: underlineStack.length > 0,
+        code: codeStack.length > 0,
+      }
+      
+      const formattingChanged = 
+        currentSegment.bold !== newFormatting.bold ||
+        currentSegment.italic !== newFormatting.italic ||
+        currentSegment.underline !== newFormatting.underline ||
+        currentSegment.code !== newFormatting.code ||
+        (currentLink !== null && currentSegment.link !== currentLink) ||
+        (currentLink === null && currentSegment.link !== undefined)
+      
+      if (formattingChanged && currentSegment.text) {
+        segments.push({ ...currentSegment, link: currentLink || undefined })
+        currentSegment = {
+          text: '',
+          bold: newFormatting.bold,
+          italic: newFormatting.italic,
+          underline: newFormatting.underline,
+          code: newFormatting.code,
+        }
+      } else {
+        // Update formatting state
+        currentSegment.bold = newFormatting.bold
+        currentSegment.italic = newFormatting.italic
+        currentSegment.underline = newFormatting.underline
+        currentSegment.code = newFormatting.code
+      }
+      
+      currentSegment.text += html[i]
+      i++
+    }
+  }
+
+  // Add final segment if it has text
+  if (currentSegment.text) {
+    segments.push({ ...currentSegment, link: currentLink || undefined })
+  }
+
+  // Convert segments to Notion rich text format
+  const richText: any[] = []
+  
+  for (let i = 0; i < segments.length; i++) {
+    const segment = segments[i]
+    // Decode HTML entities but preserve spaces between segments
+    let decodedText = decodeHtmlEntities(segment.text)
+    
+    // Only trim leading whitespace from the very first segment
+    if (i === 0) {
+      decodedText = decodedText.replace(/^\s+/, '')
+    }
+    // Only trim trailing whitespace from the very last segment
+    if (i === segments.length - 1) {
+      decodedText = decodedText.replace(/\s+$/, '')
+    }
+    
+    // Skip completely empty segments (but preserve segments that only have spaces in the middle)
+    if (!decodedText.trim() && decodedText.length === 0) continue
+
+        richText.push({
+          type: 'text',
+      text: segment.link ? { content: decodedText, link: { url: segment.link } } : { content: decodedText },
+          annotations: {
+        bold: segment.bold,
+        italic: segment.italic,
+            strikethrough: false,
+        underline: segment.underline,
+        code: segment.code,
+            color: 'default',
+          },
+      plain_text: decodedText,
+    })
+  }
+
+  // If no segments were created, return a plain text segment
+  if (richText.length === 0) {
+    const plainText = html
       .replace(/<[^>]*>/g, '')
       .replace(/&nbsp;/g, ' ')
       .replace(/&amp;/g, '&')
@@ -19,110 +200,17 @@ function htmlToNotionRichText(html: string): any[] {
       .replace(/&quot;/g, '"')
       .replace(/&#39;/g, "'")
       .trim()
-  }
-
-  const richText: any[] = []
-  const plainText = stripHtml(html)
-  
-  if (plainText) {
-    // Check if the original HTML had bold/italic/underline
-    const hasBold = /<strong|<b/i.test(html)
-    const hasItalic = /<em|<i/i.test(html)
-    const hasUnderline = /<u/i.test(html)
-    const hasCode = /<code/i.test(html)
     
-    // Extract links
-    const linkRegex = /<a\s+href=["']([^"']+)["'][^>]*>(.*?)<\/a>/gi
-    let linkMatch
-    const links: Array<{ href: string; text: string; start: number; end: number }> = []
-    
-    while ((linkMatch = linkRegex.exec(html)) !== null) {
-      const linkText = stripHtml(linkMatch[2])
-      const linkStart = plainText.indexOf(linkText)
-      if (linkStart !== -1) {
-        links.push({
-          href: linkMatch[1],
-          text: linkText,
-          start: linkStart,
-          end: linkStart + linkText.length,
-        })
-      }
-    }
-    
-    // Split text into segments (with links)
-    let currentPos = 0
-    const sortedLinks = links.sort((a, b) => a.start - b.start)
-    
-    for (const link of sortedLinks) {
-      // Add text before link
-      if (link.start > currentPos) {
-        const beforeText = plainText.substring(currentPos, link.start)
-        if (beforeText) {
-          richText.push({
-            type: 'text',
-            text: { content: beforeText },
-            annotations: {
-              bold: hasBold,
-              italic: hasItalic,
-              strikethrough: false,
-              underline: hasUnderline,
-              code: hasCode,
-              color: 'default',
-            },
-            plain_text: beforeText,
-          })
-        }
-      }
-      
-      // Add link
-      richText.push({
-        type: 'text',
-        text: { content: link.text, link: { url: link.href } },
-        annotations: {
-          bold: hasBold,
-          italic: hasItalic,
-          strikethrough: false,
-          underline: hasUnderline,
-          code: hasCode,
-          color: 'default',
-        },
-        plain_text: link.text,
-      })
-      
-      currentPos = link.end
-    }
-    
-    // Add remaining text
-    if (currentPos < plainText.length) {
-      const remainingText = plainText.substring(currentPos)
-      if (remainingText) {
-        richText.push({
-          type: 'text',
-          text: { content: remainingText },
-          annotations: {
-            bold: hasBold,
-            italic: hasItalic,
-            strikethrough: false,
-            underline: hasUnderline,
-            code: hasCode,
-            color: 'default',
-          },
-          plain_text: remainingText,
-        })
-      }
-    }
-    
-    // If no links, add entire text as one segment
-    if (richText.length === 0) {
+    if (plainText) {
       richText.push({
         type: 'text',
         text: { content: plainText },
         annotations: {
-          bold: hasBold,
-          italic: hasItalic,
+          bold: false,
+          italic: false,
           strikethrough: false,
-          underline: hasUnderline,
-          code: hasCode,
+          underline: false,
+          code: false,
           color: 'default',
         },
         plain_text: plainText,
@@ -130,19 +218,7 @@ function htmlToNotionRichText(html: string): any[] {
     }
   }
   
-  return richText.length > 0 ? richText : [{
-    type: 'text',
-    text: { content: plainText || html },
-    annotations: {
-      bold: false,
-      italic: false,
-      strikethrough: false,
-      underline: false,
-      code: false,
-      color: 'default',
-    },
-    plain_text: plainText || html,
-  }]
+  return richText.length > 0 ? richText : []
 }
 
 // Helper function to parse list items, handling nested lists properly

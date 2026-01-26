@@ -15,121 +15,223 @@ function stripHtml(html: string): string {
     .trim()
 }
 
-// Convert HTML to Notion rich text format (simplified version)
+// Convert HTML to Notion rich text format (properly handles nested formatting)
 function htmlToNotionRichText(html: string): any[] {
   if (!html || html.trim() === '') {
     return []
   }
 
+  // Helper to decode HTML entities (server-safe)
+  function decodeHtmlEntities(text: string): string {
+    return text
+      .replace(/&nbsp;/g, ' ')
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'")
+      .replace(/&#x27;/g, "'")
+      .replace(/&#x2F;/g, '/')
+      .replace(/&#x60;/g, '`')
+      .replace(/&#x3D;/g, '=')
+  }
+
+  // Parse HTML and extract text segments with their formatting
+  interface TextSegment {
+    text: string
+    bold: boolean
+    italic: boolean
+    underline: boolean
+    code: boolean
+    link?: string
+  }
+
+  const segments: TextSegment[] = []
+  let currentSegment: TextSegment = {
+    text: '',
+    bold: false,
+    italic: false,
+    underline: false,
+    code: false,
+  }
+
+  // Stacks to track nested formatting tags
+  const boldStack: boolean[] = []
+  const italicStack: boolean[] = []
+  const underlineStack: boolean[] = []
+  const codeStack: boolean[] = []
+  let currentLink: string | null = null
+
+  // Parse HTML character by character, tracking formatting state
+  let i = 0
+  while (i < html.length) {
+    if (html[i] === '<') {
+      const tagEnd = html.indexOf('>', i)
+      if (tagEnd === -1) {
+        // Malformed tag, treat as text
+        currentSegment.text += html[i]
+        i++
+        continue
+      }
+      
+      const tag = html.substring(i, tagEnd + 1)
+      const tagNameMatch = tag.match(/<\/?(\w+)/i)
+      if (!tagNameMatch) {
+        i = tagEnd + 1
+        continue
+      }
+      
+      const tagName = tagNameMatch[1].toLowerCase()
+      const isClosing = tag.startsWith('</')
+      
+      // Handle formatting tags - update stacks first
+      if (tagName === 'strong' || tagName === 'b') {
+        if (isClosing) {
+          boldStack.pop()
+        } else {
+          boldStack.push(true)
+        }
+      } else if (tagName === 'em' || tagName === 'i') {
+        if (isClosing) {
+          italicStack.pop()
+        } else {
+          italicStack.push(true)
+        }
+      } else if (tagName === 'u') {
+        if (isClosing) {
+          underlineStack.pop()
+        } else {
+          underlineStack.push(true)
+        }
+      } else if (tagName === 'code') {
+        if (isClosing) {
+          codeStack.pop()
+        } else {
+          codeStack.push(true)
+        }
+      } else if (tagName === 'a') {
+        if (isClosing) {
+          currentLink = null
+        } else {
+          // Extract href
+          const hrefMatch = tag.match(/href=["']([^"']+)["']/i)
+          if (hrefMatch) {
+            currentLink = hrefMatch[1]
+          }
+        }
+      }
+      
+      i = tagEnd + 1
+    } else {
+      // Regular text character - check if we need to start a new segment
+      // due to formatting change
+      const newFormatting = {
+        bold: boldStack.length > 0,
+        italic: italicStack.length > 0,
+        underline: underlineStack.length > 0,
+        code: codeStack.length > 0,
+      }
+      
+      const formattingChanged = 
+        currentSegment.bold !== newFormatting.bold ||
+        currentSegment.italic !== newFormatting.italic ||
+        currentSegment.underline !== newFormatting.underline ||
+        currentSegment.code !== newFormatting.code ||
+        (currentLink !== null && currentSegment.link !== currentLink) ||
+        (currentLink === null && currentSegment.link !== undefined)
+      
+      if (formattingChanged && currentSegment.text) {
+        segments.push({ ...currentSegment, link: currentLink || undefined })
+        currentSegment = {
+          text: '',
+          bold: newFormatting.bold,
+          italic: newFormatting.italic,
+          underline: newFormatting.underline,
+          code: newFormatting.code,
+        }
+      } else {
+        // Update formatting state
+        currentSegment.bold = newFormatting.bold
+        currentSegment.italic = newFormatting.italic
+        currentSegment.underline = newFormatting.underline
+        currentSegment.code = newFormatting.code
+      }
+      
+      currentSegment.text += html[i]
+      i++
+    }
+  }
+
+  // Add final segment if it has text
+  if (currentSegment.text) {
+    segments.push({ ...currentSegment, link: currentLink || undefined })
+  }
+
+  // Convert segments to Notion rich text format
   const richText: any[] = []
   
-  // Simple regex-based parsing for basic formatting
-  // This handles nested tags by processing from innermost to outermost
-  let remaining = html
-  
-  // Extract links first (they may contain other formatting)
-  const linkRegex = /<a\s+href=["']([^"']+)["'][^>]*>(.*?)<\/a>/gi
-  const links: Array<{ start: number; end: number; href: string; content: string }> = []
-  let linkMatch
-  
-  while ((linkMatch = linkRegex.exec(html)) !== null) {
-    links.push({
-      start: linkMatch.index,
-      end: linkMatch.index + linkMatch[0].length,
-      href: linkMatch[1],
-      content: linkMatch[2],
+  for (let i = 0; i < segments.length; i++) {
+    const segment = segments[i]
+    // Decode HTML entities but preserve spaces between segments
+    let decodedText = decodeHtmlEntities(segment.text)
+    
+    // Only trim leading whitespace from the very first segment
+    if (i === 0) {
+      decodedText = decodedText.replace(/^\s+/, '')
+    }
+    // Only trim trailing whitespace from the very last segment
+    if (i === segments.length - 1) {
+      decodedText = decodedText.replace(/\s+$/, '')
+    }
+    
+    // Skip completely empty segments (but preserve segments that only have spaces in the middle)
+    if (!decodedText.trim() && decodedText.length === 0) continue
+
+    richText.push({
+      type: 'text',
+      text: segment.link ? { content: decodedText, link: { url: segment.link } } : { content: decodedText },
+      annotations: {
+        bold: segment.bold,
+        italic: segment.italic,
+        strikethrough: false,
+        underline: segment.underline,
+        code: segment.code,
+        color: 'default',
+      },
+      plain_text: decodedText,
     })
   }
-  
-  // Process text segments
-  function processSegment(text: string, annotations: any = {}): void {
-    if (!text || text.trim() === '') return
+
+  // If no segments were created, return a plain text segment
+  if (richText.length === 0) {
+    const plainText = html
+      .replace(/<[^>]*>/g, '')
+      .replace(/&nbsp;/g, ' ')
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'")
+      .trim()
     
-    // Check if this segment is within a link
-    const segmentStart = html.indexOf(text)
-    const segmentEnd = segmentStart + text.length
-    const containingLink = links.find(
-      (link) => segmentStart >= link.start && segmentEnd <= link.end
-    )
-    
-    if (containingLink && segmentStart === html.indexOf(containingLink.content)) {
-      // This is link content
+    if (plainText) {
       richText.push({
         type: 'text',
-        text: { content: text, link: { url: containingLink.href } },
+        text: { content: plainText },
         annotations: {
-          bold: annotations.bold || false,
-          italic: annotations.italic || false,
+          bold: false,
+          italic: false,
           strikethrough: false,
-          underline: annotations.underline || false,
-          code: annotations.code || false,
+          underline: false,
+          code: false,
           color: 'default',
         },
-        plain_text: text,
-      })
-    } else {
-      richText.push({
-        type: 'text',
-        text: { content: text },
-        annotations: {
-          bold: annotations.bold || false,
-          italic: annotations.italic || false,
-          strikethrough: false,
-          underline: annotations.underline || false,
-          code: annotations.code || false,
-          color: 'default',
-        },
-        plain_text: text,
+        plain_text: plainText,
       })
     }
   }
-  
-  // Extract formatted segments
-  // Process bold
-  const boldRegex = /<strong[^>]*>(.*?)<\/strong>|<b[^>]*>(.*?)<\/b>/gi
-  let processed = html
-  const boldMatches: Array<{ content: string; start: number }> = []
-  
-  let match
-  while ((match = boldRegex.exec(html)) !== null) {
-    boldMatches.push({
-      content: match[1] || match[2],
-      start: match.index,
-    })
-  }
-  
-  // For simplicity, extract plain text and apply basic formatting
-  // This is a simplified version - for full support, consider using a proper HTML parser library
-  const plainText = stripHtml(html)
-  
-  if (plainText) {
-    // Check if the original HTML had bold/italic/underline
-    const hasBold = /<strong|<b/i.test(html)
-    const hasItalic = /<em|<i/i.test(html)
-    const hasUnderline = /<u/i.test(html)
-    const hasCode = /<code/i.test(html)
-    
-    processSegment(plainText, {
-      bold: hasBold,
-      italic: hasItalic,
-      underline: hasUnderline,
-      code: hasCode,
-    })
-  }
-  
-  return richText.length > 0 ? richText : [{
-    type: 'text',
-    text: { content: plainText || html },
-    annotations: {
-      bold: false,
-      italic: false,
-      strikethrough: false,
-      underline: false,
-      code: false,
-      color: 'default',
-    },
-    plain_text: plainText || html,
-  }]
+
+  return richText.length > 0 ? richText : []
 }
 
 // Convert HTML to Notion blocks (simplified regex-based parser)
