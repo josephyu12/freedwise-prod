@@ -368,6 +368,21 @@ export async function POST(request: NextRequest) {
 
     // Function to extract plain text from a block
     const getBlockText = (block: any): string => {
+      // Handle different block types
+      if (block.type === 'bulleted_list_item' && block.bulleted_list_item?.rich_text) {
+        return block.bulleted_list_item.rich_text
+          .map((t: any) => t.plain_text || '')
+          .join('')
+          .trim()
+          .toLowerCase()
+      }
+      if (block.type === 'numbered_list_item' && block.numbered_list_item?.rich_text) {
+        return block.numbered_list_item.rich_text
+          .map((t: any) => t.plain_text || '')
+          .join('')
+          .trim()
+          .toLowerCase()
+      }
       if (block[block.type]?.rich_text) {
         return block[block.type].rich_text
           .map((t: any) => t.plain_text || '')
@@ -377,6 +392,20 @@ export async function POST(request: NextRequest) {
       }
       return ''
     }
+
+    // Function to normalize text for comparison (remove extra whitespace, normalize quotes, etc.)
+    const normalizeText = (text: string): string => {
+      return text
+        .replace(/\s+/g, ' ') // Normalize whitespace
+        .replace(/[""]/g, '"') // Normalize quotes
+        .replace(/['']/g, "'") // Normalize apostrophes
+        .trim()
+        .toLowerCase()
+    }
+
+    // Normalize the original text for comparison
+    const normalizedOriginalText = normalizeText(originalText || originalPlainText)
+    const normalizedOriginalPlainText = normalizeText(originalPlainText)
 
     // Find matching blocks (blocks that contain the original text)
     const matchingBlocks: any[] = []
@@ -391,14 +420,18 @@ export async function POST(request: NextRequest) {
 
       if (isEmpty && currentHighlightBlocks.length > 0) {
         // Check if this group of blocks matches
-        const combinedText = currentHighlightBlocks
-          .map(getBlockText)
-          .join(' ')
-          .trim()
-          .toLowerCase()
+        const combinedText = normalizeText(
+          currentHighlightBlocks
+            .map(getBlockText)
+            .join(' ')
+        )
 
-        if (combinedText === originalText || combinedText === originalPlainText || 
-            combinedText.includes(originalPlainText) || originalPlainText.includes(combinedText)) {
+        if (combinedText === normalizedOriginalText || 
+            combinedText === normalizedOriginalPlainText ||
+            (normalizedOriginalPlainText && (
+              combinedText.includes(normalizedOriginalPlainText) || 
+              normalizedOriginalPlainText.includes(combinedText)
+            ))) {
           matchingBlocks.push(...currentHighlightBlocks)
           foundMatch = true
         }
@@ -414,14 +447,18 @@ export async function POST(request: NextRequest) {
 
     // Check the last group
     if (currentHighlightBlocks.length > 0) {
-      const combinedText = currentHighlightBlocks
-        .map(getBlockText)
-        .join(' ')
-        .trim()
-        .toLowerCase()
+      const combinedText = normalizeText(
+        currentHighlightBlocks
+          .map(getBlockText)
+          .join(' ')
+      )
 
-      if (combinedText === originalText || combinedText === originalPlainText ||
-          combinedText.includes(originalPlainText) || originalPlainText.includes(combinedText)) {
+      if (combinedText === normalizedOriginalText || 
+          combinedText === normalizedOriginalPlainText ||
+          (normalizedOriginalPlainText && (
+            combinedText.includes(normalizedOriginalPlainText) || 
+            normalizedOriginalPlainText.includes(combinedText)
+          ))) {
         matchingBlocks.push(...currentHighlightBlocks)
         foundMatch = true
       }
