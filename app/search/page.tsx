@@ -23,6 +23,7 @@ export default function SearchPage() {
   const [editAuthor, setEditAuthor] = useState('')
   const [categories, setCategories] = useState<Category[]>([])
   const [editCategories, setEditCategories] = useState<string[]>([])
+  const [skipNotionSync, setSkipNotionSync] = useState(false)
   const [pinnedHighlightIds, setPinnedHighlightIds] = useState<Set<string>>(new Set())
   const [pinDialogOpen, setPinDialogOpen] = useState(false)
   const [pendingPinHighlightId, setPendingPinHighlightId] = useState<string | null>(null)
@@ -222,6 +223,7 @@ export default function SearchPage() {
     setEditSource(highlight.source || '')
     setEditAuthor(highlight.author || '')
     setEditCategories(highlight.categories?.map((c: any) => c.id) || [])
+    setSkipNotionSync(false)
   }
 
   const handleCancelEdit = () => {
@@ -231,6 +233,7 @@ export default function SearchPage() {
     setEditSource('')
     setEditAuthor('')
     setEditCategories([])
+    setSkipNotionSync(false)
   }
 
   const handleSaveEdit = async () => {
@@ -298,15 +301,17 @@ export default function SearchPage() {
         await (supabase.from('highlight_categories') as any).insert(categoryLinks)
       }
 
-      // Add to Notion sync queue (if configured)
-      await addToSyncQueue(
-        editingId,
-        'update',
-        editText.trim(),
-        editHtmlContent.trim() || null,
-        originalText,
-        originalHtmlContent
-      )
+      // Add to Notion sync queue (if configured and not skipped)
+      if (!skipNotionSync) {
+        await addToSyncQueue(
+          editingId,
+          'update',
+          editText.trim(),
+          editHtmlContent.trim() || null,
+          originalText,
+          originalHtmlContent
+        )
+      }
 
       // Refresh search results
       if (query.trim()) {
@@ -618,6 +623,19 @@ export default function SearchPage() {
                             ))}
                           </div>
                         </div>
+                        <div className="flex items-center gap-4">
+                          <label className="flex items-center gap-2 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={skipNotionSync}
+                              onChange={(e) => setSkipNotionSync(e.target.checked)}
+                              className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-700"
+                            />
+                            <span className="text-sm text-gray-700 dark:text-gray-300">
+                              Don't sync to Notion
+                            </span>
+                          </label>
+                        </div>
                         <div className="flex gap-2">
                           <button
                             onClick={handleSaveEdit}
@@ -794,6 +812,19 @@ export default function SearchPage() {
                               </button>
                             ))}
                           </div>
+                        </div>
+                        <div className="flex items-center gap-4">
+                          <label className="flex items-center gap-2 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={skipNotionSync}
+                              onChange={(e) => setSkipNotionSync(e.target.checked)}
+                              className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-700"
+                            />
+                            <span className="text-sm text-gray-700 dark:text-gray-300">
+                              Don't sync to Notion
+                            </span>
+                          </label>
                         </div>
                         <div className="flex gap-2">
                           <button

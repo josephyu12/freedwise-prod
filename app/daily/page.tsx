@@ -164,6 +164,7 @@ export default function DailyPage() {
   const [editHtmlContent, setEditHtmlContent] = useState('')
   const [editSource, setEditSource] = useState('')
   const [editAuthor, setEditAuthor] = useState('')
+  const [skipNotionSync, setSkipNotionSync] = useState(false)
   const [monthReviewStatus, setMonthReviewStatus] = useState<Map<string, 'completed' | 'partial' | 'none'>>(new Map())
   const [pinnedHighlightIds, setPinnedHighlightIds] = useState<Set<string>>(new Set())
   const [pinDialogOpen, setPinDialogOpen] = useState(false)
@@ -757,15 +758,17 @@ export default function DailyPage() {
 
       if (updateError) throw updateError
 
-      // Add to Notion sync queue (if configured)
-      await addToSyncQueue(
-        highlightId,
-        'update',
-        editText.trim(),
-        editHtmlContent.trim() || null,
-        originalText,
-        originalHtmlContent
-      )
+      // Add to Notion sync queue (if configured and not skipped)
+      if (!skipNotionSync) {
+        await addToSyncQueue(
+          highlightId,
+          'update',
+          editText.trim(),
+          editHtmlContent.trim() || null,
+          originalText,
+          originalHtmlContent
+        )
+      }
 
       // Reload summary to reflect changes
       await loadDailySummary(date)
@@ -1045,6 +1048,19 @@ export default function DailyPage() {
                                   placeholder="Author name"
                                 />
                               </div>
+                            </div>
+                            <div className="flex items-center gap-4">
+                              <label className="flex items-center gap-2 cursor-pointer">
+                                <input
+                                  type="checkbox"
+                                  checked={skipNotionSync}
+                                  onChange={(e) => setSkipNotionSync(e.target.checked)}
+                                  className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-700"
+                                />
+                                <span className="text-sm text-gray-700 dark:text-gray-300">
+                                  Don't sync to Notion
+                                </span>
+                              </label>
                             </div>
                             <div className="flex gap-2">
                               <button
