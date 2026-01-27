@@ -91,8 +91,9 @@ function assignHighlightsToDays(
 /**
  * POST /api/daily/assign
  * Assigns highlights to days for a given month.
- * Assigns to ALL days in the month (1 through last day), including past days.
+ * Acts on the whole month: ALL days 1..lastDay, both past and future.
  * Use when (re)building the full month (e.g. after "reset daily highlights").
+ * Preserves completed days (all highlights rated); recreates summaries for all other days.
  */
 export async function POST(request: NextRequest) {
   try {
@@ -198,7 +199,9 @@ export async function POST(request: NextRequest) {
     // Track which days are completed (all highlights have ratings)
     const completedDays = new Set<string>() // Set of dates (YYYY-MM-DD) that are completed
     const preservedAssignments = new Map<string, { date: string; summaryId: string }>() // highlight_id -> { date, summaryId }
-    
+    // Track which summary ids we delete so we never reuse them when creating (they're gone from DB)
+    const deletedSummaryIds = new Set<string>()
+
     const typedSummaries = (existingSummaries || []) as Array<{
       id: string
       date: string
@@ -266,6 +269,7 @@ export async function POST(request: NextRequest) {
       // Delete assignments only for non-completed days
       const summariesToModify = typedSummaries.filter((s) => !completedDays.has(s.date))
       const summaryIdsToModify = summariesToModify.map((s) => s.id)
+      for (const id of summaryIdsToModify) deletedSummaryIds.add(id)
       
       if (summaryIdsToModify.length > 0) {
         // Delete daily_summary_highlights for non-completed days
@@ -274,8 +278,7 @@ export async function POST(request: NextRequest) {
           .delete()
           .in('daily_summary_id', summaryIdsToModify)
 
-        // Delete daily_summaries for non-completed days that no longer have assignments
-        // (We'll recreate them below if needed)
+        // Delete daily_summaries for non-completed days (we'll recreate below for whole month)
         await supabase
           .from('daily_summaries')
           .delete()
@@ -304,15 +307,14 @@ export async function POST(request: NextRequest) {
       // Skip if this day is already completed
       if (completedDays.has(date)) continue
 
-      // Check if summary already exists (shouldn't happen after deletion, but be safe)
+      // Use existing summary only if we didn't delete it (deleted ones are gone from DB)
       let summaryId: string | null = null
       const existingSummary = typedSummaries.find((s) => s.date === date)
       
-      if (existingSummary && !completedDays.has(date)) {
-        // Summary exists but day is not completed - should have been deleted, but handle it
+      if (existingSummary && !deletedSummaryIds.has(existingSummary.id)) {
         summaryId = existingSummary.id
       } else {
-        // Create new summary
+        // Create new summary (required for whole month: past and future days)
         const { data: summaryData, error: summaryError } = await (supabase
           .from('daily_summaries') as any)
           .insert([{ date, user_id: user.id }])
@@ -403,11 +405,11 @@ export async function POST(request: NextRequest) {
           const date = `${year}-${String(month).padStart(2, '0')}-${String(actualDay).padStart(2, '0')}`
           
           if (assignment.highlights.length > 0) {
-            // Get or create summary for this day
+            // Get or create summary for this day (use existing only if we didn't delete it)
             let summaryId: string | null = null
             const existingSummary = typedSummaries.find((s) => s.date === date)
             
-            if (existingSummary) {
+            if (existingSummary && !deletedSummaryIds.has(existingSummary.id)) {
               summaryId = existingSummary.id
             } else {
               const { data: summaryData, error: summaryError } = await (supabase

@@ -275,7 +275,7 @@ export async function GET(request: NextRequest) {
           return shuffled
         }
 
-        // Assign highlights to days
+        // Assign highlights to the whole next month (all days 1..daysInMonth, past and future)
         const seed = year * 100 + month
         const shuffledHighlights = seededShuffle(highlightsWithScore, seed)
         const sortedHighlights = [...shuffledHighlights].sort((a, b) => b.score - a.score)

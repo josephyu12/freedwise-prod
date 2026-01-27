@@ -3,8 +3,10 @@ import { createClient } from '@/lib/supabase/server'
 
 /**
  * POST /api/daily/redistribute
- * Redistributes highlights for the current month when new highlights are added
- * This should be called when a highlight is added (unless it's the last day of the month)
+ * Redistributes highlights for the current month when new highlights are added.
+ * Only affects future days: strictly after today (tomorrow through end of month).
+ * Today is never changed. Future days that have already been reviewed (all highlights
+ * rated) are also left unchanged. Call when a highlight is added (unless last day of month).
  */
 export async function POST(request: NextRequest) {
   try {
@@ -307,7 +309,7 @@ export async function POST(request: NextRequest) {
       const sortedHighlights = [...shuffledHighlights].sort((a, b) => b.score - a.score)
       const totalScore = highlightsToRedistribute.reduce((sum, h) => sum + h.score, 0)
       
-      // Always assign to remaining days in current month (from today onwards)
+      // Assign only to future days (tomorrow through end of month; today is never changed)
       const targetScorePerDay = totalScore / remainingDaysInMonth
 
       // Initialize days for remaining days (from tomorrow to end of month, excluding completed days)
