@@ -1219,9 +1219,11 @@ export default function HighlightsPage() {
                         {(highlight as any).assigned_date && (
                           <span className="text-gray-500 dark:text-gray-400">
                             Review on {(() => {
-                              const date = new Date((highlight as any).assigned_date)
-                              const month = date.getMonth() + 1
-                              const day = date.getDate()
+                              // assigned_date is "YYYY-MM-DD" from DB; parse as local date to avoid UTC-off-by-one
+                              const raw = (highlight as any).assigned_date
+                              const [y, m, d] = String(raw).split('T')[0].split('-').map(Number)
+                              const month = m
+                              const day = d
                               return `${month}/${day}`
                             })()}
                             {' • '}
