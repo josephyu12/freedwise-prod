@@ -990,14 +990,19 @@ export default function DailyPage() {
 
           {summary ? (
             <div>
-              <h2 className="text-2xl font-semibold text-gray-900 dark:text-white mb-4">
-                {(() => {
-                  // Parse date string (YYYY-MM-DD) as local date to avoid timezone offset
-                  const [year, month, day] = summary.date.split('-').map(Number)
-                  const localDate = new Date(year, month - 1, day)
-                  return format(localDate, 'EEEE, MMMM d, yyyy')
-                })()}
-              </h2>
+              <div className="mb-4">
+                <h2 className="text-2xl font-semibold text-gray-900 dark:text-white">
+                  {(() => {
+                    // Parse date string (YYYY-MM-DD) as local date to avoid timezone offset
+                    const [year, month, day] = summary.date.split('-').map(Number)
+                    const localDate = new Date(year, month - 1, day)
+                    return format(localDate, 'EEEE, MMMM d, yyyy')
+                  })()}
+                </h2>
+                <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
+                  {summary.highlights.length} {summary.highlights.length === 1 ? 'highlight' : 'highlights'}
+                </p>
+              </div>
               {summary.highlights.length === 0 ? (
                 <div className="bg-white dark:bg-gray-800 p-8 rounded-lg shadow-lg text-center text-gray-500 dark:text-gray-400">
                   No highlights to resurface for this date.
