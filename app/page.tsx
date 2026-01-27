@@ -184,12 +184,16 @@ export default function Home() {
         }
       })()
 
-      // Redistribute daily assignments in background (non-blocking)
-      fetch('/api/daily/redistribute', {
-        method: 'POST',
-      }).catch((error) => {
+      // Redistribute: place only this new highlight on a remaining day
+      try {
+        await fetch('/api/daily/redistribute', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ highlightIds: [highlightData.id] }),
+        })
+      } catch (error) {
         console.warn('Failed to redistribute daily assignments:', error)
-      })
+      }
 
       setSaveSuccess(true)
       setTimeout(() => setSaveSuccess(false), 2000)

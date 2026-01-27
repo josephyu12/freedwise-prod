@@ -3,18 +3,16 @@ import { createClient } from '@/lib/supabase/server'
 
 /**
  * POST /api/daily/redistribute
- * Assigns new highlights to remaining days. Existing assignments are never removed or moved.
- * Only affects future days: strictly after today (tomorrow through end of month).
- * Today is never changed.
+ * Assigns specific new highlights to remaining days. Existing assignments are never removed or moved.
+ * Only affects future days: strictly after today (tomorrow through end of month). Today is never changed.
  *
- * - Body { highlightIds: string[] } (optional): when provided (e.g. from add-highlight flow),
- *   only those highlights are placed. Otherwise all highlights not yet assigned this month are placed.
- * - Partially-done days: can receive new highlights.
- * - Fully-done days: are left unchanged.
+ * - Body { highlightIds: string[] } (required for placement): only when provided (e.g. from add-highlight
+ *   flow) are any highlights placed. When omitted or empty (e.g. after delete), no highlights are placed.
+ * - Partially-done days: can receive new highlights. Fully-done days: left unchanged.
  * - If all remaining days are fully done, new highlight(s) go to the last day only.
  *
- * Call when a highlight is added (unless last day of month). On delete, DB CASCADE
- * removes the highlight from daily_summary_highlights; no redistribution needed.
+ * Call with highlightIds when a highlight is added. After delete, call is a no-op (CASCADE already
+ * removed the highlight from daily_summary_highlights).
  */
 export async function POST(request: NextRequest) {
   try {
@@ -179,6 +177,9 @@ export async function POST(request: NextRequest) {
           const requested = (requestedData as Array<{ id: string; text: string; html_content: string | null }>)
             .filter((h) => !reviewedHighlightIds.has(h.id) && !reviewedHighlightIdsFromRatings.has(h.id))
           allHighlights = [...allHighlights, ...requested]
+          // Dedupe by id so we never place the same highlight twice
+          const byId = new Map(allHighlights.map((h) => [h.id, h]))
+          allHighlights = Array.from(byId.values())
         }
       }
     }
@@ -248,19 +249,27 @@ export async function POST(request: NextRequest) {
     if (existingSummaries && existingSummaries.length > 0) {
       const summaryIds = typedSummaries.map((s) => s.id)
       
-      // Get all assignments with ratings (reviewed highlights)
-      const { data: existingAssignments, error: assignmentsError } = await supabase
-        .from('daily_summary_highlights')
-        .select('id, highlight_id, daily_summary_id, rating')
-        .in('daily_summary_id', summaryIds)
-
-      if (assignmentsError) throw assignmentsError
+      // Get ALL assignments for this month (paginate to avoid Supabase 1000-row default limit)
+      let existingAssignments: Array<{ id: string; highlight_id: string; daily_summary_id: string; rating: number | null }> = []
+      let assignFrom = 0
+      while (true) {
+        const { data: assignPage, error: assignmentsError } = await supabase
+          .from('daily_summary_highlights')
+          .select('id, highlight_id, daily_summary_id, rating')
+          .in('daily_summary_id', summaryIds)
+          .range(assignFrom, assignFrom + PAGE - 1)
+        if (assignmentsError) throw assignmentsError
+        const page = (assignPage || []) as Array<{ id: string; highlight_id: string; daily_summary_id: string; rating: number | null }>
+        existingAssignments = existingAssignments.concat(page)
+        if (page.length < PAGE) break
+        assignFrom += PAGE
+      }
 
       // Track which days are completed (all highlights have ratings)
       // We'll preserve assignments for today and all completed days.
       // We only place highlights that are not yet assigned this month ("new").
       
-      if (existingAssignments) {
+      if (existingAssignments.length > 0) {
         const typedAssignments = existingAssignments as Array<{
           id: string
           highlight_id: string
@@ -332,14 +341,17 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // When the client sends highlightIds (e.g. after adding one), place only those.
-    // Otherwise place all highlights not yet assigned this month ("new").
+    // Only place highlights when the client explicitly sends highlightIds (e.g. after adding).
+    // When called with no body (e.g. after delete, or from home/import without body), place nothing.
     const requestedSet = requestedHighlightIds.length > 0 ? new Set(requestedHighlightIds) : null
-    const highlightsToRedistribute = requestedSet
+    let highlightsToRedistribute = requestedSet
       ? highlightsWithScore.filter(
           (h) => requestedSet.has(h.id) && !assignedThisMonthIds.has(h.id)
         )
-      : highlightsWithScore.filter((h) => !assignedThisMonthIds.has(h.id))
+      : []
+    // Dedupe by id so we never place the same highlight on multiple days
+    const redistributeById = new Map(highlightsToRedistribute.map((h) => [h.id, h]))
+    highlightsToRedistribute = Array.from(redistributeById.values())
 
     // Add only "new" highlights to remaining days; leave all existing assignments as-is.
     const createdAssignments: any[] = []
