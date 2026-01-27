@@ -3,19 +3,16 @@ import { createClient } from '@/lib/supabase/server'
 
 /**
  * POST /api/daily/redistribute
- * When a highlight is added: assigns only that new highlight (and any other unassigned
- * ones this month) to remaining days. Existing assignments are never removed or moved.
+ * Assigns new highlights to remaining days. Existing assignments are never removed or moved.
  * Only affects future days: strictly after today (tomorrow through end of month).
  * Today is never changed.
  *
- * - Only highlights that are not yet assigned to any day this month are placed.
- * - Partially-done days (some highlights rated): can receive new highlights.
- * - Fully-done days (all highlights rated): are left unchanged; new highlights are never
- *   added to them.
- * - If all remaining days are fully done, the new highlight(s) are assigned to the last
- *   day of the month only; that day becomes not-done.
+ * - Body { highlightIds: string[] } (optional): when provided (e.g. from add-highlight flow),
+ *   only those highlights are placed. Otherwise all highlights not yet assigned this month are placed.
+ * - Partially-done days: can receive new highlights.
+ * - Fully-done days: are left unchanged.
+ * - If all remaining days are fully done, new highlight(s) go to the last day only.
  *
- * Also assigns new highlights to future months that have already been portioned out.
  * Call when a highlight is added (unless last day of month). On delete, DB CASCADE
  * removes the highlight from daily_summary_highlights; no redistribution needed.
  */
@@ -30,6 +27,18 @@ export async function POST(request: NextRequest) {
         { error: 'Unauthorized' },
         { status: 401 }
       )
+    }
+
+    // Optional: client can send { highlightIds: string[] } when adding a highlight so we
+    // ensure those IDs are placed even if they weren't in the initial bulk fetch (e.g. timing).
+    let requestedHighlightIds: string[] = []
+    try {
+      const body = await request.json().catch(() => ({}))
+      if (Array.isArray((body as { highlightIds?: unknown }).highlightIds)) {
+        requestedHighlightIds = (body as { highlightIds: string[] }).highlightIds
+      }
+    } catch {
+      // ignore
     }
 
     const now = new Date()
@@ -149,11 +158,30 @@ export async function POST(request: NextRequest) {
 
     // Filter out highlights that have already been reviewed this month
     // (either in highlight_months_reviewed or have a rating in daily_summary_highlights)
-    const allHighlights = ((allHighlightsData || []) as Array<{
+    let allHighlights = ((allHighlightsData || []) as Array<{
       id: string
       text: string
       html_content: string | null
     }>).filter((h) => !reviewedHighlightIds.has(h.id) && !reviewedHighlightIdsFromRatings.has(h.id))
+
+    // If the client sent specific highlightIds (e.g. just added) and we don't see them in the bulk result, fetch those
+    if (requestedHighlightIds.length > 0) {
+      const inAll = new Set(allHighlights.map((h) => h.id))
+      const missing = requestedHighlightIds.filter((id) => !inAll.has(id))
+      if (missing.length > 0) {
+        const { data: requestedData, error: reqErr } = await supabase
+          .from('highlights')
+          .select('id, text, html_content')
+          .eq('user_id', user.id)
+          .eq('archived', false)
+          .in('id', missing)
+        if (!reqErr && requestedData && requestedData.length > 0) {
+          const requested = (requestedData as Array<{ id: string; text: string; html_content: string | null }>)
+            .filter((h) => !reviewedHighlightIds.has(h.id) && !reviewedHighlightIdsFromRatings.has(h.id))
+          allHighlights = [...allHighlights, ...requested]
+        }
+      }
+    }
 
     if (allHighlights.length === 0) {
       return NextResponse.json({
@@ -304,11 +332,14 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Only place highlights that are not yet assigned to any day this month ("new").
-    // Existing assignments are left as-is.
-    const highlightsToRedistribute = highlightsWithScore.filter(
-      (h) => !assignedThisMonthIds.has(h.id)
-    )
+    // When the client sends highlightIds (e.g. after adding one), place only those.
+    // Otherwise place all highlights not yet assigned this month ("new").
+    const requestedSet = requestedHighlightIds.length > 0 ? new Set(requestedHighlightIds) : null
+    const highlightsToRedistribute = requestedSet
+      ? highlightsWithScore.filter(
+          (h) => requestedSet.has(h.id) && !assignedThisMonthIds.has(h.id)
+        )
+      : highlightsWithScore.filter((h) => !assignedThisMonthIds.has(h.id))
 
     // Add only "new" highlights to remaining days; leave all existing assignments as-is.
     const createdAssignments: any[] = []

@@ -453,19 +453,22 @@ export default function HighlightsPage() {
         console.error('Error adding to sync queue:', err)
       })
 
-      // Redistribute daily assignments and then refresh highlights
-      fetch('/api/daily/redistribute', {
-        method: 'POST',
-      })
-        .then(() => {
-          // Refresh highlights after redistribution completes to show assigned date
-          loadHighlights()
+      // Redistribute daily assignments (await so the new highlight is placed before we show success)
+      try {
+        const redistributeRes = await fetch('/api/daily/redistribute', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ highlightIds: [data.id] }),
         })
-        .catch((error) => {
-          console.warn('Failed to redistribute daily assignments:', error)
-          // Still refresh even if redistribution fails
-          loadHighlights()
-        })
+        if (!redistributeRes.ok) {
+          const err = await redistributeRes.json().catch(() => ({}))
+          console.warn('Redistribute failed:', err)
+        }
+      } catch (error) {
+        console.warn('Failed to redistribute daily assignments:', error)
+      }
+      // Refresh highlights after redistribution to show assigned date
+      loadHighlights()
 
       setSaveSuccess(true)
       setTimeout(() => setSaveSuccess(false), 2000)
