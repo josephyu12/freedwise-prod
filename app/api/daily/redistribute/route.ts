@@ -5,10 +5,17 @@ import { createClient } from '@/lib/supabase/server'
  * POST /api/daily/redistribute
  * Redistributes highlights for the current month when highlights are added or deleted.
  * Only affects future days: strictly after today (tomorrow through end of month).
- * Today is never changed. Future days that have already been reviewed (all highlights
- * rated) are also left unchanged. Also assigns to future months that have already been
- * portioned out (have at least one daily summary); assigns across all days of each
- * such month. Call when a highlight is added or deleted (unless last day of month).
+ * Today is never changed.
+ *
+ * - Partially-done days (some highlights rated): get cleared and receive new highlights
+ *   in the redistribution.
+ * - Fully-done days (all highlights rated): are left unchanged; new highlights are never
+ *   added to them.
+ * - If all remaining days are fully done, the new highlight(s) are assigned to the last
+ *   day of the month only; that day becomes not-done.
+ *
+ * Also assigns to future months that have already been portioned out (have at least one
+ * daily summary). Call when a highlight is added or deleted (unless last day of month).
  *
  * Assignment uses only highlights that exist in the highlights table; deleted
  * highlights are excluded by definition and never appear in next month's daily reviews.
@@ -340,6 +347,34 @@ export async function POST(request: NextRequest) {
 
     // Only redistribute if there are highlights to redistribute
     if (highlightsToRedistribute.length > 0) {
+      const lastDayDate = `${year}-${String(month).padStart(2, '0')}-${String(daysInMonth).padStart(2, '0')}`
+      const allRemainingDateStrs: string[] = []
+      for (let d = startDay; d <= daysInMonth; d++) {
+        allRemainingDateStrs.push(`${year}-${String(month).padStart(2, '0')}-${String(d).padStart(2, '0')}`)
+      }
+      const allRemainingCompleted = allRemainingDateStrs.length > 0 && allRemainingDateStrs.every((d) => completedDays.has(d))
+
+      // If all remaining days (tomorrow through end of month) are fully done reviewing,
+      // assign the new highlight(s) to the last day only; that day becomes not-done.
+      if (allRemainingCompleted) {
+        const lastSummary = typedSummaries?.find((s) => s.date === lastDayDate)
+        if (lastSummary) {
+          const summaryHighlights = highlightsToRedistribute.map((h) => ({
+            daily_summary_id: lastSummary.id,
+            highlight_id: h.id,
+          }))
+          const { error: linkError } = await (supabase
+            .from('daily_summary_highlights') as any)
+            .insert(summaryHighlights)
+          if (linkError) throw linkError
+          createdAssignments.push({
+            day: daysInMonth,
+            date: lastDayDate,
+            highlightCount: highlightsToRedistribute.length,
+            totalScore: highlightsToRedistribute.reduce((sum, h) => sum + h.score, 0),
+          })
+        }
+      } else {
       const seed = year * 373 + month * 31
       const shuffledHighlights = seededShuffle(highlightsToRedistribute, seed)
       const sortedHighlights = [...shuffledHighlights].sort((a, b) => b.score - a.score)
@@ -384,14 +419,11 @@ export async function POST(request: NextRequest) {
           continue
         }
 
-        // Check if summary already exists (might have preserved assignments)
+        // We deleted summaries for all remaining non-completed days earlier, so we must
+        // always create a new summary for each date we're redistributing to (never reuse
+        // stale IDs from typedSummaries, which would point to deleted rows).
         let summaryId: string | null = null
-        const existingSummary = typedSummaries?.find((s) => s.date === date)
-        
-        if (existingSummary) {
-          summaryId = existingSummary.id
-        } else if (assignment.highlights.length > 0) {
-          // Create new summary only if there are highlights to assign
+        if (assignment.highlights.length > 0) {
           const { data: summaryData, error: summaryError } = await (supabase
             .from('daily_summaries') as any)
             .insert([{ date, user_id: user.id }])
@@ -441,6 +473,7 @@ export async function POST(request: NextRequest) {
             })
           }
         }
+      }
       }
     }
 
