@@ -531,13 +531,13 @@ export default function DailyPage() {
     }))
   }, [showCompletionDialog])
 
-  // Show completion dialog when all highlights are rated
+  // Show completion dialog only when the current day is completed (summary matches selected date)
   useEffect(() => {
-    if (allHighlightsRated && !hasShownCompletionDialog) {
+    if (allHighlightsRated && !hasShownCompletionDialog && summary?.date === date) {
       setShowCompletionDialog(true)
       setHasShownCompletionDialog(true)
     }
-  }, [allHighlightsRated, hasShownCompletionDialog])
+  }, [allHighlightsRated, hasShownCompletionDialog, summary?.date, date])
 
   useEffect(() => {
     loadMonthReviewStatus(displayMonth)
