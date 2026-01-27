@@ -74,10 +74,9 @@ export async function POST(request: NextRequest) {
       status: 'pending',
       retry_count: 0,
       max_retries: 5,
-    }
-    if (operationType === 'update' && (originalText || originalHtmlContent)) {
-      (queueItem as any).original_text = originalText ?? null
-      (queueItem as any).original_html_content = originalHtmlContent ?? null
+      ...(operationType === 'update' && (originalText || originalHtmlContent)
+        ? { original_text: originalText ?? null, original_html_content: originalHtmlContent ?? null }
+        : {}),
     }
 
     const { error: insertError } = await (supabase
