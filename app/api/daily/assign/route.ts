@@ -180,82 +180,285 @@ export async function POST(request: NextRequest) {
     // Assign highlights to days (pass year and month for seeded shuffle)
     const assignments = assignHighlightsToDays(highlightsWithScore, daysInMonth, year, month)
 
-    // Delete existing assignments for this month (if any)
-    // We'll delete daily_summaries and daily_summary_highlights for this month
+    // Get existing assignments and preserve those for completed days
     const startDate = `${year}-${String(month).padStart(2, '0')}-01`
     const endDate = `${year}-${String(month).padStart(2, '0')}-${String(daysInMonth).padStart(2, '0')}`
 
     const { data: existingSummaries, error: existingError } = await supabase
       .from('daily_summaries')
-      .select('id')
+      .select('id, date')
       .eq('user_id', user.id)
       .gte('date', startDate)
       .lte('date', endDate)
 
     if (existingError) throw existingError
 
+    // Track which days are completed (all highlights have ratings)
+    const completedDays = new Set<string>() // Set of dates (YYYY-MM-DD) that are completed
+    const preservedAssignments = new Map<string, { date: string; summaryId: string }>() // highlight_id -> { date, summaryId }
+    
+    const typedSummaries = (existingSummaries || []) as Array<{
+      id: string
+      date: string
+    }>
+    
     if (existingSummaries && existingSummaries.length > 0) {
-      const summaryIds = existingSummaries.map((s: any) => s.id)
+      const summaryIds = typedSummaries.map((s) => s.id)
       
-      // Delete daily_summary_highlights first (foreign key constraint)
-      await supabase
+      // Get all existing assignments with their ratings
+      const { data: existingAssignments, error: assignmentsError } = await supabase
         .from('daily_summary_highlights')
-        .delete()
+        .select('id, highlight_id, daily_summary_id, rating')
         .in('daily_summary_id', summaryIds)
 
-      // Delete daily_summaries
-      await supabase
-        .from('daily_summaries')
-        .delete()
-        .in('id', summaryIds)
+      if (assignmentsError) throw assignmentsError
+
+      // Group assignments by summary/date to check completion status
+      const assignmentsByDate = new Map<string, Array<{
+        highlight_id: string
+        rating: number | null
+      }>>()
+
+      if (existingAssignments) {
+        const typedAssignments = existingAssignments as Array<{
+          id: string
+          highlight_id: string
+          daily_summary_id: string
+          rating: number | null
+        }>
+        
+        for (const assignment of typedAssignments) {
+          const summary = typedSummaries.find((s) => s.id === assignment.daily_summary_id)
+          if (summary) {
+            if (!assignmentsByDate.has(summary.date)) {
+              assignmentsByDate.set(summary.date, [])
+            }
+            assignmentsByDate.get(summary.date)!.push({
+              highlight_id: assignment.highlight_id,
+              rating: assignment.rating,
+            })
+          }
+        }
+      }
+
+      // Check which days are completed (all highlights have ratings)
+      for (const [date, dateAssignments] of assignmentsByDate.entries()) {
+        const totalHighlights = dateAssignments.length
+        const ratedHighlights = dateAssignments.filter((a) => a.rating !== null).length
+        
+        if (totalHighlights > 0 && ratedHighlights === totalHighlights) {
+          // This day is completed - preserve all its assignments
+          completedDays.add(date)
+          const summary = typedSummaries.find((s) => s.date === date)
+          if (summary) {
+            for (const assignment of dateAssignments) {
+              preservedAssignments.set(assignment.highlight_id, {
+                date: summary.date,
+                summaryId: summary.id,
+              })
+            }
+          }
+        }
+      }
+
+      // Delete assignments only for non-completed days
+      const summariesToModify = typedSummaries.filter((s) => !completedDays.has(s.date))
+      const summaryIdsToModify = summariesToModify.map((s) => s.id)
+      
+      if (summaryIdsToModify.length > 0) {
+        // Delete daily_summary_highlights for non-completed days
+        await supabase
+          .from('daily_summary_highlights')
+          .delete()
+          .in('daily_summary_id', summaryIdsToModify)
+
+        // Delete daily_summaries for non-completed days that no longer have assignments
+        // (We'll recreate them below if needed)
+        await supabase
+          .from('daily_summaries')
+          .delete()
+          .in('id', summaryIdsToModify)
+      }
     }
+
+    // Filter out highlights that are already preserved in completed days
+    const highlightsToAssign = highlightsWithScore.filter(
+      (h) => !preservedAssignments.has(h.id)
+    )
+
+    // Recalculate assignments only for non-preserved highlights
+    const newAssignments = highlightsToAssign.length > 0
+      ? assignHighlightsToDays(highlightsToAssign, daysInMonth, year, month)
+      : []
 
     // Create daily summaries and assignments
     const createdAssignments: any[] = []
 
-    for (const assignment of assignments) {
+    for (const assignment of newAssignments) {
       if (assignment.highlights.length === 0) continue
 
       const date = `${year}-${String(month).padStart(2, '0')}-${String(assignment.day).padStart(2, '0')}`
 
-      // Create daily summary
-      const { data: summaryData, error: summaryError } = await (supabase
-        .from('daily_summaries') as any)
-        .insert([{ date, user_id: user.id }])
-        .select()
-        .single()
+      // Skip if this day is already completed
+      if (completedDays.has(date)) continue
 
-      if (summaryError) throw summaryError
+      // Check if summary already exists (shouldn't happen after deletion, but be safe)
+      let summaryId: string | null = null
+      const existingSummary = typedSummaries.find((s) => s.date === date)
+      
+      if (existingSummary && !completedDays.has(date)) {
+        // Summary exists but day is not completed - should have been deleted, but handle it
+        summaryId = existingSummary.id
+      } else {
+        // Create new summary
+        const { data: summaryData, error: summaryError } = await (supabase
+          .from('daily_summaries') as any)
+          .insert([{ date, user_id: user.id }])
+          .select()
+          .single()
+
+        if (summaryError) throw summaryError
+        summaryId = summaryData.id
+      }
 
       // Link highlights to summary
-      const summaryHighlights = assignment.highlights.map((h) => ({
-        daily_summary_id: summaryData.id,
-        highlight_id: h.id,
-      }))
+      if (summaryId) {
+        const summaryHighlights = assignment.highlights.map((h) => ({
+          daily_summary_id: summaryId,
+          highlight_id: h.id,
+        }))
 
-      const { error: linkError } = await (supabase
-        .from('daily_summary_highlights') as any)
-        .insert(summaryHighlights)
+        const { error: linkError } = await (supabase
+          .from('daily_summary_highlights') as any)
+          .insert(summaryHighlights)
 
-      if (linkError) throw linkError
+        if (linkError) throw linkError
 
-      createdAssignments.push({
-        day: assignment.day,
-        date,
-        highlightCount: assignment.highlights.length,
-        totalScore: assignment.totalScore,
-      })
+        createdAssignments.push({
+          day: assignment.day,
+          date,
+          highlightCount: assignment.highlights.length,
+          totalScore: assignment.totalScore,
+        })
+      }
+    }
+
+    // Verify that every highlight is assigned to at least one day
+    // Get all highlights that should be assigned (non-reviewed, non-archived)
+    const allHighlightIds = new Set(highlightsWithScore.map((h) => h.id))
+    const assignedHighlightIds = new Set<string>()
+    
+    // Add preserved assignments
+    for (const highlightId of preservedAssignments.keys()) {
+      if (allHighlightIds.has(highlightId)) {
+        assignedHighlightIds.add(highlightId)
+      }
+    }
+    
+    // Add newly created assignments
+    for (const assignment of newAssignments) {
+      for (const highlight of assignment.highlights) {
+        assignedHighlightIds.add(highlight.id)
+      }
+    }
+    
+    // Check for unassigned highlights
+    const unassignedHighlights = highlightsWithScore.filter(
+      (h) => !assignedHighlightIds.has(h.id)
+    )
+    
+    // If there are unassigned highlights, assign them to non-completed days
+    if (unassignedHighlights.length > 0) {
+      // Get all non-completed days
+      const availableDays: number[] = []
+      for (let day = 1; day <= daysInMonth; day++) {
+        const date = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+        if (!completedDays.has(date)) {
+          availableDays.push(day)
+        }
+      }
+      
+      if (availableDays.length > 0) {
+        // Assign unassigned highlights to available days using bin-packing
+        const unassignedWithScore = unassignedHighlights.map((h) => ({
+          id: h.id,
+          text: h.text,
+          html_content: h.html_content,
+          score: h.score,
+        }))
+        
+        const unassignedAssignments = assignHighlightsToDays(
+          unassignedWithScore,
+          availableDays.length,
+          year,
+          month
+        )
+        
+        // Map the assignments to actual day numbers
+        for (let i = 0; i < unassignedAssignments.length; i++) {
+          const assignment = unassignedAssignments[i]
+          const actualDay = availableDays[i]
+          const date = `${year}-${String(month).padStart(2, '0')}-${String(actualDay).padStart(2, '0')}`
+          
+          if (assignment.highlights.length > 0) {
+            // Get or create summary for this day
+            let summaryId: string | null = null
+            const existingSummary = typedSummaries.find((s) => s.date === date)
+            
+            if (existingSummary) {
+              summaryId = existingSummary.id
+            } else {
+              const { data: summaryData, error: summaryError } = await (supabase
+                .from('daily_summaries') as any)
+                .insert([{ date, user_id: user.id }])
+                .select()
+                .single()
+              
+              if (summaryError) throw summaryError
+              summaryId = summaryData.id
+            }
+            
+            if (summaryId) {
+              const summaryHighlights = assignment.highlights.map((h) => ({
+                daily_summary_id: summaryId,
+                highlight_id: h.id,
+              }))
+              
+              const { error: linkError } = await (supabase
+                .from('daily_summary_highlights') as any)
+                .insert(summaryHighlights)
+              
+              if (linkError) throw linkError
+              
+              createdAssignments.push({
+                day: actualDay,
+                date,
+                highlightCount: assignment.highlights.length,
+                totalScore: assignment.totalScore,
+              })
+            }
+          }
+        }
+      }
     }
 
     // NOTE: We do NOT mark highlights as reviewed here.
     // Highlights should only be marked as reviewed when they receive a rating
     // in the daily review page (handleRatingChange in app/daily/page.tsx)
 
+    const preservedCount = preservedAssignments.size
+    const completedDaysCount = completedDays.size
+    const totalAssigned = assignedHighlightIds.size + unassignedHighlights.length
+
     return NextResponse.json({
-      message: `Assigned ${allHighlights.length} highlights across ${daysInMonth} days`,
+      message: `Assigned ${highlightsToAssign.length} highlights across ${daysInMonth} days${completedDaysCount > 0 ? ` (preserved ${completedDaysCount} completed days)` : ''}${unassignedHighlights.length > 0 ? ` (assigned ${unassignedHighlights.length} previously unassigned highlights)` : ''}`,
       assignments: createdAssignments,
-      totalHighlights: allHighlights.length,
+      totalHighlights: highlightsToAssign.length,
       daysInMonth,
+      preservedCount,
+      completedDaysCount,
+      unassignedCount: unassignedHighlights.length,
+      totalAssigned,
     })
   } catch (error: any) {
     console.error('Error assigning highlights to days:', error)

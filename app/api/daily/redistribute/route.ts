@@ -33,9 +33,17 @@ export async function POST(request: NextRequest) {
       })
     }
 
-    // Always use remaining days in current month (from today to end of month)
-    const remainingDaysInMonth = daysInMonth - dayOfMonth + 1 // Days from today to end of month (inclusive)
-    const startDay = dayOfMonth // Start from today
+    // Use remaining days in current month (from tomorrow to end of month, excluding today)
+    const remainingDaysInMonth = daysInMonth - dayOfMonth // Days from tomorrow to end of month (exclusive of today)
+    const startDay = dayOfMonth + 1 // Start from tomorrow (exclude today)
+    
+    // If there are no remaining days (shouldn't happen due to check above, but safety check)
+    if (remainingDaysInMonth <= 0) {
+      return NextResponse.json({
+        message: 'No remaining days in month - skipping redistribution',
+        skipped: true,
+      })
+    }
 
     // Check if we should also assign to next month (if on or after 24th)
     const shouldAssignToNextMonth = dayOfMonth >= 24
@@ -190,6 +198,7 @@ export async function POST(request: NextRequest) {
 
     // Get all existing assignments with their ratings to identify reviewed highlights
     const preservedAssignments = new Map<string, { date: string; summaryId: string }>() // highlight_id -> { date, summaryId }
+    const completedDays = new Set<string>() // Set of dates (YYYY-MM-DD) that are completed
     
     // Type the summaries outside the if block so it's accessible later
     const typedSummaries = (existingSummaries || []) as Array<{
@@ -208,8 +217,12 @@ export async function POST(request: NextRequest) {
 
       if (assignmentsError) throw assignmentsError
 
-      // Preserve assignments for highlights that have been reviewed (have a rating)
-      let nonReviewedAssignmentIds: string[] = []
+      // Track which days are completed (all highlights have ratings)
+      // We'll preserve assignments for:
+      // 1. Today (regardless of completion status)
+      // 2. All completed days (including future completed days)
+      // All other assignments in remaining days will be removed and redistributed
+      
       if (existingAssignments) {
         const typedAssignments = existingAssignments as Array<{
           id: string
@@ -217,66 +230,109 @@ export async function POST(request: NextRequest) {
           daily_summary_id: string
           rating: number | null
         }>
+        
+        // Group assignments by date to check completion status
+        const assignmentsByDate = new Map<string, Array<{
+          highlight_id: string
+          rating: number | null
+        }>>()
+        
+        const todayDate = `${year}-${String(month).padStart(2, '0')}-${String(dayOfMonth).padStart(2, '0')}`
+        
+        // First, group all assignments by date
         for (const assignment of typedAssignments) {
-          if (assignment.rating !== null) {
-            // This highlight has been reviewed, preserve its assignment
-            const summary = typedSummaries.find((s) => s.id === assignment.daily_summary_id)
+          const summary = typedSummaries.find((s) => s.id === assignment.daily_summary_id)
+          if (summary) {
+            if (!assignmentsByDate.has(summary.date)) {
+              assignmentsByDate.set(summary.date, [])
+            }
+            assignmentsByDate.get(summary.date)!.push({
+              highlight_id: assignment.highlight_id,
+              rating: assignment.rating,
+            })
+          }
+        }
+        
+        // Check which days are completed (all highlights have ratings)
+        // This includes today if it's completed, and any future days that are completed
+        for (const [date, dateAssignments] of assignmentsByDate.entries()) {
+          const totalHighlights = dateAssignments.length
+          const ratedHighlights = dateAssignments.filter((a) => a.rating !== null).length
+          
+          if (totalHighlights > 0 && ratedHighlights === totalHighlights) {
+            // This day is completed - preserve its assignments (includes today if completed, and future days)
+            completedDays.add(date)
+            const summary = typedSummaries.find((s) => s.date === date)
             if (summary) {
-              preservedAssignments.set(assignment.highlight_id, {
-                date: summary.date,
-                summaryId: summary.id,
-              })
+              for (const assignment of dateAssignments) {
+                preservedAssignments.set(assignment.highlight_id, {
+                  date: summary.date,
+                  summaryId: summary.id,
+                })
+              }
             }
           }
         }
-
-        // Remove assignments for non-reviewed highlights only
-        // We'll delete all daily_summary_highlights that don't have ratings
-        nonReviewedAssignmentIds = typedAssignments
-          .filter((a) => a.rating === null)
-          .map((a) => a.id)
-      }
-
-      if (nonReviewedAssignmentIds.length > 0) {
-        await supabase
-          .from('daily_summary_highlights')
-          .delete()
-          .in('id', nonReviewedAssignmentIds)
-      }
-
-      // Delete daily_summaries that no longer have any assignments
-      // But first, check which summaries still have assignments
-      const { data: remainingAssignments } = await supabase
-        .from('daily_summary_highlights')
-        .select('daily_summary_id')
-        .in('daily_summary_id', summaryIds)
-
-      const typedRemainingAssignments = (remainingAssignments || []) as Array<{
-        daily_summary_id: string
-      }>
-      const summariesWithAssignments = new Set(
-        typedRemainingAssignments.map((a) => a.daily_summary_id)
-      )
-
-      const summariesToDelete = typedSummaries
-        .filter((s) => !summariesWithAssignments.has(s.id))
-        .map((s) => s.id)
-
-      if (summariesToDelete.length > 0) {
-        await supabase
-          .from('daily_summaries')
-          .delete()
-          .in('id', summariesToDelete)
+        
+        // Also preserve today's assignments even if today is not completed
+        if (assignmentsByDate.has(todayDate)) {
+          const todayAssignments = assignmentsByDate.get(todayDate)!
+          const todaySummary = typedSummaries.find((s) => s.date === todayDate)
+          if (todaySummary) {
+            for (const assignment of todayAssignments) {
+              // Only add if not already preserved (in case today is completed)
+              if (!preservedAssignments.has(assignment.highlight_id)) {
+                preservedAssignments.set(assignment.highlight_id, {
+                  date: todaySummary.date,
+                  summaryId: todaySummary.id,
+                })
+              }
+            }
+          }
+        }
+        
+        // Delete assignments from remaining days (tomorrow onwards) that are not completed
+        // Get summaries for remaining days (excluding today and completed days)
+        const remainingDaySummaries = typedSummaries.filter((s) => {
+          const summaryDate = new Date(s.date)
+          const summaryDay = summaryDate.getDate()
+          // Exclude today and completed days from deletion
+          return summaryDay >= startDay && summaryDay <= daysInMonth && !completedDays.has(s.date) && s.date !== todayDate
+        })
+        
+        if (remainingDaySummaries.length > 0) {
+          const remainingSummaryIds = remainingDaySummaries.map((s) => s.id)
+          
+          // Delete all assignments from remaining days (they'll be redistributed)
+          await supabase
+            .from('daily_summary_highlights')
+            .delete()
+            .in('daily_summary_id', remainingSummaryIds)
+          
+          // Delete summaries that no longer have assignments (they'll be recreated)
+          await supabase
+            .from('daily_summaries')
+            .delete()
+            .in('id', remainingSummaryIds)
+        }
       }
     }
 
-    // Filter out reviewed highlights from redistribution
+    // Redistribute ALL highlights (except reviewed ones and those preserved in completed days/today)
+    // Filter out highlights that are preserved (in completed days or today)
     const highlightsToRedistribute = highlightsWithScore.filter(
       (h) => !preservedAssignments.has(h.id)
     )
 
     // Create or update daily summaries and assignments for non-reviewed highlights
     const createdAssignments: any[] = []
+    
+    // Initialize days array outside the if block so it's accessible for validation
+    const days: Array<{
+      day: number
+      highlights: typeof highlightsToRedistribute
+      totalScore: number
+    }> = []
 
     // Only redistribute if there are highlights to redistribute
     if (highlightsToRedistribute.length > 0) {
@@ -289,33 +345,24 @@ export async function POST(request: NextRequest) {
       // Always assign to remaining days in current month (from today onwards)
       const targetScorePerDay = totalScore / remainingDaysInMonth
 
-      // Initialize days, but account for preserved assignments
-      // Only include remaining days (from today to end of month)
-      const days: Array<{
-        day: number
-        highlights: typeof highlightsToRedistribute
-        totalScore: number
-      }> = Array.from({ length: remainingDaysInMonth }, (_, i) => {
+      // Initialize days for remaining days (from tomorrow to end of month, excluding completed days)
+      for (let i = 0; i < remainingDaysInMonth; i++) {
         const day = startDay + i
+        if (day > daysInMonth) break // Safety check
+        
         const date = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
         
-        // Check if there are preserved assignments for this day
-        let preservedScore = 0
-        for (const [highlightId, assignment] of preservedAssignments.entries()) {
-          if (assignment.date === date) {
-            const highlight = highlightsWithScore.find((h) => h.id === highlightId)
-            if (highlight) {
-              preservedScore += highlight.score
-            }
-          }
+        // Skip completed days entirely
+        if (completedDays.has(date)) {
+          continue
         }
 
-        return {
+        days.push({
           day,
           highlights: [],
-          totalScore: preservedScore, // Start with preserved assignments' score
-        }
-      })
+          totalScore: 0, // Start fresh - we've already deleted assignments from these days
+        })
+      }
 
       // Assign non-reviewed highlights to current month (remaining days)
       for (const highlight of sortedHighlights) {
@@ -336,6 +383,11 @@ export async function POST(request: NextRequest) {
       for (const assignment of days) {
         const date = `${year}-${String(month).padStart(2, '0')}-${String(assignment.day).padStart(2, '0')}`
 
+        // Skip completed days (shouldn't be in days array, but double-check for safety)
+        if (completedDays.has(date)) {
+          continue
+        }
+
         // Check if summary already exists (might have preserved assignments)
         let summaryId: string | null = null
         const existingSummary = typedSummaries?.find((s) => s.date === date)
@@ -355,27 +407,52 @@ export async function POST(request: NextRequest) {
         }
 
         // Add assignments for non-reviewed highlights
+        // Filter out highlights that are already assigned to this summary (safety check)
         if (summaryId && assignment.highlights.length > 0) {
-          const summaryHighlights = assignment.highlights.map((h) => ({
-            daily_summary_id: summaryId,
-            highlight_id: h.id,
-          }))
+          // Check which highlights are already assigned to this summary
+          const { data: existingAssignmentsForSummary } = await supabase
+            .from('daily_summary_highlights')
+            .select('highlight_id')
+            .eq('daily_summary_id', summaryId)
+            .in('highlight_id', assignment.highlights.map((h) => h.id))
 
-          const { error: linkError } = await (supabase
-            .from('daily_summary_highlights') as any)
-            .insert(summaryHighlights)
+          const existingHighlightIds = new Set(
+            (existingAssignmentsForSummary || []).map((a: any) => a.highlight_id)
+          )
 
-          if (linkError) throw linkError
+          // Only insert highlights that aren't already assigned
+          const newHighlights = assignment.highlights.filter(
+            (h) => !existingHighlightIds.has(h.id)
+          )
 
-          createdAssignments.push({
-            day: assignment.day,
-            date,
-            highlightCount: assignment.highlights.length,
-            totalScore: assignment.totalScore,
-          })
+          if (newHighlights.length > 0) {
+            const summaryHighlights = newHighlights.map((h) => ({
+              daily_summary_id: summaryId,
+              highlight_id: h.id,
+            }))
+
+            const { error: linkError } = await (supabase
+              .from('daily_summary_highlights') as any)
+              .insert(summaryHighlights)
+
+            if (linkError) throw linkError
+
+            createdAssignments.push({
+              day: assignment.day,
+              date,
+              highlightCount: newHighlights.length,
+              totalScore: newHighlights.reduce((sum, h) => sum + h.score, 0),
+            })
+          }
         }
       }
     }
+
+    // NOTE: Redistribute assigns ALL highlights (except reviewed/preserved) evenly across
+    // remaining days (from tomorrow to end of month, excluding today and completed days)
+    // Preserves: today's assignments (always) and all completed days (including future ones)
+    // Full month coverage is ensured by the assign endpoint, which should be called
+    // at the start of each month or when needed
 
     // NOTE: We do NOT mark highlights as reviewed here.
     // Highlights should only be marked as reviewed when they receive a rating
@@ -548,13 +625,14 @@ export async function POST(request: NextRequest) {
     const redistributedCount = highlightsToRedistribute.length > 0 ? highlightsToRedistribute.length : 0
     return NextResponse.json({
       message: shouldAssignToNextMonth
-        ? `Redistributed ${redistributedCount} highlights across remaining ${remainingDaysInMonth} days of current month (from day ${dayOfMonth}) and next month`
-        : `Redistributed ${redistributedCount} highlights across remaining ${remainingDaysInMonth} days of current month (from day ${dayOfMonth})`,
+        ? `Redistributed ${redistributedCount} highlights across remaining ${remainingDaysInMonth} days of current month (from day ${startDay}, excluding today) and next month`
+        : `Redistributed ${redistributedCount} highlights across remaining ${remainingDaysInMonth} days of current month (from day ${startDay}, excluding today)`,
       assignments: createdAssignments || [],
       nextMonthAssignments: nextMonthAssignments || [],
       totalHighlights: redistributedCount,
       daysInMonth: remainingDaysInMonth,
       preservedCount: preservedAssignments.size,
+      completedDaysCount: completedDays.size,
       assignedToNextMonth: shouldAssignToNextMonth,
     })
   } catch (error: any) {
