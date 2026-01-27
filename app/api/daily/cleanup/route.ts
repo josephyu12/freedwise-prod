@@ -78,6 +78,7 @@ export async function POST(request: NextRequest) {
     // For an incomplete day, we'll still remove unrated ones that were added after completion
     // (This is a cleanup operation, so we'll remove unrated highlights)
     const idsToRemove = highlightsWithoutRatings.map((a: any) => a.id)
+    const highlightIdsToReassign = highlightsWithoutRatings.map((a: any) => a.highlight_id)
 
     if (idsToRemove.length === 0) {
       return NextResponse.json({
@@ -88,7 +89,7 @@ export async function POST(request: NextRequest) {
       })
     }
 
-    // Remove unrated highlights
+    // Remove unrated highlights from this day
     const { error: deleteError } = await supabase
       .from('daily_summary_highlights')
       .delete()
@@ -96,9 +97,175 @@ export async function POST(request: NextRequest) {
 
     if (deleteError) throw deleteError
 
+    // Reassign these highlights to remaining days in the month
+    let reassignedCount = 0
+    if (highlightIdsToReassign.length > 0) {
+      // Parse the date to get year and month
+      const dateObj = new Date(date)
+      const year = dateObj.getFullYear()
+      const month = dateObj.getMonth() + 1
+      const dayOfMonth = dateObj.getDate()
+      const daysInMonth = new Date(year, month, 0).getDate()
+      
+      // Get remaining days (from tomorrow to end of month, excluding today and completed days)
+      const remainingDays: number[] = []
+      const todayDate = `${year}-${String(month).padStart(2, '0')}-${String(dayOfMonth).padStart(2, '0')}`
+      
+      // Get all summaries for this month to find completed days
+      const startDate = `${year}-${String(month).padStart(2, '0')}-01`
+      const endDate = `${year}-${String(month).padStart(2, '0')}-${String(daysInMonth).padStart(2, '0')}`
+      
+      const { data: monthSummaries } = await supabase
+        .from('daily_summaries')
+        .select('id, date')
+        .eq('user_id', user.id)
+        .gte('date', startDate)
+        .lte('date', endDate)
+      
+      const completedDays = new Set<string>()
+      if (monthSummaries) {
+        const summaryIds = (monthSummaries as Array<{ id: string; date: string }>).map((s) => s.id)
+        const { data: monthAssignments } = await supabase
+          .from('daily_summary_highlights')
+          .select('daily_summary_id, rating')
+          .in('daily_summary_id', summaryIds)
+        
+        if (monthAssignments) {
+          const assignmentsByDate = new Map<string, Array<{ rating: number | null }>>()
+          for (const assignment of monthAssignments as Array<{ daily_summary_id: string; rating: number | null }>) {
+            const summary = (monthSummaries as Array<{ id: string; date: string }>).find((s) => s.id === assignment.daily_summary_id)
+            if (summary) {
+              if (!assignmentsByDate.has(summary.date)) {
+                assignmentsByDate.set(summary.date, [])
+              }
+              assignmentsByDate.get(summary.date)!.push({ rating: assignment.rating })
+            }
+          }
+          
+          // Find completed days
+          for (const [date, dateAssignments] of assignmentsByDate.entries()) {
+            const totalHighlights = dateAssignments.length
+            const ratedHighlights = dateAssignments.filter((a) => a.rating !== null).length
+            if (totalHighlights > 0 && ratedHighlights === totalHighlights) {
+              completedDays.add(date)
+            }
+          }
+        }
+      }
+      
+      // Build list of remaining days (from tomorrow to end of month, excluding completed days)
+      for (let day = dayOfMonth + 1; day <= daysInMonth; day++) {
+        const dayDate = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+        if (!completedDays.has(dayDate)) {
+          remainingDays.push(day)
+        }
+      }
+      
+      if (remainingDays.length > 0) {
+        // Get highlight data for reassignment
+        const { data: highlightsData, error: highlightsError } = await supabase
+          .from('highlights')
+          .select('id, text, html_content')
+          .in('id', highlightIdsToReassign)
+          .eq('user_id', user.id)
+          .eq('archived', false)
+        
+        if (highlightsError) throw highlightsError
+        
+        if (highlightsData && highlightsData.length > 0) {
+          // Calculate scores for bin-packing
+          const highlightsWithScore = highlightsData.map((h: any) => {
+            const content = h.html_content || h.text || ''
+            const plainText = content.replace(/<[^>]*>/g, '')
+            return {
+              id: h.id,
+              text: h.text,
+              html_content: h.html_content,
+              score: plainText.length,
+            }
+          })
+          
+          // Seeded shuffle function
+          const seededShuffle = <T,>(array: T[], seed: number): T[] => {
+            const shuffled = [...array]
+            let random = seed
+            const seededRandom = () => {
+              random = (random * 9301 + 49297) % 233280
+              return random / 233280
+            }
+            for (let i = shuffled.length - 1; i > 0; i--) {
+              const j = Math.floor(seededRandom() * (i + 1))
+              ;[shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]]
+            }
+            return shuffled
+          }
+          
+          // Assign using bin-packing
+          const seed = year * 100 + month
+          const shuffledHighlights = seededShuffle(highlightsWithScore, seed)
+          const sortedHighlights = [...shuffledHighlights].sort((a, b) => b.score - a.score)
+          
+          const days: Array<{ day: number; highlights: typeof highlightsWithScore; totalScore: number }> = 
+            remainingDays.map((day) => ({ day, highlights: [], totalScore: 0 }))
+          
+          for (const highlight of sortedHighlights) {
+            let minDayIndex = 0
+            let minScore = days[0].totalScore
+            for (let i = 1; i < days.length; i++) {
+              if (days[i].totalScore < minScore) {
+                minScore = days[i].totalScore
+                minDayIndex = i
+              }
+            }
+            days[minDayIndex].highlights.push(highlight)
+            days[minDayIndex].totalScore += highlight.score
+          }
+          
+          // Create assignments
+          for (const dayAssignment of days) {
+            if (dayAssignment.highlights.length === 0) continue
+            
+            const dayDate = `${year}-${String(month).padStart(2, '0')}-${String(dayAssignment.day).padStart(2, '0')}`
+            
+            // Get or create summary for this day
+            let summaryId: string | null = null
+            const existingSummary = (monthSummaries as Array<{ id: string; date: string }> | null)?.find((s) => s.date === dayDate)
+            
+            if (existingSummary) {
+              summaryId = existingSummary.id
+            } else {
+              const { data: newSummary, error: summaryError } = await (supabase
+                .from('daily_summaries') as any)
+                .insert([{ date: dayDate, user_id: user.id }])
+                .select()
+                .single()
+              
+              if (summaryError) throw summaryError
+              summaryId = newSummary.id
+            }
+            
+            if (summaryId) {
+              const summaryHighlights = dayAssignment.highlights.map((h) => ({
+                daily_summary_id: summaryId,
+                highlight_id: h.id,
+              }))
+              
+              const { error: insertError } = await (supabase
+                .from('daily_summary_highlights') as any)
+                .insert(summaryHighlights)
+              
+              if (insertError) throw insertError
+              reassignedCount += dayAssignment.highlights.length
+            }
+          }
+        }
+      }
+    }
+
     return NextResponse.json({
-      message: `Removed ${idsToRemove.length} unrated highlight(s) from ${date}`,
+      message: `Removed ${idsToRemove.length} unrated highlight(s) from ${date}${reassignedCount > 0 ? ` and reassigned ${reassignedCount} to remaining days in the month` : ''}`,
       removedCount: idsToRemove.length,
+      reassignedCount,
       totalHighlights: allAssignments.length,
       ratedHighlights: highlightsWithRatings.length,
       unratedHighlights: highlightsWithoutRatings.length,
