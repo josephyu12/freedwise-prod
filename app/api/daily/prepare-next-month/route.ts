@@ -330,6 +330,11 @@ export async function GET(request: NextRequest) {
           days[minDayIndex].totalScore += highlight.score
         }
 
+        // Shuffle highlights within each day so order is random, not longest-to-shortest
+        for (const d of days) {
+          d.highlights = seededShuffle(d.highlights, (seed + d.day) >>> 0)
+        }
+
         const startDate = `${year}-${String(month).padStart(2, '0')}-01`
         const endDate = `${year}-${String(month).padStart(2, '0')}-${String(daysInMonth).padStart(2, '0')}`
 

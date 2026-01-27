@@ -367,6 +367,11 @@ export async function POST(request: NextRequest) {
         days[minDayIndex].totalScore += highlight.score
       }
 
+      // Shuffle highlights within each day so order is random, not longest-to-shortest
+      for (const d of days) {
+        d.highlights = seededShuffle(d.highlights, (seed + d.day) >>> 0)
+      }
+
       for (const assignment of days) {
         const date = `${year}-${String(month).padStart(2, '0')}-${String(assignment.day).padStart(2, '0')}`
 
@@ -518,6 +523,11 @@ export async function POST(request: NextRequest) {
         }
         fmDays[minIdx].highlights.push(highlight)
         fmDays[minIdx].totalScore += highlight.score
+      }
+
+      // Shuffle highlights within each day so order is random, not longest-to-shortest
+      for (const d of fmDays) {
+        d.highlights = seededShuffle(d.highlights, (fmSeed + d.day) >>> 0)
       }
 
       const { data: existingFmSummaries } = await supabase

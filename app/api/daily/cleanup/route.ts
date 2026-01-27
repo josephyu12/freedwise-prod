@@ -266,6 +266,11 @@ export async function POST(request: NextRequest) {
             days[minDayIndex].highlights.push(highlight)
             days[minDayIndex].totalScore += highlight.score
           }
+
+          // Shuffle highlights within each day so order is random, not longest-to-shortest
+          for (const d of days) {
+            d.highlights = seededShuffle(d.highlights, (seed + d.day) >>> 0)
+          }
           
           // Create assignments
           for (const dayAssignment of days) {
