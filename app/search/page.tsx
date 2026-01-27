@@ -689,8 +689,18 @@ export default function SearchPage() {
                             ))}
                           </div>
                         )}
-                        {(highlight.source || highlight.author) && (
+                        {(highlight.source || highlight.author || (highlight as any).assigned_date) && (
                           <p className="text-sm text-gray-500 dark:text-gray-400 mb-3">
+                            {(highlight as any).assigned_date && (
+                              <span className="text-gray-500 dark:text-gray-400">
+                                Review on {(() => {
+                                  const raw = (highlight as any).assigned_date
+                                  const [, m, d] = String(raw).split('T')[0].split('-').map(Number)
+                                  return `${m}/${d}`
+                                })()}
+                              </span>
+                            )}
+                            {(highlight as any).assigned_date && (highlight.author || highlight.source) && <span> • </span>}
                             {highlight.author && <span>{highlight.author}</span>}
                             {highlight.author && highlight.source && <span> • </span>}
                             {highlight.source && <span>{highlight.source}</span>}
@@ -879,8 +889,18 @@ export default function SearchPage() {
                             ))}
                           </div>
                         )}
-                        {(highlight.source || highlight.author) && (
+                        {(highlight.source || highlight.author || (highlight as any).assigned_date) && (
                           <p className="text-sm text-gray-500 dark:text-gray-400 mb-3">
+                            {(highlight as any).assigned_date && (
+                              <span className="text-gray-500 dark:text-gray-400">
+                                Review on {(() => {
+                                  const raw = (highlight as any).assigned_date
+                                  const [, m, d] = String(raw).split('T')[0].split('-').map(Number)
+                                  return `${m}/${d}`
+                                })()}
+                              </span>
+                            )}
+                            {(highlight as any).assigned_date && (highlight.author || highlight.source) && <span> • </span>}
                             {highlight.author && <span>{highlight.author}</span>}
                             {highlight.author && highlight.source && <span> • </span>}
                             {highlight.source && <span>{highlight.source}</span>}

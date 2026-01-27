@@ -148,6 +148,30 @@ function calculateSimilarity(text1: string, text2: string, idf?: Map<string, num
   return cosineSimilarity(vector1, vector2)
 }
 
+// Enrich highlight with current month's assigned_date (for "Review on" tags). Uses server's now so it updates when month rolls over.
+function enrichWithAssignedDate(h: any): any {
+  const now = new Date()
+  const year = now.getFullYear()
+  const month = now.getMonth() + 1
+  const currentMonthStart = `${year}-${String(month).padStart(2, '0')}-01`
+  const currentMonthEnd = `${year}-${String(month).padStart(2, '0')}-${String(new Date(year, month, 0).getDate()).padStart(2, '0')}`
+  let assigned_date: string | null = null
+  if (h.daily_assignments && Array.isArray(h.daily_assignments) && h.daily_assignments.length > 0) {
+    const currentMonthAssignment = h.daily_assignments.find((da: any) => {
+      const d = da.daily_summary?.date
+      if (!d) return false
+      return d >= currentMonthStart && d <= currentMonthEnd
+    })
+    if (currentMonthAssignment?.daily_summary?.date) {
+      assigned_date = currentMonthAssignment.daily_summary.date
+    }
+  }
+  const { daily_assignments, ...rest } = h
+  return { ...rest, assigned_date }
+}
+
+const dailyAssignmentsSelect = 'daily_assignments:daily_summary_highlights(id,daily_summary:daily_summaries(id,date))'
+
 export async function POST(request: NextRequest) {
   try {
     const supabase = await createClient()
@@ -180,7 +204,8 @@ export async function POST(request: NextRequest) {
             source,
             author
           )
-        )
+        ),
+        ${dailyAssignmentsSelect}
       `)
       .eq('archived', false)
       .neq('id', highlightId)
@@ -217,11 +242,13 @@ export async function POST(request: NextRequest) {
       .sort((a, b) => b.similarity - a.similarity)
       .slice(0, 10) // Top 10 similar highlights
 
-    const similar = withSimilarity.map((h: any) => ({
-      ...h,
-      categories: h.highlight_categories?.map((hc: any) => hc.category) || [],
-      linked_highlights: h.highlight_links_from || [],
-    }))
+    const similar = withSimilarity.map((h: any) =>
+      enrichWithAssignedDate({
+        ...h,
+        categories: h.highlight_categories?.map((hc: any) => hc.category) || [],
+        linked_highlights: h.highlight_links_from || [],
+      })
+    )
 
     return NextResponse.json({
       similar,
