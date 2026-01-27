@@ -330,10 +330,10 @@ export async function GET(request: NextRequest) {
           days[minDayIndex].totalScore += highlight.score
         }
 
-        // Check for existing assignments for next month
         const startDate = `${year}-${String(month).padStart(2, '0')}-01`
         const endDate = `${year}-${String(month).padStart(2, '0')}-${String(daysInMonth).padStart(2, '0')}`
 
+        // Remove all current highlight assignments for next month and reassign from scratch (like assign)
         const { data: existingSummaries, error: existingError } = await supabase
           .from('daily_summaries')
           .select('id')
@@ -343,11 +343,17 @@ export async function GET(request: NextRequest) {
 
         if (existingError) throw existingError
 
-        // Only create assignments if they don't already exist
         if (existingSummaries && existingSummaries.length > 0) {
-          console.log(`[PREPARE-NEXT-MONTH] Assignments already exist for user ${userId} for ${monthYear} (${existingSummaries.length} summaries), skipping`)
-          results.successful++
-          continue
+          const summaryIds = (existingSummaries as Array<{ id: string }>).map((s) => s.id)
+          await supabase
+            .from('daily_summary_highlights')
+            .delete()
+            .in('daily_summary_id', summaryIds)
+          await supabase
+            .from('daily_summaries')
+            .delete()
+            .in('id', summaryIds)
+          console.log(`[PREPARE-NEXT-MONTH] Removed ${existingSummaries.length} existing summaries for user ${userId} for ${monthYear}, reassigning from scratch`)
         }
 
         console.log(`[PREPARE-NEXT-MONTH] Creating ${days.filter(d => d.highlights.length > 0).length} daily summaries for user ${userId}`)
