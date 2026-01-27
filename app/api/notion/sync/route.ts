@@ -373,7 +373,7 @@ function htmlToNotionBlocks(html: string): any[] {
   // Find all major content blocks with their positions
   interface ContentBlock {
     index: number
-    type: 'ul' | 'ol' | 'h1' | 'h2' | 'h3' | 'blockquote' | 'pre' | 'p' | 'text'
+    type: 'ul' | 'ol' | 'h1' | 'h2' | 'h3' | 'blockquote' | 'pre' | 'p' | 'div' | 'text'
     content: string
     fullMatch: string
   }
@@ -518,6 +518,18 @@ function htmlToNotionBlocks(html: string): any[] {
       fullMatch: pMatch[0],
     })
   }
+
+  // Find top-level divs (contenteditable often uses <div> per line)
+  const divRegex = /<div[^>]*>(.*?)<\/div>/gi
+  let divMatch
+  while ((divMatch = divRegex.exec(html)) !== null) {
+    contentBlocks.push({
+      index: divMatch.index,
+      type: 'div',
+      content: divMatch[1],
+      fullMatch: divMatch[0],
+    })
+  }
   
   // Sort by position
   contentBlocks.sort((a, b) => a.index - b.index)
@@ -529,13 +541,16 @@ function htmlToNotionBlocks(html: string): any[] {
     if (block.index > lastIndex) {
       const textBefore = html.substring(lastIndex, block.index).trim()
       if (textBefore) {
-        // IMPORTANT: Don't strip HTML tags - pass the full HTML to preserve formatting!
-        const richText = htmlToNotionRichText(textBefore)
-        if (richText.length > 0) {
-          blocks.push({
-            type: 'paragraph',
-            paragraph: { rich_text: richText },
-          })
+        // Split by <br> so each line becomes its own Notion paragraph
+        const parts = textBefore.split(/<\s*br\s*\/?\s*>/gi)
+        for (const part of parts) {
+          const richText = htmlToNotionRichText(part)
+          if (richText.length > 0) {
+            blocks.push({
+              type: 'paragraph',
+              paragraph: { rich_text: richText },
+            })
+          }
         }
       }
     }
@@ -615,13 +630,18 @@ function htmlToNotionBlocks(html: string): any[] {
         }
         break
       }
-      case 'p': {
-        const richText = htmlToNotionRichText(block.content)
-        if (richText.length > 0 || block.content.trim() === '') {
-          blocks.push({
-            type: 'paragraph',
-            paragraph: { rich_text: richText },
-          })
+      case 'p':
+      case 'div': {
+        // Notion uses separate paragraph blocks for line breaks; split by <br> and emit one per line
+        const parts = block.content.split(/<\s*br\s*\/?\s*>/gi)
+        for (const part of parts) {
+          const richText = htmlToNotionRichText(part)
+          if (richText.length > 0 || part.trim() === '') {
+            blocks.push({
+              type: 'paragraph',
+              paragraph: { rich_text: richText },
+            })
+          }
         }
         break
       }
@@ -634,9 +654,28 @@ function htmlToNotionBlocks(html: string): any[] {
   if (lastIndex < html.length) {
     const textAfter = html.substring(lastIndex).trim()
     if (textAfter) {
-      // IMPORTANT: Don't strip HTML tags - pass the full HTML to preserve formatting!
-      const richText = htmlToNotionRichText(textAfter)
-      if (richText.length > 0) {
+      // Split by <br> so each line becomes its own Notion paragraph
+      const parts = textAfter.split(/<\s*br\s*\/?\s*>/gi)
+      for (const part of parts) {
+        const richText = htmlToNotionRichText(part)
+        if (richText.length > 0) {
+          blocks.push({
+            type: 'paragraph',
+            paragraph: { rich_text: richText },
+          })
+        }
+      }
+    }
+  }
+  
+  // If no blocks were created (e.g. HTML is only divs or br-separated), split by line breaks
+  if (blocks.length === 0) {
+    // Split by <br> or by </div><div so each "line" becomes one Notion paragraph
+    const lineParts = html.split(/(?:<\s*br\s*\/?\s*>|<\/div>\s*<div[^>]*>)/gi)
+    for (const part of lineParts) {
+      const stripped = part.replace(/^<div[^>]*>/i, '').replace(/<\/div>$/i, '').trim()
+      const richText = htmlToNotionRichText(stripped || part)
+      if (richText.length > 0 || (stripped || part).trim() === '') {
         blocks.push({
           type: 'paragraph',
           paragraph: { rich_text: richText },
@@ -644,8 +683,7 @@ function htmlToNotionBlocks(html: string): any[] {
       }
     }
   }
-  
-  // If no blocks were created, create a paragraph with the entire content
+  // Final fallback: single paragraph from full html
   if (blocks.length === 0) {
     const plainText = html.replace(/<[^>]*>/g, '').trim()
     if (plainText) {

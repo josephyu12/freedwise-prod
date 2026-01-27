@@ -386,23 +386,54 @@ function htmlToNotionBlocks(html: string): any[] {
     remainingHtml = remainingHtml.replace(preMatch[0], '')
   }
   
-  // Process paragraphs (what's left)
+  // Process divs (contenteditable often uses <div> per line; Notion needs one paragraph per line)
+  const divRegex = /<div[^>]*>(.*?)<\/div>/gi
+  let divMatch
+  while ((divMatch = divRegex.exec(remainingHtml)) !== null) {
+    const parts = divMatch[1].split(/<\s*br\s*\/?\s*>/gi)
+    for (const part of parts) {
+      const richText = htmlToNotionRichText(part)
+      if (richText.length > 0 || part.trim() === '') {
+        blocks.push({
+          type: 'paragraph',
+          paragraph: { rich_text: richText },
+        })
+      }
+    }
+  }
+  remainingHtml = remainingHtml.replace(/<div[^>]*>[\s\S]*?<\/div>/gi, '')
+
+  // Process paragraphs (what's left); split by <br> so each line becomes its own Notion paragraph
   const pRegex = /<p[^>]*>(.*?)<\/p>/gi
   let pMatch
-  const processedParagraphs = new Set<number>()
   
   while ((pMatch = pRegex.exec(remainingHtml)) !== null) {
-    const richText = htmlToNotionRichText(pMatch[1])
-    if (richText.length > 0 || pMatch[1].trim() === '') {
-      blocks.push({
-        type: 'paragraph',
-        paragraph: { rich_text: richText },
-      })
+    const parts = pMatch[1].split(/<\s*br\s*\/?\s*>/gi)
+    for (const part of parts) {
+      const richText = htmlToNotionRichText(part)
+      if (richText.length > 0 || part.trim() === '') {
+        blocks.push({
+          type: 'paragraph',
+          paragraph: { rich_text: richText },
+        })
+      }
     }
-    processedParagraphs.add(pMatch.index)
   }
   
-  // If no blocks were created, create a paragraph with the remaining content
+  // If no blocks were created, split by <br> or </div><div so each line becomes one Notion paragraph
+  if (blocks.length === 0) {
+    const lineParts = html.split(/(?:<\s*br\s*\/?\s*>|<\/div>\s*<div[^>]*>)/gi)
+    for (const part of lineParts) {
+      const stripped = part.replace(/^<div[^>]*>/i, '').replace(/<\/div>$/i, '').trim()
+      const richText = htmlToNotionRichText(stripped || part)
+      if (richText.length > 0 || (stripped || part).trim() === '') {
+        blocks.push({
+          type: 'paragraph',
+          paragraph: { rich_text: richText },
+        })
+      }
+    }
+  }
   if (blocks.length === 0) {
     const plainText = stripHtml(html)
     if (plainText.trim()) {
