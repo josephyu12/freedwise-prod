@@ -24,6 +24,8 @@ export default function SettingsPage() {
   })
   const [showApiKey, setShowApiKey] = useState(false)
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
+  const [resettingDaily, setResettingDaily] = useState(false)
+  const [showResetConfirm, setShowResetConfirm] = useState(false)
 
   const loadSettings = useCallback(async () => {
     try {
@@ -100,6 +102,45 @@ export default function SettingsPage() {
       setMessage({ type: 'error', text: error.message || 'Failed to save settings' })
     } finally {
       setSaving(false)
+    }
+  }
+
+  const handleResetDailyHighlights = async () => {
+    if (!showResetConfirm) {
+      setShowResetConfirm(true)
+      return
+    }
+
+    setResettingDaily(true)
+    setMessage(null)
+    setShowResetConfirm(false)
+
+    try {
+      const res1 = await fetch('/api/daily/reset-month', { method: 'POST' })
+      if (!res1.ok) {
+        const data = await res1.json()
+        throw new Error(data.error || 'Reset failed')
+      }
+
+      const now = new Date()
+      const year = now.getFullYear()
+      const month = now.getMonth() + 1
+
+      const res2 = await fetch('/api/daily/assign', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ year, month }),
+      })
+      if (!res2.ok) {
+        const data = await res2.json()
+        throw new Error(data.error || 'Reassign failed')
+      }
+
+      setMessage({ type: 'success', text: 'Daily highlights reset and reassigned for this month.' })
+    } catch (error: any) {
+      setMessage({ type: 'error', text: error.message || 'Failed to reset daily highlights' })
+    } finally {
+      setResettingDaily(false)
     }
   }
 
@@ -278,6 +319,55 @@ export default function SettingsPage() {
                 )}
               </div>
             </form>
+          </div>
+
+          <div className="mt-8 bg-white dark:bg-gray-800 p-6 rounded-lg shadow-lg border border-red-200 dark:border-red-900/50">
+            <h2 className="text-2xl font-semibold text-gray-900 dark:text-white mb-2">
+              Reset daily highlights (this month)
+            </h2>
+            <p className="text-gray-600 dark:text-gray-300 mb-4">
+              This will remove all ratings and &quot;reviewed&quot; status for the current month, then reassign all highlights evenly across the month. You will need to review them again.
+            </p>
+            <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg p-4 mb-4">
+              <p className="text-amber-800 dark:text-amber-200 text-sm font-medium">
+                Warning: This cannot be undone. All progress for this month will be lost.
+              </p>
+            </div>
+            {showResetConfirm && (
+              <div className="mb-4 p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg">
+                <p className="text-red-800 dark:text-red-200 text-sm mb-3">
+                  Click &quot;Yes, reset monthly highlights&quot; again to confirm.
+                </p>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={handleResetDailyHighlights}
+                    disabled={resettingDaily}
+                    className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {resettingDaily ? 'Resetting...' : 'Yes, reset monthly highlights'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowResetConfirm(false)}
+                    disabled={resettingDaily}
+                    className="px-4 py-2 bg-gray-200 dark:bg-gray-700 rounded-lg hover:bg-gray-300 dark:hover:bg-gray-600 transition"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
+            {!showResetConfirm && (
+              <button
+                type="button"
+                onClick={handleResetDailyHighlights}
+                disabled={resettingDaily}
+                className="px-6 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {resettingDaily ? 'Resetting...' : 'Reset all daily highlights for this month'}
+              </button>
+            )}
           </div>
         </div>
       </div>

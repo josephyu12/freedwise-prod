@@ -90,7 +90,9 @@ function assignHighlightsToDays(
 
 /**
  * POST /api/daily/assign
- * Assigns highlights to days for a given month
+ * Assigns highlights to days for a given month.
+ * Assigns to ALL days in the month (1 through last day), including past days.
+ * Use when (re)building the full month (e.g. after "reset daily highlights").
  */
 export async function POST(request: NextRequest) {
   try {
@@ -177,7 +179,7 @@ export async function POST(request: NextRequest) {
       }
     })
 
-    // Assign highlights to days (pass year and month for seeded shuffle)
+    // Assign highlights to ALL days in the month (1..daysInMonth), including past days
     const assignments = assignHighlightsToDays(highlightsWithScore, daysInMonth, year, month)
 
     // Get existing assignments and preserve those for completed days
