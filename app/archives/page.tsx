@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { Highlight } from '@/types/database'
 import Link from 'next/link'
+import { addToNotionSyncQueue } from '@/lib/notionSyncQueue'
 
 export default function ArchivesPage() {
   const [highlights, setHighlights] = useState<Highlight[]>([])
@@ -73,7 +74,7 @@ export default function ArchivesPage() {
 
   const totalPages = Math.ceil(totalHighlights / itemsPerPage)
 
-  // Helper function to add item to Notion sync queue
+  // Add item to Notion sync queue via deduplicating API
   const addToSyncQueue = async (
     highlightId: string,
     operationType: 'add' | 'update' | 'delete',
@@ -82,49 +83,14 @@ export default function ArchivesPage() {
     originalText?: string | null,
     originalHtmlContent?: string | null
   ) => {
-    try {
-      const { data: { user } } = await supabase.auth.getUser()
-      if (!user) return
-
-      const { data: notionSettings, error: settingsError } = await supabase
-        .from('user_notion_settings')
-        .select('notion_api_key, notion_page_id, enabled')
-        .eq('user_id', user.id)
-        .eq('enabled', true)
-        .maybeSingle()
-
-      if (settingsError || !notionSettings) {
-        return
-      }
-
-      // For delete operations, we can set highlight_id to null since the highlight will be deleted
-      // and we only need the text/html to find it in Notion
-      const queueItem: any = {
-        user_id: user.id,
-        highlight_id: operationType === 'delete' ? null : highlightId, // Null for delete since highlight will be deleted
-        operation_type: operationType,
-        text: text || null,
-        html_content: htmlContent || null,
-        status: 'pending',
-        retry_count: 0,
-        max_retries: 5,
-      }
-
-      if (operationType === 'update' && (originalText || originalHtmlContent)) {
-        queueItem.original_text = originalText || null
-        queueItem.original_html_content = originalHtmlContent || null
-      }
-
-      const { error: queueError } = await (supabase
-        .from('notion_sync_queue') as any)
-        .insert([queueItem])
-
-      if (queueError) {
-        console.warn('Failed to add to sync queue:', queueError)
-      }
-    } catch (error) {
-      console.warn('Error adding to sync queue:', error)
-    }
+    await addToNotionSyncQueue({
+      highlightId: operationType === 'delete' ? null : highlightId,
+      operationType,
+      text: text ?? null,
+      htmlContent: htmlContent ?? null,
+      originalText: originalText ?? null,
+      originalHtmlContent: originalHtmlContent ?? null,
+    })
   }
 
   const handleUnarchive = async (id: string) => {

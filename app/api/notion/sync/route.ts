@@ -1400,40 +1400,55 @@ export async function POST(request: NextRequest) {
 
     const notionSettings = notionSettingsData as { notion_api_key: string; notion_page_id: string; enabled: boolean }
 
-    // Get pending queue items for this user (limit to 10 at a time)
-    // Include:
-    // 1. Items with status 'pending' that haven't exceeded max retries
-    // 2. Items with status 'failed' that are past their next_retry_at time
+    // Stale threshold: treat items stuck in "processing" for >10 min as reclaimable
+    const staleCutoff = new Date(Date.now() - 10 * 60 * 1000).toISOString()
     const now = new Date().toISOString()
-    const { data: queueItems, error: queueError } = await (supabase
+
+    // Get claimable queue items for this user (limit to 10 at a time):
+    // 1. Pending (retry_count < 5)
+    // 2. Failed and retryable (retry_count < 20, next_retry_at due)
+    // 3. Stale processing (stuck >10 min — previous worker likely died)
+    const { data: candidateItems, error: queueError } = await (supabase
       .from('notion_sync_queue') as any)
       .select('*')
       .eq('user_id', user.id)
-      .or(`and(status.eq.pending,retry_count.lt.5),and(status.eq.failed,retry_count.lt.20,or(next_retry_at.is.null,next_retry_at.lte.${now}))`)
+      .or(`and(status.eq.pending,retry_count.lt.5),and(status.eq.failed,retry_count.lt.20,or(next_retry_at.is.null,next_retry_at.lte.${now})),and(status.eq.processing,updated_at.lt.${staleCutoff})`)
       .order('created_at', { ascending: true })
       .limit(10)
 
     if (queueError) throw queueError
 
-    if (!queueItems || queueItems.length === 0) {
+    if (!candidateItems || candidateItems.length === 0) {
       return NextResponse.json({
         processed: 0,
         message: 'No pending items to process',
       })
     }
 
-    // Mark items as processing
-    const itemIds = queueItems.map((item: any) => item.id)
-    await (supabase
+    // Claim items: only update rows that are still pending/failed/stale (avoids double-processing)
+    // Another worker may have already claimed some of these; we process only what we actually claimed.
+    const itemIds = candidateItems.map((item: any) => item.id)
+    const { data: claimedItems, error: claimError } = await (supabase
       .from('notion_sync_queue') as any)
       .update({ status: 'processing' })
       .in('id', itemIds)
+      .or(`status.eq.pending,and(status.eq.failed,or(next_retry_at.is.null,next_retry_at.lte.${now})),and(status.eq.processing,updated_at.lt.${staleCutoff})`)
+      .select('*')
 
-    // Process each item
+    if (claimError) throw claimError
+
+    const toProcess = claimedItems ?? []
+    if (toProcess.length === 0) {
+      return NextResponse.json({
+        processed: 0,
+        message: 'No items claimed (another worker may have claimed them)',
+      })
+    }
+
+    // Process only the items we actually claimed
     let processed = 0
     let failed = 0
-
-    for (const item of queueItems) {
+    for (const item of toProcess) {
       const result = await processQueueItem(supabase, item, notionSettings)
       if (result.success) {
         processed++
@@ -1445,7 +1460,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       processed,
       failed,
-      total: queueItems.length,
+      total: toProcess.length,
     })
   } catch (error: any) {
     console.error('Error processing Notion sync queue:', error)

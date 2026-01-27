@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from 'react'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import RichTextEditor from '@/components/RichTextEditor'
+import { addToNotionSyncQueue } from '@/lib/notionSyncQueue'
 
 export default function Home() {
   const [text, setText] = useState('')
@@ -150,39 +151,13 @@ export default function Home() {
         })
       }
 
-      // Add to Notion sync queue in background (non-blocking)
-      // Note: We need to check if user has Notion settings and add to queue
-      ;(async () => {
-        try {
-          const { data: notionSettings, error: settingsError } = await supabase
-            .from('user_notion_settings')
-            .select('notion_api_key, notion_page_id, enabled')
-            .eq('user_id', user.id)
-            .eq('enabled', true)
-            .maybeSingle()
-
-          if (!settingsError && notionSettings) {
-            try {
-              await (supabase
-                .from('notion_sync_queue') as any)
-                .insert([{
-                  user_id: user.id,
-                  highlight_id: highlightData.id,
-                  operation_type: 'add',
-                  text: highlightText,
-                  html_content: highlightHtml,
-                  status: 'pending',
-                  retry_count: 0,
-                  max_retries: 5,
-                }])
-            } catch (err: any) {
-              console.warn('Failed to add to sync queue:', err)
-            }
-          }
-        } catch (err: any) {
-          console.warn('Failed to check Notion settings:', err)
-        }
-      })()
+      // Add to Notion sync queue via deduplicating API (non-blocking)
+      addToNotionSyncQueue({
+        highlightId: highlightData.id,
+        operationType: 'add',
+        text: highlightText,
+        htmlContent: highlightHtml,
+      }).catch(() => {})
 
       // Redistribute: place only this new highlight on a remaining day
       try {

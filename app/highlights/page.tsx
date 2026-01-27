@@ -7,6 +7,7 @@ import Link from 'next/link'
 import RichTextEditor from '@/components/RichTextEditor'
 import PinDialog from '@/components/PinDialog'
 import { Pin, PinOff } from 'lucide-react'
+import { addToNotionSyncQueue } from '@/lib/notionSyncQueue'
 
 export default function HighlightsPage() {
   const [highlights, setHighlights] = useState<Highlight[]>([])
@@ -39,7 +40,7 @@ export default function HighlightsPage() {
   const [pendingPinHighlightId, setPendingPinHighlightId] = useState<string | null>(null)
   const supabase = createClient()
 
-  // Helper function to add item to Notion sync queue
+  // Add item to Notion sync queue via deduplicating API
   const addToSyncQueue = async (
     highlightId: string,
     operationType: 'add' | 'update' | 'delete',
@@ -48,56 +49,14 @@ export default function HighlightsPage() {
     originalText?: string | null,
     originalHtmlContent?: string | null
   ) => {
-    try {
-      // Check if user has Notion settings configured
-      const { data: { user } } = await supabase.auth.getUser()
-      if (!user) return
-
-      const { data: notionSettings, error: settingsError } = await supabase
-        .from('user_notion_settings')
-        .select('notion_api_key, notion_page_id, enabled')
-        .eq('user_id', user.id)
-        .eq('enabled', true)
-        .maybeSingle()
-
-      // Only add to queue if settings are configured
-      if (settingsError || !notionSettings) {
-        return // Silently skip if Notion is not configured
-      }
-
-      // Add to sync queue
-      // For delete operations, we can set highlight_id to null since the highlight will be deleted
-      // and we only need the text/html to find it in Notion
-      const queueItem: any = {
-        user_id: user.id,
-        highlight_id: operationType === 'delete' ? null : highlightId, // Null for delete since highlight will be deleted
-        operation_type: operationType,
-        text: text || null,
-        html_content: htmlContent || null,
-        status: 'pending',
-        retry_count: 0,
-        max_retries: 5,
-      }
-
-      // For updates, try to store original values if available
-      // Note: These columns may need to be added to the database schema
-      if (operationType === 'update' && (originalText || originalHtmlContent)) {
-        queueItem.original_text = originalText || null
-        queueItem.original_html_content = originalHtmlContent || null
-      }
-
-      const { error: queueError } = await (supabase
-        .from('notion_sync_queue') as any)
-        .insert([queueItem])
-
-      if (queueError) {
-        console.warn('Failed to add to sync queue:', queueError)
-        // Don't throw - this is optional
-      }
-    } catch (error) {
-      console.warn('Error adding to sync queue:', error)
-      // Don't throw - this is optional
-    }
+    await addToNotionSyncQueue({
+      highlightId: operationType === 'delete' ? null : highlightId,
+      operationType,
+      text: text ?? null,
+      htmlContent: htmlContent ?? null,
+      originalText: originalText ?? null,
+      originalHtmlContent: originalHtmlContent ?? null,
+    })
   }
 
   // Load pinned highlights
