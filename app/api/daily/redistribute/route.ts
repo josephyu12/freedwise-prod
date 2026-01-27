@@ -151,41 +151,6 @@ export async function POST(request: NextRequest) {
       return shuffled
     }
 
-    // Create a seed from year and month for deterministic but varied shuffling
-    const seed = year * 100 + month
-    
-    // Shuffle highlights with seed to add variety month-to-month
-    // Then sort by score for better bin-packing
-    const shuffledHighlights = seededShuffle(highlightsWithScore, seed)
-    const sortedHighlights = [...shuffledHighlights].sort((a, b) => b.score - a.score)
-    const totalScore = highlightsWithScore.reduce((sum, h) => sum + h.score, 0)
-    const targetScorePerDay = totalScore / daysInMonth
-
-    const days: Array<{
-      day: number
-      highlights: typeof highlightsWithScore
-      totalScore: number
-    }> = Array.from({ length: daysInMonth }, (_, i) => ({
-      day: i + 1,
-      highlights: [],
-      totalScore: 0,
-    }))
-
-    for (const highlight of sortedHighlights) {
-      let minDayIndex = 0
-      let minScore = days[0].totalScore
-
-      for (let i = 1; i < days.length; i++) {
-        if (days[i].totalScore < minScore) {
-          minScore = days[i].totalScore
-          minDayIndex = i
-        }
-      }
-
-      days[minDayIndex].highlights.push(highlight)
-      days[minDayIndex].totalScore += highlight.score
-    }
-
     // Get existing assignments and preserve those for reviewed highlights
     const { data: existingSummaries, error: existingError } = await supabase
       .from('daily_summaries')
