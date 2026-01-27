@@ -162,11 +162,57 @@ export async function POST(request: NextRequest) {
       }
       
       if (remainingDays.length > 0) {
-        // Get highlight data for reassignment
+        // First, check which highlights are already assigned to remaining days
+        // We should only reassign highlights that aren't already assigned elsewhere
+        const remainingDayDates = remainingDays.map((day) => 
+          `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+        )
+        
+        const { data: existingRemainingSummaries } = await supabase
+          .from('daily_summaries')
+          .select('id, date')
+          .eq('user_id', user.id)
+          .in('date', remainingDayDates)
+        
+        const alreadyAssignedHighlightIds = new Set<string>()
+        if (existingRemainingSummaries && existingRemainingSummaries.length > 0) {
+          const remainingSummaryIds = (existingRemainingSummaries as Array<{ id: string }>).map((s) => s.id)
+          const { data: existingAssignments } = await supabase
+            .from('daily_summary_highlights')
+            .select('highlight_id')
+            .in('daily_summary_id', remainingSummaryIds)
+            .in('highlight_id', highlightIdsToReassign)
+          
+          if (existingAssignments) {
+            for (const assignment of existingAssignments as Array<{ highlight_id: string }>) {
+              alreadyAssignedHighlightIds.add(assignment.highlight_id)
+            }
+          }
+        }
+        
+        // Filter out highlights that are already assigned to remaining days
+        const highlightsToReassign = highlightIdsToReassign.filter(
+          (id) => !alreadyAssignedHighlightIds.has(id)
+        )
+        
+        if (highlightsToReassign.length === 0) {
+          // All highlights are already assigned to remaining days, nothing to reassign
+          return NextResponse.json({
+            message: `Removed ${idsToRemove.length} unrated highlight(s) from ${date}. All highlights were already assigned to remaining days.`,
+            removedCount: idsToRemove.length,
+            reassignedCount: 0,
+            totalHighlights: allAssignments.length,
+            ratedHighlights: highlightsWithRatings.length,
+            unratedHighlights: highlightsWithoutRatings.length,
+            remainingHighlights: highlightsWithRatings.length,
+          })
+        }
+        
+        // Get highlight data for reassignment (only for highlights that need reassignment)
         const { data: highlightsData, error: highlightsError } = await supabase
           .from('highlights')
           .select('id, text, html_content')
-          .in('id', highlightIdsToReassign)
+          .in('id', highlightsToReassign)
           .eq('user_id', user.id)
           .eq('archived', false)
         
@@ -245,17 +291,35 @@ export async function POST(request: NextRequest) {
             }
             
             if (summaryId) {
-              const summaryHighlights = dayAssignment.highlights.map((h) => ({
-                daily_summary_id: summaryId,
-                highlight_id: h.id,
-              }))
+              // Check which highlights are already assigned to this summary
+              const { data: existingAssignments } = await supabase
+                .from('daily_summary_highlights')
+                .select('highlight_id')
+                .eq('daily_summary_id', summaryId)
+                .in('highlight_id', dayAssignment.highlights.map((h) => h.id))
               
-              const { error: insertError } = await (supabase
-                .from('daily_summary_highlights') as any)
-                .insert(summaryHighlights)
+              const existingHighlightIds = new Set(
+                (existingAssignments || []).map((a: any) => a.highlight_id)
+              )
               
-              if (insertError) throw insertError
-              reassignedCount += dayAssignment.highlights.length
+              // Only insert highlights that aren't already assigned
+              const newHighlights = dayAssignment.highlights.filter(
+                (h) => !existingHighlightIds.has(h.id)
+              )
+              
+              if (newHighlights.length > 0) {
+                const summaryHighlights = newHighlights.map((h) => ({
+                  daily_summary_id: summaryId,
+                  highlight_id: h.id,
+                }))
+                
+                const { error: insertError } = await (supabase
+                  .from('daily_summary_highlights') as any)
+                  .insert(summaryHighlights)
+                
+                if (insertError) throw insertError
+                reassignedCount += newHighlights.length
+              }
             }
           }
         }
