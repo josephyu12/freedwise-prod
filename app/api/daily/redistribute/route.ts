@@ -3,23 +3,21 @@ import { createClient } from '@/lib/supabase/server'
 
 /**
  * POST /api/daily/redistribute
- * Redistributes highlights for the current month when highlights are added or deleted.
+ * When a highlight is added: assigns only that new highlight (and any other unassigned
+ * ones this month) to remaining days. Existing assignments are never removed or moved.
  * Only affects future days: strictly after today (tomorrow through end of month).
  * Today is never changed.
  *
- * - Partially-done days (some highlights rated): get cleared and receive new highlights
- *   in the redistribution.
+ * - Only highlights that are not yet assigned to any day this month are placed.
+ * - Partially-done days (some highlights rated): can receive new highlights.
  * - Fully-done days (all highlights rated): are left unchanged; new highlights are never
  *   added to them.
  * - If all remaining days are fully done, the new highlight(s) are assigned to the last
  *   day of the month only; that day becomes not-done.
  *
- * Also assigns to future months that have already been portioned out (have at least one
- * daily summary). Call when a highlight is added or deleted (unless last day of month).
- *
- * Assignment uses only highlights that exist in the highlights table; deleted
- * highlights are excluded by definition and never appear in next month's daily reviews.
- * On delete, the DB CASCADE also removes them from daily_summary_highlights.
+ * Also assigns new highlights to future months that have already been portioned out.
+ * Call when a highlight is added (unless last day of month). On delete, DB CASCADE
+ * removes the highlight from daily_summary_highlights; no redistribution needed.
  */
 export async function POST(request: NextRequest) {
   try {
@@ -210,7 +208,9 @@ export async function POST(request: NextRequest) {
     // Get all existing assignments with their ratings to identify reviewed highlights
     const preservedAssignments = new Map<string, { date: string; summaryId: string }>() // highlight_id -> { date, summaryId }
     const completedDays = new Set<string>() // Set of dates (YYYY-MM-DD) that are completed
-    
+    const assignedThisMonthIds = new Set<string>() // highlight_ids already on some day this month (so we only place "new" ones)
+    let allAssignmentsThisMonth: Array<{ highlight_id: string; daily_summary_id: string }> = []
+
     // Type the summaries outside the if block so it's accessible later
     const typedSummaries = (existingSummaries || []) as Array<{
       id: string
@@ -229,10 +229,8 @@ export async function POST(request: NextRequest) {
       if (assignmentsError) throw assignmentsError
 
       // Track which days are completed (all highlights have ratings)
-      // We'll preserve assignments for:
-      // 1. Today (regardless of completion status)
-      // 2. All completed days (including future completed days)
-      // All other assignments in remaining days will be removed and redistributed
+      // We'll preserve assignments for today and all completed days.
+      // We only place highlights that are not yet assigned this month ("new").
       
       if (existingAssignments) {
         const typedAssignments = existingAssignments as Array<{
@@ -241,6 +239,8 @@ export async function POST(request: NextRequest) {
           daily_summary_id: string
           rating: number | null
         }>
+        for (const a of typedAssignments) assignedThisMonthIds.add(a.highlight_id)
+        allAssignmentsThisMonth = typedAssignments.map((a) => ({ highlight_id: a.highlight_id, daily_summary_id: a.daily_summary_id }))
         
         // Group assignments by date to check completion status
         const assignmentsByDate = new Map<string, Array<{
@@ -301,51 +301,19 @@ export async function POST(request: NextRequest) {
             }
           }
         }
-        
-        // Delete assignments from remaining days (tomorrow onwards) that are not completed
-        // Get summaries for remaining days (excluding today and completed days)
-        const remainingDaySummaries = typedSummaries.filter((s) => {
-          const summaryDate = new Date(s.date)
-          const summaryDay = summaryDate.getDate()
-          // Exclude today and completed days from deletion
-          return summaryDay >= startDay && summaryDay <= daysInMonth && !completedDays.has(s.date) && s.date !== todayDate
-        })
-        
-        if (remainingDaySummaries.length > 0) {
-          const remainingSummaryIds = remainingDaySummaries.map((s) => s.id)
-          
-          // Delete all assignments from remaining days (they'll be redistributed)
-          await supabase
-            .from('daily_summary_highlights')
-            .delete()
-            .in('daily_summary_id', remainingSummaryIds)
-          
-          // Delete summaries that no longer have assignments (they'll be recreated)
-          await supabase
-            .from('daily_summaries')
-            .delete()
-            .in('id', remainingSummaryIds)
-        }
       }
     }
 
-    // Redistribute ALL highlights (except reviewed ones and those preserved in completed days/today)
-    // Filter out highlights that are preserved (in completed days or today)
+    // Only place highlights that are not yet assigned to any day this month ("new").
+    // Existing assignments are left as-is.
     const highlightsToRedistribute = highlightsWithScore.filter(
-      (h) => !preservedAssignments.has(h.id)
+      (h) => !assignedThisMonthIds.has(h.id)
     )
 
-    // Create or update daily summaries and assignments for non-reviewed highlights
+    // Add only "new" highlights to remaining days; leave all existing assignments as-is.
     const createdAssignments: any[] = []
-    
-    // Initialize days array outside the if block so it's accessible for validation
-    const days: Array<{
-      day: number
-      highlights: typeof highlightsToRedistribute
-      totalScore: number
-    }> = []
+    const idToScore = new Map(highlightsWithScore.map((h) => [h.id, h.score]))
 
-    // Only redistribute if there are highlights to redistribute
     if (highlightsToRedistribute.length > 0) {
       const lastDayDate = `${year}-${String(month).padStart(2, '0')}-${String(daysInMonth).padStart(2, '0')}`
       const allRemainingDateStrs: string[] = []
@@ -354,9 +322,8 @@ export async function POST(request: NextRequest) {
       }
       const allRemainingCompleted = allRemainingDateStrs.length > 0 && allRemainingDateStrs.every((d) => completedDays.has(d))
 
-      // If all remaining days (tomorrow through end of month) are fully done reviewing,
-      // assign the new highlight(s) to the last day only; that day becomes not-done.
       if (allRemainingCompleted) {
+        // All remaining days are fully done: add new highlight(s) to the last day only.
         const lastSummary = typedSummaries?.find((s) => s.date === lastDayDate)
         if (lastSummary) {
           const summaryHighlights = highlightsToRedistribute.map((h) => ({
@@ -375,113 +342,76 @@ export async function POST(request: NextRequest) {
           })
         }
       } else {
-      const seed = year * 373 + month * 31
-      const shuffledHighlights = seededShuffle(highlightsToRedistribute, seed)
-      const sortedHighlights = [...shuffledHighlights].sort((a, b) => b.score - a.score)
-      const totalScore = highlightsToRedistribute.reduce((sum, h) => sum + h.score, 0)
-      const targetScorePerDay = totalScore / remainingDaysInMonth
-
-      for (let i = 0; i < remainingDaysInMonth; i++) {
-        const day = startDay + i
-        if (day > daysInMonth) break
-        const date = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
-        if (completedDays.has(date)) continue
-        days.push({ day, highlights: [], totalScore: 0 })
-      }
-
-      for (const highlight of sortedHighlights) {
-        let minScore = days[0].totalScore
-        for (let i = 1; i < days.length; i++) {
-          if (days[i].totalScore < minScore) minScore = days[i].totalScore
-        }
-        const tiedIndices = days.map((_, i) => i).filter((i) => days[i].totalScore === minScore)
-        let minDayIndex = tiedIndices[0]
-        if (tiedIndices.length > 1) {
-          const tieSeed = (seed + hashStr(highlight.id)) >>> 0
-          let r = tieSeed
-          const rand = () => { r = (r * 9301 + 49297) % 233280; return r / 233280 }
-          minDayIndex = tiedIndices[Math.floor(rand() * tiedIndices.length)]
-        }
-        days[minDayIndex].highlights.push(highlight)
-        days[minDayIndex].totalScore += highlight.score
-      }
-
-      // Shuffle highlights within each day so order is random, not longest-to-shortest
-      for (const d of days) {
-        d.highlights = seededShuffle(d.highlights, (seed + d.day) >>> 0)
-      }
-
-      for (const assignment of days) {
-        const date = `${year}-${String(month).padStart(2, '0')}-${String(assignment.day).padStart(2, '0')}`
-
-        // Skip completed days (shouldn't be in days array, but double-check for safety)
-        if (completedDays.has(date)) {
-          continue
-        }
-
-        // We deleted summaries for all remaining non-completed days earlier, so we must
-        // always create a new summary for each date we're redistributing to (never reuse
-        // stale IDs from typedSummaries, which would point to deleted rows).
-        let summaryId: string | null = null
-        if (assignment.highlights.length > 0) {
-          const { data: summaryData, error: summaryError } = await (supabase
-            .from('daily_summaries') as any)
-            .insert([{ date, user_id: user.id }])
-            .select()
-            .single()
-
-          if (summaryError) throw summaryError
-          summaryId = summaryData.id
-        }
-
-        // Add assignments for non-reviewed highlights
-        // Filter out highlights that are already assigned to this summary (safety check)
-        if (summaryId && assignment.highlights.length > 0) {
-          // Check which highlights are already assigned to this summary
-          const { data: existingAssignmentsForSummary } = await supabase
-            .from('daily_summary_highlights')
-            .select('highlight_id')
-            .eq('daily_summary_id', summaryId)
-            .in('highlight_id', assignment.highlights.map((h) => h.id))
-
-          const existingHighlightIds = new Set(
-            (existingAssignmentsForSummary || []).map((a: any) => a.highlight_id)
-          )
-
-          // Only insert highlights that aren't already assigned
-          const newHighlights = assignment.highlights.filter(
-            (h) => !existingHighlightIds.has(h.id)
-          )
-
-          if (newHighlights.length > 0) {
-            const summaryHighlights = newHighlights.map((h) => ({
-              daily_summary_id: summaryId,
-              highlight_id: h.id,
-            }))
-
-            const { error: linkError } = await (supabase
-              .from('daily_summary_highlights') as any)
-              .insert(summaryHighlights)
-
-            if (linkError) throw linkError
-
-            createdAssignments.push({
-              day: assignment.day,
-              date,
-              highlightCount: newHighlights.length,
-              totalScore: newHighlights.reduce((sum, h) => sum + h.score, 0),
-            })
+        // Build remaining days with current totalScore (from existing assignments).
+        const dayState: Array<{ date: string; day: number; summaryId: string | null; totalScore: number }> = []
+        for (let d = startDay; d <= daysInMonth; d++) {
+          const date = `${year}-${String(month).padStart(2, '0')}-${String(d).padStart(2, '0')}`
+          if (completedDays.has(date)) continue
+          const summary = typedSummaries.find((s) => s.date === date)
+          let totalScore = 0
+          for (const a of allAssignmentsThisMonth) {
+            if (summary && a.daily_summary_id === summary.id) {
+              totalScore += idToScore.get(a.highlight_id) ?? 0
+            }
           }
+          dayState.push({
+            date,
+            day: d,
+            summaryId: summary?.id ?? null,
+            totalScore,
+          })
         }
-      }
+
+        const seed = year * 373 + month * 31
+        const shuffledNew = seededShuffle(highlightsToRedistribute, seed)
+        const sortedNew = [...shuffledNew].sort((a, b) => b.score - a.score)
+
+        for (const highlight of sortedNew) {
+          if (dayState.length === 0) break
+          let minIdx = 0
+          let minScore = dayState[0].totalScore
+          for (let i = 1; i < dayState.length; i++) {
+            if (dayState[i].totalScore < minScore) {
+              minScore = dayState[i].totalScore
+              minIdx = i
+            }
+          }
+          const tiedIndices = dayState.map((_, i) => i).filter((i) => dayState[i].totalScore === minScore)
+          if (tiedIndices.length > 1) {
+            const tieSeed = (seed + hashStr(highlight.id)) >>> 0
+            let r = tieSeed
+            const rand = () => { r = (r * 9301 + 49297) % 233280; return r / 233280 }
+            minIdx = tiedIndices[Math.floor(rand() * tiedIndices.length)]
+          }
+          const slot = dayState[minIdx]
+          let summaryId = slot.summaryId
+          if (!summaryId) {
+            const { data: summaryData, error: summaryError } = await (supabase
+              .from('daily_summaries') as any)
+              .insert([{ date: slot.date, user_id: user.id }])
+              .select()
+              .single()
+            if (summaryError) throw summaryError
+            summaryId = summaryData.id
+            slot.summaryId = summaryId
+          }
+          const { error: linkError } = await (supabase
+            .from('daily_summary_highlights') as any)
+            .insert([{ daily_summary_id: summaryId, highlight_id: highlight.id }])
+          if (linkError) throw linkError
+          slot.totalScore += highlight.score
+          createdAssignments.push({
+            day: slot.day,
+            date: slot.date,
+            highlightCount: 1,
+            totalScore: highlight.score,
+          })
+        }
       }
     }
 
-    // NOTE: Redistribute assigns ALL highlights (except reviewed/preserved) evenly across
-    // remaining days (from tomorrow to end of month, excluding today and completed days)
-    // Preserves: today's assignments (always) and all completed days (including future ones)
-    // Full month coverage is ensured by the assign endpoint, which should be called
-    // at the start of each month or when needed
+    // NOTE: Redistribute assigns only NEW highlights (not yet on any day this month) to
+    // remaining days. Existing assignments are never removed or moved.
 
     // NOTE: We do NOT mark highlights as reviewed here.
     // Highlights should only be marked as reviewed when they receive a rating
