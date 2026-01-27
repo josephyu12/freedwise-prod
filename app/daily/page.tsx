@@ -628,23 +628,28 @@ export default function DailyPage() {
           )
       }
 
-      // Add overlay to rated highlight and scroll to next one
-      if (summary && rating !== null) {
-        // Mark this highlight as rated (for overlay)
-        setSlidingOutIds((prev) => new Set(prev).add(summaryHighlightId))
-        
-        // Find the next highlight to scroll to
-        const currentIndex = summary.highlights.findIndex((sh) => sh.id === summaryHighlightId)
-        const nextHighlight = summary.highlights[currentIndex + 1]
-        
-        if (nextHighlight?.highlight?.id) {
-          // Scroll to next highlight after a brief delay
-          setTimeout(() => {
-            const nextElement = document.getElementById(`highlight-${nextHighlight.highlight!.id}`)
-            if (nextElement) {
-              nextElement.scrollIntoView({ behavior: 'smooth', block: 'center' })
-            }
-          }, 200)
+      // Update overlay state: add overlay when rating is set, remove when cleared
+      if (summary) {
+        if (rating !== null) {
+          setSlidingOutIds((prev) => new Set(prev).add(summaryHighlightId))
+          // Find the next highlight to scroll to
+          const currentIndex = summary.highlights.findIndex((sh) => sh.id === summaryHighlightId)
+          const nextHighlight = summary.highlights[currentIndex + 1]
+          if (nextHighlight?.highlight?.id) {
+            setTimeout(() => {
+              const nextElement = document.getElementById(`highlight-${nextHighlight.highlight!.id}`)
+              if (nextElement) {
+                nextElement.scrollIntoView({ behavior: 'smooth', block: 'center' })
+              }
+            }, 200)
+          }
+        } else {
+          // Clearing rating: ungray the highlight by removing from slidingOutIds
+          setSlidingOutIds((prev) => {
+            const next = new Set(prev)
+            next.delete(summaryHighlightId)
+            return next
+          })
         }
       }
 
