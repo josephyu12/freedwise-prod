@@ -145,6 +145,7 @@ export default function ImportPage() {
       // Import only new highlights in batches
       const batchSize = 10
       let imported = 0
+      const newHighlightIds: string[] = []
 
       for (let i = 0; i < newHighlights.length; i += batchSize) {
         const batch = newHighlights.slice(i, i + batchSize)
@@ -160,22 +161,32 @@ export default function ImportPage() {
           user_id: user.id, // Required for RLS policy
         }))
 
-        const { error: insertError } = await (supabase
+        const { data: inserted, error: insertError } = await (supabase
           .from('highlights') as any)
           .insert(highlightsToInsert)
+          .select('id')
 
         if (insertError) throw insertError
+        if (inserted?.length) {
+          newHighlightIds.push(...inserted.map((row: { id: string }) => row.id))
+        }
 
         imported += batch.length
         setProgress({ current: imported, total: newHighlights.length })
       }
 
-      // Redistribute daily assignments for newly imported highlights (non-blocking)
-      fetch('/api/daily/redistribute', {
-        method: 'POST',
-      }).catch((error) => {
-        console.warn('Failed to redistribute daily assignments:', error)
-      })
+      // Redistribute daily assignments so new highlights get placed on remaining days
+      if (newHighlightIds.length > 0) {
+        try {
+          await fetch('/api/daily/redistribute', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ highlightIds: newHighlightIds }),
+          })
+        } catch (error) {
+          console.warn('Failed to redistribute daily assignments:', error)
+        }
+      }
 
       const message = skipped > 0
         ? `Successfully imported ${imported} new highlights. ${skipped} duplicate(s) skipped.`
