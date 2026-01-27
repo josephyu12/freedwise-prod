@@ -145,22 +145,30 @@ export async function GET(request: NextRequest) {
 
     console.log(`[PREPARE-NEXT-MONTH] Preparing assignments for ${monthYear}`)
 
-    // Get all unique user IDs from highlights table
+    // Get all unique user IDs from highlights table (paginate to avoid 1000-row default limit)
     console.log('[PREPARE-NEXT-MONTH] Fetching user IDs from highlights table...')
-    const { data: userHighlights, error: usersError } = await supabase
-      .from('highlights')
-      .select('user_id')
-      .eq('archived', false)
+    const USER_PAGE = 1000
+    const allUserIds = new Set<string>()
+    let userFrom = 0
+    while (true) {
+      const { data: userPage, error: usersError } = await supabase
+        .from('highlights')
+        .select('user_id')
+        .eq('archived', false)
+        .range(userFrom, userFrom + USER_PAGE - 1)
 
-    if (usersError) {
-      console.error('[PREPARE-NEXT-MONTH] Error fetching user highlights:', usersError)
-      throw usersError
+      if (usersError) {
+        console.error('[PREPARE-NEXT-MONTH] Error fetching user highlights:', usersError)
+        throw usersError
+      }
+      const page = (userPage || []) as Array<{ user_id: string }>
+      for (const h of page) allUserIds.add(h.user_id)
+      if (page.length < USER_PAGE) break
+      userFrom += USER_PAGE
     }
+    console.log(`[PREPARE-NEXT-MONTH] Fetched user_id rows in range, found ${allUserIds.size} unique user(s)`)
 
-    console.log(`[PREPARE-NEXT-MONTH] Raw highlights query returned ${userHighlights?.length || 0} rows`)
-
-    // Get unique user IDs
-    let userIds = Array.from(new Set((userHighlights || []).map((h: any) => h.user_id)))
+    let userIds = Array.from(allUserIds)
     
     // If testing for a specific user, filter to just that user
     if (testUserId) {
