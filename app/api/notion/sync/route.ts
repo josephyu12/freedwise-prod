@@ -705,8 +705,22 @@ function htmlToNotionBlocks(html: string): any[] {
   return blocks
 }
 
-// Process a single queue item
-async function processQueueItem(supabase: any, queueItem: any, notionSettings: { notion_api_key: string; notion_page_id: string; enabled: boolean }) {
+// Process a single queue item. Claims this one item to "processing" before work; if claim fails, returns without doing work.
+async function processQueueItem(supabase: any, queueItem: any, notionSettings: { notion_api_key: string; notion_page_id: string; enabled: boolean }, now?: string, staleCutoff?: string) {
+  const nowVal = now ?? new Date().toISOString()
+  const staleVal = staleCutoff ?? new Date(Date.now() - 2 * 60 * 1000).toISOString()
+  // Claim only this item so we never bulk-leave items stuck in "processing"
+  const { data: claimed, error: claimErr } = await (supabase
+    .from('notion_sync_queue') as any)
+    .update({ status: 'processing' })
+    .eq('id', queueItem.id)
+    .or(`status.eq.pending,and(status.eq.failed,or(next_retry_at.is.null,next_retry_at.lte.${nowVal})),and(status.eq.processing,updated_at.lt.${staleVal})`)
+    .select('id')
+
+  if (claimErr || !claimed || claimed.length === 0) {
+    return { success: false, error: 'Could not claim item (already taken or processed)' }
+  }
+
   const notion = new Client({
     auth: notionSettings.notion_api_key,
   })
@@ -1371,12 +1385,9 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
 
 // Process queue items for a user
 export async function POST(request: NextRequest) {
-  let supabase: Awaited<ReturnType<typeof createClient>> | null = null
-  let claimedItemIds: string[] = []
   try {
-    supabase = await createClient()
-    
-    // Check authentication
+    const supabase = await createClient()
+
     const { data: { user }, error: authError } = await supabase.auth.getUser()
     if (authError || !user) {
       return NextResponse.json(
@@ -1385,7 +1396,6 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // Get user's Notion settings
     const { data: notionSettingsData, error: settingsError } = await supabase
       .from('user_notion_settings')
       .select('notion_api_key, notion_page_id, enabled')
@@ -1402,83 +1412,42 @@ export async function POST(request: NextRequest) {
 
     const notionSettings = notionSettingsData as { notion_api_key: string; notion_page_id: string; enabled: boolean }
 
-    // Stale threshold: treat items stuck in "processing" for >2 min as reclaimable
-    const staleCutoff = new Date(Date.now() - 2 * 60 * 1000).toISOString()
     const now = new Date().toISOString()
+    const staleCutoff = new Date(Date.now() - 2 * 60 * 1000).toISOString()
 
-    // Get claimable queue items for this user (larger batch; we parallelize by highlight)
-    // 1. Pending (retry_count < 5)
-    // 2. Failed and retryable (retry_count < 20, next_retry_at due)
-    // 3. Stale processing (stuck >10 min — previous worker likely died)
-    const batchSize = 30
-    const { data: candidateItems, error: queueError } = await (supabase
+    // Unstick only stale "processing" (stuck >2 min); don't touch items currently being worked on
+    await (supabase
+      .from('notion_sync_queue') as any)
+      .update({ status: 'pending' })
+      .eq('user_id', user.id)
+      .eq('status', 'processing')
+      .lt('updated_at', staleCutoff)
+
+    // Fetch pending/failed/stale items (no bulk claim — we claim one-by-one inside processQueueItem)
+    const { data: toProcess, error: queueError } = await (supabase
       .from('notion_sync_queue') as any)
       .select('*')
       .eq('user_id', user.id)
       .or(`and(status.eq.pending,retry_count.lt.5),and(status.eq.failed,retry_count.lt.20,or(next_retry_at.is.null,next_retry_at.lte.${now})),and(status.eq.processing,updated_at.lt.${staleCutoff})`)
       .order('created_at', { ascending: true })
-      .limit(batchSize)
+      .limit(10)
 
     if (queueError) throw queueError
 
-    if (!candidateItems || candidateItems.length === 0) {
+    if (!toProcess || toProcess.length === 0) {
       return NextResponse.json({
         processed: 0,
         message: 'No pending items to process',
       })
     }
 
-    // Claim items: only update rows that are still pending/failed/stale (avoids double-processing)
-    // Another worker may have already claimed some of these; we process only what we actually claimed.
-    const itemIds = candidateItems.map((item: any) => item.id)
-    const { data: claimedItems, error: claimError } = await (supabase
-      .from('notion_sync_queue') as any)
-      .update({ status: 'processing' })
-      .in('id', itemIds)
-      .or(`status.eq.pending,and(status.eq.failed,or(next_retry_at.is.null,next_retry_at.lte.${now})),and(status.eq.processing,updated_at.lt.${staleCutoff})`)
-      .select('*')
-
-    if (claimError) throw claimError
-
-    const toProcess = claimedItems ?? []
-    if (toProcess.length === 0) {
-      return NextResponse.json({
-        processed: 0,
-        message: 'No items claimed (another worker may have claimed them)',
-      })
-    }
-    claimedItemIds = toProcess.map((item: any) => item.id)
-
-    // Group by "serialization key": same highlight → sequential; different highlights → parallel.
-    // For add/update use highlight_id; for delete (highlight_id null) use item id so deletes run in parallel.
-    const keyFor = (item: any) => item.highlight_id ?? `delete-${item.id}`
-    const groups = new Map<string, any[]>()
+    let processed = 0
+    let failed = 0
     for (const item of toProcess) {
-      const key = keyFor(item)
-      if (!groups.has(key)) groups.set(key, [])
-      groups.get(key)!.push(item)
+      const result = await processQueueItem(supabase, item, notionSettings, now, staleCutoff)
+      if (result.success) processed++
+      else failed++
     }
-
-    const runGroup = async (items: any[]) => {
-      let p = 0
-      let f = 0
-      for (const item of items) {
-        try {
-          const result = await processQueueItem(supabase, item, notionSettings)
-          if (result.success) p++
-          else f++
-        } catch (e) {
-          // processQueueItem should not throw; if it does, count as failed and continue
-          console.error('processQueueItem threw for item', item.id, e)
-          f++
-        }
-      }
-      return { processed: p, failed: f }
-    }
-
-    const groupResults = await Promise.all([...groups.values()].map(runGroup))
-    const processed = groupResults.reduce((s, r) => s + r.processed, 0)
-    const failed = groupResults.reduce((s, r) => s + r.failed, 0)
 
     return NextResponse.json({
       processed,
@@ -1487,18 +1456,6 @@ export async function POST(request: NextRequest) {
     })
   } catch (error: any) {
     console.error('Error processing Notion sync queue:', error)
-    // Reset any items we claimed but didn't finish so they don't stay stuck in "processing"
-    if (supabase && claimedItemIds.length > 0) {
-      try {
-        await (supabase
-          .from('notion_sync_queue') as any)
-          .update({ status: 'pending' })
-          .in('id', claimedItemIds)
-          .eq('status', 'processing')
-      } catch (resetErr: any) {
-        console.error('Failed to reset stuck queue items to pending:', resetErr?.message ?? resetErr)
-      }
-    }
     return NextResponse.json(
       { error: error.message || 'Failed to process sync queue' },
       { status: 500 }
