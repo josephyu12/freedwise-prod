@@ -204,32 +204,44 @@ export async function GET(request: NextRequest) {
       console.log(`[PREPARE-NEXT-MONTH] Processing user ${userId}...`)
       
       try {
-        // Get all unarchived highlights for this user
+        // Fetch ALL unarchived highlights (Supabase default limit is 1000; paginate to get all)
         console.log(`[PREPARE-NEXT-MONTH] Fetching highlights for user ${userId}...`)
-        const { data: allHighlightsData, error: highlightsError } = await supabase
-          .from('highlights')
-          .select('id, text, html_content')
-          .eq('user_id', userId)
-          .eq('archived', false)
-
-        if (highlightsError) {
-          console.error(`[PREPARE-NEXT-MONTH] Error fetching highlights for user ${userId}:`, highlightsError)
-          throw highlightsError
+        const PAGE = 1000
+        let allHighlightsData: Array<{ id: string; text: string; html_content: string | null }> = []
+        let from = 0
+        while (true) {
+          const { data, error: pageError } = await supabase
+            .from('highlights')
+            .select('id, text, html_content')
+            .eq('user_id', userId)
+            .eq('archived', false)
+            .range(from, from + PAGE - 1)
+          if (pageError) {
+            console.error(`[PREPARE-NEXT-MONTH] Error fetching highlights for user ${userId}:`, pageError)
+            throw pageError
+          }
+          const page = (data || []) as Array<{ id: string; text: string; html_content: string | null }>
+          allHighlightsData = allHighlightsData.concat(page)
+          if (page.length < PAGE) break
+          from += PAGE
         }
+        console.log(`[PREPARE-NEXT-MONTH] Found ${allHighlightsData.length} highlights for user ${userId}`)
 
-        console.log(`[PREPARE-NEXT-MONTH] Found ${allHighlightsData?.length || 0} highlights for user ${userId}`)
-
-        // Get highlights that have already been reviewed for next month
-        const { data: reviewedHighlightsData, error: reviewedError } = await supabase
-          .from('highlight_months_reviewed')
-          .select('highlight_id')
-          .eq('month_year', monthYear)
-
-        if (reviewedError) throw reviewedError
-
-        const reviewedHighlightIds = new Set(
-          (reviewedHighlightsData || []).map((r: any) => r.highlight_id)
-        )
+        // Get highlights that have already been reviewed for next month (paginate to avoid 1000 limit)
+        const reviewedHighlightIds = new Set<string>()
+        let revFrom = 0
+        while (true) {
+          const { data: reviewedPage, error: reviewedError } = await supabase
+            .from('highlight_months_reviewed')
+            .select('highlight_id')
+            .eq('month_year', monthYear)
+            .range(revFrom, revFrom + PAGE - 1)
+          if (reviewedError) throw reviewedError
+          const revPage = (reviewedPage || []) as Array<{ highlight_id: string }>
+          for (const r of revPage) reviewedHighlightIds.add(r.highlight_id)
+          if (revPage.length < PAGE) break
+          revFrom += PAGE
+        }
 
         // Filter out highlights that have already been reviewed for next month
         const allHighlights = ((allHighlightsData || []) as Array<{
@@ -260,7 +272,6 @@ export async function GET(request: NextRequest) {
           }
         })
 
-        // Seeded shuffle function (same as in assign route)
         const seededShuffle = <T,>(array: T[], seed: number): T[] => {
           const shuffled = [...array]
           let random = seed
@@ -274,9 +285,13 @@ export async function GET(request: NextRequest) {
           }
           return shuffled
         }
+        const hashStr = (s: string): number => {
+          let h = 0
+          for (let i = 0; i < s.length; i++) h = ((h << 5) - h + s.charCodeAt(i)) | 0
+          return h
+        }
 
-        // Assign highlights to the whole next month (all days 1..daysInMonth, past and future)
-        const seed = year * 100 + month
+        const seed = year * 373 + month * 31
         const shuffledHighlights = seededShuffle(highlightsWithScore, seed)
         const sortedHighlights = [...shuffledHighlights].sort((a, b) => b.score - a.score)
 
@@ -291,13 +306,17 @@ export async function GET(request: NextRequest) {
         }))
 
         for (const highlight of sortedHighlights) {
-          let minDayIndex = 0
           let minScore = days[0].totalScore
           for (let i = 1; i < days.length; i++) {
-            if (days[i].totalScore < minScore) {
-              minScore = days[i].totalScore
-              minDayIndex = i
-            }
+            if (days[i].totalScore < minScore) minScore = days[i].totalScore
+          }
+          const tiedIndices = days.map((_, i) => i).filter((i) => days[i].totalScore === minScore)
+          let minDayIndex = tiedIndices[0]
+          if (tiedIndices.length > 1) {
+            const tieSeed = (seed + hashStr(highlight.id)) >>> 0
+            let r = tieSeed
+            const rand = () => { r = (r * 9301 + 49297) % 233280; return r / 233280 }
+            minDayIndex = tiedIndices[Math.floor(rand() * tiedIndices.length)]
           }
           days[minDayIndex].highlights.push(highlight)
           days[minDayIndex].totalScore += highlight.score

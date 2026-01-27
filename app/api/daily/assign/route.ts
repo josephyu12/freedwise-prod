@@ -36,10 +36,20 @@ function seededShuffle<T>(array: T[], seed: number): T[] {
   return shuffled
 }
 
+/** Simple string hash for deterministic tie-breaking per highlight */
+function hashStr(s: string): number {
+  let h = 0
+  for (let i = 0; i < s.length; i++) {
+    h = ((h << 5) - h + s.charCodeAt(i)) | 0
+  }
+  return h
+}
+
 /**
  * Assigns highlights to days of the month using a bin-packing algorithm
- * to ensure roughly equal total character counts per day
- * Uses a seeded shuffle based on month/year to provide variety month-to-month
+ * to ensure roughly equal total character counts per day.
+ * Uses a richer seed (year*373 + month*31) and per-highlight tie-breaking
+ * so the same highlight tends to land on different days each month.
  */
 function assignHighlightsToDays(
   highlights: HighlightWithScore[],
@@ -47,40 +57,36 @@ function assignHighlightsToDays(
   year: number,
   month: number
 ): DayAssignment[] {
-  // Create a seed from year and month for deterministic but varied shuffling
-  // This ensures each month gets a different order, but the same month always gets the same order
-  const seed = year * 100 + month
-  
-  // Shuffle highlights with seed to add variety month-to-month
-  // Then sort by score for better bin-packing
+  // Richer seed so month-to-month variation is stronger (avoids same day each month)
+  const seed = year * 373 + month * 31
+
   const shuffledHighlights = seededShuffle(highlights, seed)
   const sortedHighlights = [...shuffledHighlights].sort((a, b) => b.score - a.score)
-  
-  // Initialize days with empty arrays
+
   const days: DayAssignment[] = Array.from({ length: daysInMonth }, (_, i) => ({
     day: i + 1,
     highlights: [],
     totalScore: 0,
   }))
 
-  // Calculate target score per day
-  const totalScore = highlights.reduce((sum, h) => sum + h.score, 0)
-  const targetScorePerDay = totalScore / daysInMonth
-
-  // Assign each highlight to the day with the lowest current total score
   for (const highlight of sortedHighlights) {
-    // Find the day with the lowest total score
-    let minDayIndex = 0
     let minScore = days[0].totalScore
-
     for (let i = 1; i < days.length; i++) {
-      if (days[i].totalScore < minScore) {
-        minScore = days[i].totalScore
-        minDayIndex = i
+      if (days[i].totalScore < minScore) minScore = days[i].totalScore
+    }
+    const tiedIndices = days.map((_, i) => i).filter((i) => days[i].totalScore === minScore)
+    // Tie-break using highlight id + seed so same highlight lands on different days each month
+    let minDayIndex = tiedIndices[0]
+    if (tiedIndices.length > 1) {
+      const tieSeed = (seed + hashStr(highlight.id)) >>> 0
+      let r = tieSeed
+      const rand = () => {
+        r = (r * 9301 + 49297) % 233280
+        return r / 233280
       }
+      minDayIndex = tiedIndices[Math.floor(rand() * tiedIndices.length)]
     }
 
-    // Assign highlight to this day
     days[minDayIndex].highlights.push(highlight)
     days[minDayIndex].totalScore += highlight.score
   }
@@ -129,26 +135,39 @@ export async function POST(request: NextRequest) {
     const daysInMonth = new Date(year, month, 0).getDate()
     const monthYear = `${year}-${String(month).padStart(2, '0')}`
 
-    // Get all unarchived highlights for this user
-    const { data: allHighlightsData, error: highlightsError } = await supabase
-      .from('highlights')
-      .select('id, text, html_content')
-      .eq('user_id', user.id)
-      .eq('archived', false)
+    // Fetch ALL unarchived highlights (Supabase default limit is 1000; paginate to get all)
+    const PAGE = 1000
+    let allHighlightsData: Array<{ id: string; text: string; html_content: string | null }> = []
+    let from = 0
+    while (true) {
+      const { data, error: pageError } = await supabase
+        .from('highlights')
+        .select('id, text, html_content')
+        .eq('user_id', user.id)
+        .eq('archived', false)
+        .range(from, from + PAGE - 1)
+      if (pageError) throw pageError
+      const page = (data || []) as Array<{ id: string; text: string; html_content: string | null }>
+      allHighlightsData = allHighlightsData.concat(page)
+      if (page.length < PAGE) break
+      from += PAGE
+    }
 
-    if (highlightsError) throw highlightsError
-
-    // Get highlights that have already been reviewed for this month
-    const { data: reviewedHighlightsData, error: reviewedError } = await supabase
-      .from('highlight_months_reviewed')
-      .select('highlight_id')
-      .eq('month_year', monthYear)
-
-    if (reviewedError) throw reviewedError
-
-    const reviewedHighlightIds = new Set(
-      (reviewedHighlightsData || []).map((r: any) => r.highlight_id)
-    )
+    // Get highlights that have already been reviewed for this month (paginate to avoid 1000 limit)
+    let reviewedHighlightIds = new Set<string>()
+    from = 0
+    while (true) {
+      const { data: reviewedPage, error: reviewedError } = await supabase
+        .from('highlight_months_reviewed')
+        .select('highlight_id')
+        .eq('month_year', monthYear)
+        .range(from, from + PAGE - 1)
+      if (reviewedError) throw reviewedError
+      const page = (reviewedPage || []) as Array<{ highlight_id: string }>
+      for (const r of page) reviewedHighlightIds.add(r.highlight_id)
+      if (page.length < PAGE) break
+      from += PAGE
+    }
 
     // Filter out highlights that have already been reviewed this month
     const allHighlights = ((allHighlightsData || []) as Array<{

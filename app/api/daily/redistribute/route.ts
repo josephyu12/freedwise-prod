@@ -76,26 +76,39 @@ export async function POST(request: NextRequest) {
 
     const monthYear = `${year}-${String(month).padStart(2, '0')}`
 
-    // Get all unarchived highlights for this user
-    const { data: allHighlightsData, error: highlightsError } = await supabase
-      .from('highlights')
-      .select('id, text, html_content')
-      .eq('user_id', user.id)
-      .eq('archived', false)
+    // Fetch ALL unarchived highlights (Supabase default limit is 1000; paginate to get all)
+    const PAGE = 1000
+    let allHighlightsData: Array<{ id: string; text: string; html_content: string | null }> = []
+    let from = 0
+    while (true) {
+      const { data, error: pageError } = await supabase
+        .from('highlights')
+        .select('id, text, html_content')
+        .eq('user_id', user.id)
+        .eq('archived', false)
+        .range(from, from + PAGE - 1)
+      if (pageError) throw pageError
+      const page = (data || []) as Array<{ id: string; text: string; html_content: string | null }>
+      allHighlightsData = allHighlightsData.concat(page)
+      if (page.length < PAGE) break
+      from += PAGE
+    }
 
-    if (highlightsError) throw highlightsError
-
-    // Get highlights that have already been reviewed for this month
-    const { data: reviewedHighlightsData, error: reviewedError } = await supabase
-      .from('highlight_months_reviewed')
-      .select('highlight_id')
-      .eq('month_year', monthYear)
-
-    if (reviewedError) throw reviewedError
-
-    const reviewedHighlightIds = new Set(
-      (reviewedHighlightsData || []).map((r: any) => r.highlight_id)
-    )
+    // Get highlights that have already been reviewed for this month (paginate to avoid 1000 limit)
+    const reviewedHighlightIds = new Set<string>()
+    let revFrom = 0
+    while (true) {
+      const { data: reviewedPage, error: reviewedError } = await supabase
+        .from('highlight_months_reviewed')
+        .select('highlight_id')
+        .eq('month_year', monthYear)
+        .range(revFrom, revFrom + PAGE - 1)
+      if (reviewedError) throw reviewedError
+      const page = (reviewedPage || []) as Array<{ highlight_id: string }>
+      for (const r of page) reviewedHighlightIds.add(r.highlight_id)
+      if (page.length < PAGE) break
+      revFrom += PAGE
+    }
 
     // Get existing assignments first to identify reviewed highlights (those with ratings)
     const startDate = `${year}-${String(month).padStart(2, '0')}-01`
@@ -153,22 +166,24 @@ export async function POST(request: NextRequest) {
       }
     })
 
-    // Seeded shuffle function for deterministic randomization
     const seededShuffle = <T,>(array: T[], seed: number): T[] => {
       const shuffled = [...array]
       let random = seed
-      
       const seededRandom = () => {
         random = (random * 9301 + 49297) % 233280
         return random / 233280
       }
-      
       for (let i = shuffled.length - 1; i > 0; i--) {
         const j = Math.floor(seededRandom() * (i + 1));
         [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]]
       }
-      
       return shuffled
+    }
+
+    const hashStr = (s: string): number => {
+      let h = 0
+      for (let i = 0; i < s.length; i++) h = ((h << 5) - h + s.charCodeAt(i)) | 0
+      return h
     }
 
     // Get existing assignments and preserve those for reviewed highlights
@@ -321,46 +336,33 @@ export async function POST(request: NextRequest) {
 
     // Only redistribute if there are highlights to redistribute
     if (highlightsToRedistribute.length > 0) {
-      // Recalculate assignments only for non-reviewed highlights
-      const seed = year * 100 + month
+      const seed = year * 373 + month * 31
       const shuffledHighlights = seededShuffle(highlightsToRedistribute, seed)
       const sortedHighlights = [...shuffledHighlights].sort((a, b) => b.score - a.score)
       const totalScore = highlightsToRedistribute.reduce((sum, h) => sum + h.score, 0)
-      
-      // Assign only to future days (tomorrow through end of month; today is never changed)
       const targetScorePerDay = totalScore / remainingDaysInMonth
 
-      // Initialize days for remaining days (from tomorrow to end of month, excluding completed days)
       for (let i = 0; i < remainingDaysInMonth; i++) {
         const day = startDay + i
-        if (day > daysInMonth) break // Safety check
-        
+        if (day > daysInMonth) break
         const date = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
-        
-        // Skip completed days entirely
-        if (completedDays.has(date)) {
-          continue
-        }
-
-        days.push({
-          day,
-          highlights: [],
-          totalScore: 0, // Start fresh - we've already deleted assignments from these days
-        })
+        if (completedDays.has(date)) continue
+        days.push({ day, highlights: [], totalScore: 0 })
       }
 
-      // Assign non-reviewed highlights to current month (remaining days)
       for (const highlight of sortedHighlights) {
-        let minDayIndex = 0
         let minScore = days[0].totalScore
-
         for (let i = 1; i < days.length; i++) {
-          if (days[i].totalScore < minScore) {
-            minScore = days[i].totalScore
-            minDayIndex = i
-          }
+          if (days[i].totalScore < minScore) minScore = days[i].totalScore
         }
-
+        const tiedIndices = days.map((_, i) => i).filter((i) => days[i].totalScore === minScore)
+        let minDayIndex = tiedIndices[0]
+        if (tiedIndices.length > 1) {
+          const tieSeed = (seed + hashStr(highlight.id)) >>> 0
+          let r = tieSeed
+          const rand = () => { r = (r * 9301 + 49297) % 233280; return r / 233280 }
+          minDayIndex = tiedIndices[Math.floor(rand() * tiedIndices.length)]
+        }
         days[minDayIndex].highlights.push(highlight)
         days[minDayIndex].totalScore += highlight.score
       }
@@ -488,7 +490,7 @@ export async function POST(request: NextRequest) {
       )
       if (highlightsForFm.length === 0) continue
 
-      const fmSeed = fm.year * 100 + fm.month
+      const fmSeed = fm.year * 373 + fm.month * 31
       const fmShuffled = seededShuffle(highlightsForFm, fmSeed)
       const fmSorted = [...fmShuffled].sort((a, b) => b.score - a.score)
       const fmDays: Array<{
@@ -502,13 +504,17 @@ export async function POST(request: NextRequest) {
       }))
 
       for (const highlight of fmSorted) {
-        let minIdx = 0
         let minScore = fmDays[0].totalScore
         for (let i = 1; i < fmDays.length; i++) {
-          if (fmDays[i].totalScore < minScore) {
-            minScore = fmDays[i].totalScore
-            minIdx = i
-          }
+          if (fmDays[i].totalScore < minScore) minScore = fmDays[i].totalScore
+        }
+        const tiedIndices = fmDays.map((_, i) => i).filter((i) => fmDays[i].totalScore === minScore)
+        let minIdx = tiedIndices[0]
+        if (tiedIndices.length > 1) {
+          const tieSeed = (fmSeed + hashStr(highlight.id)) >>> 0
+          let r = tieSeed
+          const rand = () => { r = (r * 9301 + 49297) % 233280; return r / 233280 }
+          minIdx = tiedIndices[Math.floor(rand() * tiedIndices.length)]
         }
         fmDays[minIdx].highlights.push(highlight)
         fmDays[minIdx].totalScore += highlight.score
