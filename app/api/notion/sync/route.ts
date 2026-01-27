@@ -705,22 +705,8 @@ function htmlToNotionBlocks(html: string): any[] {
   return blocks
 }
 
-// Process a single queue item. Claims this one item to "processing" before work; if claim fails, returns without doing work.
-async function processQueueItem(supabase: any, queueItem: any, notionSettings: { notion_api_key: string; notion_page_id: string; enabled: boolean }, now?: string, staleCutoff?: string) {
-  const nowVal = now ?? new Date().toISOString()
-  const staleVal = staleCutoff ?? new Date(Date.now() - 2 * 60 * 1000).toISOString()
-  // Claim only this item so we never bulk-leave items stuck in "processing"
-  const { data: claimed, error: claimErr } = await (supabase
-    .from('notion_sync_queue') as any)
-    .update({ status: 'processing' })
-    .eq('id', queueItem.id)
-    .or(`status.eq.pending,and(status.eq.failed,or(next_retry_at.is.null,next_retry_at.lte.${nowVal})),and(status.eq.processing,updated_at.lt.${staleVal})`)
-    .select('id')
-
-  if (claimErr || !claimed || claimed.length === 0) {
-    return { success: false, error: 'Could not claim item (already taken or processed)' }
-  }
-
+// Process a single queue item. Updates to completed/failed at end; no "processing" state.
+async function processQueueItem(supabase: any, queueItem: any, notionSettings: { notion_api_key: string; notion_page_id: string; enabled: boolean }) {
   const notion = new Client({
     auth: notionSettings.notion_api_key,
   })
@@ -1444,7 +1430,7 @@ export async function POST(request: NextRequest) {
     let processed = 0
     let failed = 0
     for (const item of toProcess) {
-      const result = await processQueueItem(supabase, item, notionSettings, now, staleCutoff)
+      const result = await processQueueItem(supabase, item, notionSettings)
       if (result.success) processed++
       else failed++
     }
