@@ -115,6 +115,8 @@ function htmlToNotionRichText(html: string): any[] {
             currentLink = hrefMatch[1]
           }
         }
+      } else if (tagName === 'br') {
+        currentSegment.text += '\n'
       }
       
       i = tagEnd + 1
