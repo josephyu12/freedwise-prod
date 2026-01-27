@@ -46,11 +46,14 @@ export async function POST(request: NextRequest) {
       })
     }
 
+    // Type assertion for summary
+    const typedSummary = summary as { id: string; date: string }
+
     // Get all highlights assigned to this day
     const { data: allAssignments, error: assignmentsError } = await supabase
       .from('daily_summary_highlights')
       .select('id, highlight_id, rating')
-      .eq('daily_summary_id', summary.id)
+      .eq('daily_summary_id', typedSummary.id)
 
     if (assignmentsError) throw assignmentsError
 
