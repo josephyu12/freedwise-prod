@@ -45,6 +45,10 @@ export default function NotionSyncProcessor() {
           const data = await response.json()
           if (data.processed > 0) {
             console.log(`Processed ${data.processed} Notion sync items`)
+            // Drain more immediately instead of waiting for next interval
+            isProcessingRef.current = false
+            setTimeout(processQueue, 0)
+            return
           }
         }
       }

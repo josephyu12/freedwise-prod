@@ -1371,8 +1371,10 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
 
 // Process queue items for a user
 export async function POST(request: NextRequest) {
+  let supabase: Awaited<ReturnType<typeof createClient>> | null = null
+  let claimedItemIds: string[] = []
   try {
-    const supabase = await createClient()
+    supabase = await createClient()
     
     // Check authentication
     const { data: { user }, error: authError } = await supabase.auth.getUser()
@@ -1400,21 +1402,22 @@ export async function POST(request: NextRequest) {
 
     const notionSettings = notionSettingsData as { notion_api_key: string; notion_page_id: string; enabled: boolean }
 
-    // Stale threshold: treat items stuck in "processing" for >10 min as reclaimable
-    const staleCutoff = new Date(Date.now() - 10 * 60 * 1000).toISOString()
+    // Stale threshold: treat items stuck in "processing" for >2 min as reclaimable
+    const staleCutoff = new Date(Date.now() - 2 * 60 * 1000).toISOString()
     const now = new Date().toISOString()
 
-    // Get claimable queue items for this user (limit to 10 at a time):
+    // Get claimable queue items for this user (larger batch; we parallelize by highlight)
     // 1. Pending (retry_count < 5)
     // 2. Failed and retryable (retry_count < 20, next_retry_at due)
     // 3. Stale processing (stuck >10 min — previous worker likely died)
+    const batchSize = 30
     const { data: candidateItems, error: queueError } = await (supabase
       .from('notion_sync_queue') as any)
       .select('*')
       .eq('user_id', user.id)
       .or(`and(status.eq.pending,retry_count.lt.5),and(status.eq.failed,retry_count.lt.20,or(next_retry_at.is.null,next_retry_at.lte.${now})),and(status.eq.processing,updated_at.lt.${staleCutoff})`)
       .order('created_at', { ascending: true })
-      .limit(10)
+      .limit(batchSize)
 
     if (queueError) throw queueError
 
@@ -1444,18 +1447,38 @@ export async function POST(request: NextRequest) {
         message: 'No items claimed (another worker may have claimed them)',
       })
     }
+    claimedItemIds = toProcess.map((item: any) => item.id)
 
-    // Process only the items we actually claimed
-    let processed = 0
-    let failed = 0
+    // Group by "serialization key": same highlight → sequential; different highlights → parallel.
+    // For add/update use highlight_id; for delete (highlight_id null) use item id so deletes run in parallel.
+    const keyFor = (item: any) => item.highlight_id ?? `delete-${item.id}`
+    const groups = new Map<string, any[]>()
     for (const item of toProcess) {
-      const result = await processQueueItem(supabase, item, notionSettings)
-      if (result.success) {
-        processed++
-      } else {
-        failed++
-      }
+      const key = keyFor(item)
+      if (!groups.has(key)) groups.set(key, [])
+      groups.get(key)!.push(item)
     }
+
+    const runGroup = async (items: any[]) => {
+      let p = 0
+      let f = 0
+      for (const item of items) {
+        try {
+          const result = await processQueueItem(supabase, item, notionSettings)
+          if (result.success) p++
+          else f++
+        } catch (e) {
+          // processQueueItem should not throw; if it does, count as failed and continue
+          console.error('processQueueItem threw for item', item.id, e)
+          f++
+        }
+      }
+      return { processed: p, failed: f }
+    }
+
+    const groupResults = await Promise.all([...groups.values()].map(runGroup))
+    const processed = groupResults.reduce((s, r) => s + r.processed, 0)
+    const failed = groupResults.reduce((s, r) => s + r.failed, 0)
 
     return NextResponse.json({
       processed,
@@ -1464,6 +1487,18 @@ export async function POST(request: NextRequest) {
     })
   } catch (error: any) {
     console.error('Error processing Notion sync queue:', error)
+    // Reset any items we claimed but didn't finish so they don't stay stuck in "processing"
+    if (supabase && claimedItemIds.length > 0) {
+      try {
+        await (supabase
+          .from('notion_sync_queue') as any)
+          .update({ status: 'pending' })
+          .in('id', claimedItemIds)
+          .eq('status', 'processing')
+      } catch (resetErr: any) {
+        console.error('Failed to reset stuck queue items to pending:', resetErr?.message ?? resetErr)
+      }
+    }
     return NextResponse.json(
       { error: error.message || 'Failed to process sync queue' },
       { status: 500 }
