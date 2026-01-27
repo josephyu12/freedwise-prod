@@ -816,13 +816,16 @@ export default function DailyPage() {
         htmlContent
       )
 
-      // Delete from database
+      // Delete from database (CASCADE removes it from daily_summary_highlights, so it won't appear in any day's review)
       const { error } = await (supabase
         .from('highlights') as any)
         .delete()
         .eq('id', highlightId)
 
       if (error) throw error
+
+      // Redistribute remaining highlights across future days so next month's daily reviews stay consistent
+      await fetch('/api/daily/redistribute', { method: 'POST' })
 
       // Reload summary to reflect changes
       await loadDailySummary(date)

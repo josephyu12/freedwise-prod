@@ -3,12 +3,16 @@ import { createClient } from '@/lib/supabase/server'
 
 /**
  * POST /api/daily/redistribute
- * Redistributes highlights for the current month when new highlights are added.
+ * Redistributes highlights for the current month when highlights are added or deleted.
  * Only affects future days: strictly after today (tomorrow through end of month).
  * Today is never changed. Future days that have already been reviewed (all highlights
  * rated) are also left unchanged. Also assigns to future months that have already been
  * portioned out (have at least one daily summary); assigns across all days of each
- * such month. Call when a highlight is added (unless last day of month).
+ * such month. Call when a highlight is added or deleted (unless last day of month).
+ *
+ * Assignment uses only highlights that exist in the highlights table; deleted
+ * highlights are excluded by definition and never appear in next month's daily reviews.
+ * On delete, the DB CASCADE also removes them from daily_summary_highlights.
  */
 export async function POST(request: NextRequest) {
   try {

@@ -451,13 +451,16 @@ export default function SearchPage() {
         htmlContent
       )
 
-      // Delete from database
+      // Delete from database (CASCADE removes it from daily_summary_highlights, so it won't appear in next month's daily reviews)
       const { error } = await (supabase
         .from('highlights') as any)
         .delete()
         .eq('id', id)
 
       if (error) throw error
+
+      // Redistribute remaining highlights across future days so next month's daily reviews stay consistent
+      await fetch('/api/daily/redistribute', { method: 'POST' })
 
       // Remove from results
       setResults(results.filter((h) => h.id !== id))
