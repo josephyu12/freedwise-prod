@@ -363,7 +363,10 @@ export async function POST(request: NextRequest) {
           }))
           const { error: linkError } = await (supabase
             .from('daily_summary_highlights') as any)
-            .insert(summaryHighlights)
+            .upsert(summaryHighlights, {
+              onConflict: 'daily_summary_id,highlight_id',
+              ignoreDuplicates: true,
+            })
           if (linkError) throw linkError
           createdAssignments.push({
             day: daysInMonth,
@@ -428,7 +431,10 @@ export async function POST(request: NextRequest) {
           }
           const { error: linkError } = await (supabase
             .from('daily_summary_highlights') as any)
-            .insert([{ daily_summary_id: summaryId, highlight_id: highlight.id }])
+            .upsert(
+              [{ daily_summary_id: summaryId, highlight_id: highlight.id }],
+              { onConflict: 'daily_summary_id,highlight_id', ignoreDuplicates: true }
+            )
           if (linkError) throw linkError
           slot.totalScore += highlight.score
           createdAssignments.push({
@@ -568,10 +574,13 @@ export async function POST(request: NextRequest) {
 
         const { error: linkError } = await (supabase
           .from('daily_summary_highlights') as any)
-          .insert(newHighlights.map((h) => ({
-            daily_summary_id: summaryId,
-            highlight_id: h.id,
-          })))
+          .upsert(
+            newHighlights.map((h) => ({
+              daily_summary_id: summaryId,
+              highlight_id: h.id,
+            })),
+            { onConflict: 'daily_summary_id,highlight_id', ignoreDuplicates: true }
+          )
         if (linkError) throw linkError
 
         futureMonthAssignments.push({
