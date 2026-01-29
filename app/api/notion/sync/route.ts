@@ -1240,12 +1240,8 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
           const normalizedDeleteNoHtml = normalizedDeleteText.replace(/<[^>]*>/g, '').trim()
           const normalizedDeletePlainNoHtml = normalizedDeletePlainText.replace(/<[^>]*>/g, '').trim()
 
-          if (normalizedCombined === normalizedDeleteNoHtml || 
-              normalizedCombined === normalizedDeletePlainNoHtml ||
-              (normalizedDeletePlainNoHtml && (
-                normalizedCombined.includes(normalizedDeletePlainNoHtml) || 
-                normalizedDeletePlainNoHtml.includes(normalizedCombined)
-              ))) {
+          // Exact match only: group text must equal the highlight we're deleting
+          if (normalizedCombined === normalizedDeleteNoHtml || normalizedCombined === normalizedDeletePlainNoHtml) {
             matchingBlocks.push(...currentHighlightBlocks)
             // The empty line after is the current block (if it's empty)
             if (isEmpty) {
@@ -1278,12 +1274,8 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
             const normalizedCurrent = currentCombined.replace(/<[^>]*>/g, '').trim()
             const normalizedDeleteNoHtml = normalizedDeleteText.replace(/<[^>]*>/g, '').trim()
             const normalizedDeletePlainNoHtml = normalizedDeletePlainText.replace(/<[^>]*>/g, '').trim()
-            if (normalizedCurrent === normalizedDeleteNoHtml ||
-                normalizedCurrent === normalizedDeletePlainNoHtml ||
-                (normalizedDeletePlainNoHtml && (
-                  normalizedCurrent.includes(normalizedDeletePlainNoHtml) ||
-                  normalizedDeletePlainNoHtml.includes(normalizedCurrent)
-                ))) {
+            // Exact match only: current group text must equal the highlight we're deleting
+            if (normalizedCurrent === normalizedDeleteNoHtml || normalizedCurrent === normalizedDeletePlainNoHtml) {
               matchingBlocks.push(...currentHighlightBlocks)
               foundMatch = true
               break
@@ -1311,12 +1303,8 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
         const normalizedDeleteNoHtml = normalizedDeleteText.replace(/<[^>]*>/g, '').trim()
         const normalizedDeletePlainNoHtml = normalizedDeletePlainText.replace(/<[^>]*>/g, '').trim()
 
-        if (normalizedCombined === normalizedDeleteNoHtml || 
-            normalizedCombined === normalizedDeletePlainNoHtml ||
-            (normalizedDeletePlainNoHtml && (
-              normalizedCombined.includes(normalizedDeletePlainNoHtml) || 
-              normalizedDeletePlainNoHtml.includes(normalizedCombined)
-            ))) {
+        // Exact match only: group text must equal the highlight we're deleting
+        if (normalizedCombined === normalizedDeleteNoHtml || normalizedCombined === normalizedDeletePlainNoHtml) {
           matchingBlocks.push(...currentHighlightBlocks)
           foundMatch = true
         }
@@ -1326,24 +1314,16 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
         throw new Error('Highlight not found in Notion page. It may have already been deleted.')
       }
 
-      // Delete all matching blocks
+      // Delete all matching blocks; fail the queue item if any delete fails
       for (const block of matchingBlocks) {
-        try {
-          await notion.blocks.delete({ block_id: block.id })
-        } catch (error) {
-          console.warn(`Failed to delete block ${block.id}:`, error)
-        }
+        await notion.blocks.delete({ block_id: block.id })
       }
 
       // Delete the empty line separator (prefer the one after, but use before if after doesn't exist)
       const emptyLineToDelete = emptyLineAfter || emptyLineBefore
       if (emptyLineToDelete && emptyLineToDelete.type === 'paragraph' && 
           (!emptyLineToDelete.paragraph?.rich_text || emptyLineToDelete.paragraph.rich_text.length === 0)) {
-        try {
-          await notion.blocks.delete({ block_id: emptyLineToDelete.id })
-        } catch (error) {
-          console.warn(`Failed to delete empty line separator:`, error)
-        }
+        await notion.blocks.delete({ block_id: emptyLineToDelete.id })
       }
     }
 
