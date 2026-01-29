@@ -1269,7 +1269,26 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
 
         // Add block to current group (unless it's an empty paragraph at the start)
         if (!isEmpty) {
-          // Non-empty block - add to current group
+          // Before extending the group, check if the current group alone already matches
+          // (fixes delete for single-block highlights like "Test" when followed by another block with no empty line)
+          if (currentHighlightBlocks.length > 0) {
+            const currentCombined = normalizeText(
+              currentHighlightBlocks.map(getBlockText).join(' ')
+            )
+            const normalizedCurrent = currentCombined.replace(/<[^>]*>/g, '').trim()
+            const normalizedDeleteNoHtml = normalizedDeleteText.replace(/<[^>]*>/g, '').trim()
+            const normalizedDeletePlainNoHtml = normalizedDeletePlainText.replace(/<[^>]*>/g, '').trim()
+            if (normalizedCurrent === normalizedDeleteNoHtml ||
+                normalizedCurrent === normalizedDeletePlainNoHtml ||
+                (normalizedDeletePlainNoHtml && (
+                  normalizedCurrent.includes(normalizedDeletePlainNoHtml) ||
+                  normalizedDeletePlainNoHtml.includes(normalizedCurrent)
+                ))) {
+              matchingBlocks.push(...currentHighlightBlocks)
+              foundMatch = true
+              break
+            }
+          }
           currentHighlightBlocks.push(block)
           // Clear emptyLineBefore since we're in a group now
           emptyLineBefore = null
