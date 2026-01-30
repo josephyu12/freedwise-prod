@@ -1,12 +1,19 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import Link from 'next/link'
 
 interface HighlightPreview {
   text: string
   html: string
+}
+
+// Normalize text for comparison (strip HTML, trim, lowercase, collapse whitespace)
+function normalizeText(text: string): string {
+  if (!text) return ''
+  const plainText = text.replace(/<[^>]*>/g, '')
+  return plainText.trim().toLowerCase().replace(/\s+/g, ' ')
 }
 
 export default function ImportPage() {
@@ -20,7 +27,29 @@ export default function ImportPage() {
   const [notionApiKey, setNotionApiKey] = useState('')
   const [pageId, setPageId] = useState('')
   const [showApiKey, setShowApiKey] = useState(false)
+  const [notInNotionCount, setNotInNotionCount] = useState<number>(0)
+  const [notInNotionSnippets, setNotInNotionSnippets] = useState<string[]>([])
   const supabase = createClient()
+
+  // Pre-fill Notion API key and Page ID from settings if available
+  useEffect(() => {
+    let cancelled = false
+    async function loadSettings() {
+      const { data: { user } } = await supabase.auth.getUser()
+      if (!user || cancelled) return
+      const { data, error: fetchError } = await supabase
+        .from('user_notion_settings')
+        .select('notion_api_key, notion_page_id')
+        .eq('user_id', user.id)
+        .maybeSingle()
+      if (fetchError || !data || cancelled) return
+      const row = data as { notion_api_key: string; notion_page_id: string }
+      if (row.notion_api_key?.trim()) setNotionApiKey(row.notion_api_key)
+      if (row.notion_page_id?.trim()) setPageId(row.notion_page_id)
+    }
+    loadSettings()
+    return () => { cancelled = true }
+  }, [supabase])
 
   const handleFetchFromNotion = async () => {
     if (!notionApiKey.trim() || !pageId.trim()) {
@@ -31,6 +60,8 @@ export default function ImportPage() {
     setFetching(true)
     setError(null)
     setPreview([])
+    setNotInNotionCount(0)
+    setNotInNotionSnippets([])
 
     try {
       const response = await fetch('/api/notion/import', {
@@ -56,6 +87,47 @@ export default function ImportPage() {
       }
 
       setPreview(data.highlights)
+
+      // Compute existing highlights that are not on this Notion page (for small display)
+      const { data: { user: u } } = await supabase.auth.getUser()
+      if (u) {
+        const existingHighlights: { text?: string; html_content?: string }[] = []
+        let cursor = 0
+        const pageSize = 1000
+        while (true) {
+          const { data: batch, error: fetchErr } = await supabase
+            .from('highlights')
+            .select('text, html_content')
+            .eq('user_id', u.id)
+            .range(cursor, cursor + pageSize - 1)
+          if (fetchErr || !batch?.length) break
+          existingHighlights.push(...batch)
+          if (batch.length < pageSize) break
+          cursor += pageSize
+        }
+        const notionTexts = new Set<string>()
+        for (const h of data.highlights) {
+          const t = normalizeText(h.text)
+          const html = normalizeText(h.html)
+          if (t) notionTexts.add(t)
+          if (html && html !== t) notionTexts.add(html)
+        }
+        const notInNotion = existingHighlights.filter((h) => {
+          const t = normalizeText(h.text || '')
+          const html = normalizeText(h.html_content || '')
+          return !(t && notionTexts.has(t)) && !(html && notionTexts.has(html))
+        })
+        setNotInNotionCount(notInNotion.length)
+        setNotInNotionSnippets(
+          notInNotion.slice(0, 5).map((h) => {
+            const raw = (h.text || h.html_content || '').replace(/<[^>]*>/g, '').trim()
+            return raw.length > 60 ? raw.slice(0, 57) + '...' : raw
+          })
+        )
+      } else {
+        setNotInNotionCount(0)
+        setNotInNotionSnippets([])
+      }
     } catch (err: any) {
       console.error('Error fetching from Notion:', err)
       setError(err.message || 'Failed to fetch from Notion. Please check your API key and page ID.')
@@ -103,15 +175,6 @@ export default function ImportPage() {
         if (batch.length < pageSize) break
         
         fetchCursor += pageSize
-      }
-
-      // Helper function to normalize text (strip HTML tags, trim, lowercase, normalize whitespace)
-      const normalizeText = (text: string): string => {
-        if (!text) return ''
-        // Strip HTML tags first
-        const plainText = text.replace(/<[^>]*>/g, '')
-        // Trim, lowercase, and normalize whitespace
-        return plainText.trim().toLowerCase().replace(/\s+/g, ' ')
       }
 
       // Create a set of existing highlight texts (normalized for comparison)
@@ -199,6 +262,8 @@ export default function ImportPage() {
       setSource('')
       setAuthor('')
       setProgress({ current: 0, total: 0 })
+      setNotInNotionCount(0)
+      setNotInNotionSnippets([])
     } catch (err: any) {
       console.error('Error importing highlights:', err)
       setError(`Failed to import highlights: ${err.message || 'Unknown error'}`)
@@ -330,6 +395,26 @@ export default function ImportPage() {
 
             {preview.length > 0 && (
               <div>
+                {notInNotionCount > 0 && (
+                  <div className="mb-4 p-3 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg">
+                    <p className="text-sm text-amber-800 dark:text-amber-200">
+                      You have <strong>{notInNotionCount}</strong> highlight{notInNotionCount !== 1 ? 's' : ''} in your library that {notInNotionCount === 1 ? 'was' : 'were'} not found on this Notion page.
+                    </p>
+                    {notInNotionSnippets.length > 0 && (
+                      <details className="mt-2 text-xs text-amber-700 dark:text-amber-300">
+                        <summary className="cursor-pointer hover:underline">Show examples</summary>
+                        <ul className="mt-1 list-disc list-inside space-y-0.5">
+                          {notInNotionSnippets.map((s, i) => (
+                            <li key={i}>{s}</li>
+                          ))}
+                          {notInNotionCount > 5 && (
+                            <li>... and {notInNotionCount - 5} more</li>
+                          )}
+                        </ul>
+                      </details>
+                    )}
+                  </div>
+                )}
                 <div className="flex justify-between items-center mb-4">
                   <h2 className="text-xl font-semibold text-gray-900 dark:text-white">
                     Preview ({preview.length} highlights found)
@@ -337,6 +422,8 @@ export default function ImportPage() {
                   <button
                     onClick={() => {
                       setPreview([])
+                      setNotInNotionCount(0)
+                      setNotInNotionSnippets([])
                     }}
                     className="px-3 py-1 text-sm bg-gray-200 dark:bg-gray-700 rounded hover:bg-gray-300 dark:hover:bg-gray-600 transition"
                   >
