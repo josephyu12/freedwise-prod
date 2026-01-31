@@ -405,16 +405,25 @@ export default function DailyPage() {
 
       if (summariesError) throw summariesError
 
-      // Get all daily_summary_highlights for these summaries
+      // Get all daily_summary_highlights for these summaries (paginate to avoid Supabase 1000-row limit)
       if (summaries && summaries.length > 0) {
         const summariesData = summaries as Array<{ id: string; date: string }>
         const summaryIds = summariesData.map((s) => s.id)
-        const { data: highlights, error: highlightsError } = await supabase
-          .from('daily_summary_highlights')
-          .select('daily_summary_id, rating')
-          .in('daily_summary_id', summaryIds)
-
-        if (highlightsError) throw highlightsError
+        const PAGE = 1000
+        let highlights: Array<{ daily_summary_id: string; rating: number | null }> = []
+        let from = 0
+        while (true) {
+          const { data: page, error: highlightsError } = await supabase
+            .from('daily_summary_highlights')
+            .select('daily_summary_id, rating')
+            .in('daily_summary_id', summaryIds)
+            .range(from, from + PAGE - 1)
+          if (highlightsError) throw highlightsError
+          const list = (page || []) as Array<{ daily_summary_id: string; rating: number | null }>
+          highlights = highlights.concat(list)
+          if (list.length < PAGE) break
+          from += PAGE
+        }
 
         // Group highlights by summary and check completion status
         const statusMap = new Map<string, 'completed' | 'partial' | 'none'>()
