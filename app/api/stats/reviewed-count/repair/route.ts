@@ -146,9 +146,8 @@ export async function POST(request: NextRequest) {
       .from('highlight_months_reviewed')
       .select('id, highlight_id')
       .eq('month_year', currentMonthYear)
-    const toDelete = (currentHmrRows || []).filter(
-      (r: { id: string; highlight_id: string }) => !ratedInCurrentMonth.has(r.highlight_id)
-    )
+    const rows = (currentHmrRows || []) as Array<{ id: string; highlight_id: string }>
+    const toDelete = rows.filter((r) => !ratedInCurrentMonth.has(r.highlight_id))
     let removed = 0
     for (const row of toDelete) {
       const { error: delErr } = await supabase
