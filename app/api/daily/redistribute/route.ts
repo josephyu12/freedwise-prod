@@ -29,11 +29,16 @@ export async function POST(request: NextRequest) {
 
     // Optional: client can send { highlightIds: string[] } when adding a highlight so we
     // ensure those IDs are placed even if they weren't in the initial bulk fetch (e.g. timing).
+    // Optional: { debugLastDay: true } pretends today is the last day of the month (e.g. 31st) for testing.
     let requestedHighlightIds: string[] = []
+    let debugLastDay = false
     try {
       const body = await request.json().catch(() => ({}))
       if (Array.isArray((body as { highlightIds?: unknown }).highlightIds)) {
         requestedHighlightIds = (body as { highlightIds: string[] }).highlightIds
+      }
+      if ((body as { debugLastDay?: boolean }).debugLastDay === true) {
+        debugLastDay = true
       }
     } catch {
       // ignore
@@ -42,8 +47,12 @@ export async function POST(request: NextRequest) {
     const now = new Date()
     const year = now.getFullYear()
     const month = now.getMonth() + 1
-    const dayOfMonth = now.getDate()
+    // daysInMonth is correct for any month (28–31); use it for last-day logic, never hardcode 31
     const daysInMonth = new Date(year, month, 0).getDate()
+    let dayOfMonth = now.getDate()
+    if (debugLastDay) {
+      dayOfMonth = daysInMonth // pretend today is the last day (e.g. 31st) for debugging
+    }
 
     // Use remaining days in current month. On the last day of the month, assign new highlights to today (the last day).
     // Otherwise: from tomorrow to end of month (today is never changed).
@@ -617,8 +626,11 @@ export async function POST(request: NextRequest) {
     const futureMonthsLabel = futureMonthsToAssign.length > 0
       ? ` and ${futureMonthsToAssign.length} future month(s)`
       : ''
-    return NextResponse.json({
-      message: `Redistributed ${redistributedCount} highlights across remaining ${remainingDaysInMonth} days of current month (from day ${startDay}, excluding today)${futureMonthsLabel}`,
+    const dayNote = isLastDayOfMonth
+      ? ` (last day of month, day ${dayOfMonth})`
+      : ` (from day ${startDay})`
+    const responsePayload: Record<string, unknown> = {
+      message: `Redistributed ${redistributedCount} highlights across remaining ${remainingDaysInMonth} day(s) of current month${dayNote}${futureMonthsLabel}`,
       assignments: createdAssignments || [],
       nextMonthAssignments: futureMonthAssignments,
       totalHighlights: redistributedCount,
@@ -626,7 +638,13 @@ export async function POST(request: NextRequest) {
       preservedCount: preservedAssignments.size,
       completedDaysCount: completedDays.size,
       assignedToFutureMonths: futureMonthsToAssign.length,
-    })
+    }
+    if (debugLastDay) {
+      responsePayload.debugLastDay = true
+      responsePayload.effectiveDay = dayOfMonth
+      responsePayload.effectiveDate = `${year}-${String(month).padStart(2, '0')}-${String(dayOfMonth).padStart(2, '0')}`
+    }
+    return NextResponse.json(responsePayload)
   } catch (error: any) {
     console.error('Error redistributing highlights:', error)
     return NextResponse.json(

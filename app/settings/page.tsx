@@ -26,6 +26,7 @@ export default function SettingsPage() {
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
   const [resettingDaily, setResettingDaily] = useState(false)
   const [showResetConfirm, setShowResetConfirm] = useState(false)
+  const [debugRedistributing, setDebugRedistributing] = useState(false)
 
   const loadSettings = useCallback(async () => {
     try {
@@ -141,6 +142,33 @@ export default function SettingsPage() {
       setMessage({ type: 'error', text: error.message || 'Failed to reset daily highlights' })
     } finally {
       setResettingDaily(false)
+    }
+  }
+
+  const handleDebugLastDayRedistribute = async () => {
+    setDebugRedistributing(true)
+    setMessage(null)
+    try {
+      const res = await fetch('/api/daily/redistribute', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ debugLastDay: true }),
+      })
+      const data = await res.json()
+      if (!res.ok) {
+        throw new Error(data.error || 'Redistribute failed')
+      }
+      const detail = data.effectiveDate
+        ? ` (pretended today is ${data.effectiveDate}, day ${data.effectiveDay})`
+        : ''
+      setMessage({
+        type: 'success',
+        text: data.message + (detail || '') + (data.totalHighlights ? ` ${data.totalHighlights} highlight(s) assigned.` : ''),
+      })
+    } catch (error: any) {
+      setMessage({ type: 'error', text: error.message || 'Failed to run redistribute (debug last day)' })
+    } finally {
+      setDebugRedistributing(false)
     }
   }
 
@@ -368,6 +396,23 @@ export default function SettingsPage() {
                 {resettingDaily ? 'Resetting...' : 'Reset all daily highlights for this month'}
               </button>
             )}
+          </div>
+
+          <div className="mt-8 bg-white dark:bg-gray-800 p-6 rounded-lg shadow-lg border border-amber-200 dark:border-amber-900/50">
+            <h2 className="text-2xl font-semibold text-gray-900 dark:text-white mb-2">
+              Debug: last day of month
+            </h2>
+            <p className="text-gray-600 dark:text-gray-300 mb-4">
+              Run daily redistribution as if today were the last day of the month (e.g. the 31st). Use this to test that highlights added on the last day get assigned to that day and to assign any orphans to the last day.
+            </p>
+            <button
+              type="button"
+              onClick={handleDebugLastDayRedistribute}
+              disabled={debugRedistributing}
+              className="px-6 py-2 bg-amber-600 text-white rounded-lg hover:bg-amber-700 transition disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {debugRedistributing ? 'Running...' : 'Redistribute (debug last day)'}
+            </button>
           </div>
         </div>
       </div>
