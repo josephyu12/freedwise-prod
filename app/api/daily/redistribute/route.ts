@@ -45,19 +45,12 @@ export async function POST(request: NextRequest) {
     const dayOfMonth = now.getDate()
     const daysInMonth = new Date(year, month, 0).getDate()
 
-    // Don't redistribute if it's the last day of the month
-    if (dayOfMonth === daysInMonth) {
-      return NextResponse.json({
-        message: 'Last day of month - skipping redistribution',
-        skipped: true,
-      })
-    }
+    // Use remaining days in current month. On the last day of the month, assign new highlights to today (the last day).
+    // Otherwise: from tomorrow to end of month (today is never changed).
+    const isLastDayOfMonth = dayOfMonth === daysInMonth
+    const remainingDaysInMonth = isLastDayOfMonth ? 1 : daysInMonth - dayOfMonth
+    const startDay = isLastDayOfMonth ? dayOfMonth : dayOfMonth + 1
 
-    // Use remaining days in current month (from tomorrow to end of month, excluding today)
-    const remainingDaysInMonth = daysInMonth - dayOfMonth // Days from tomorrow to end of month (exclusive of today)
-    const startDay = dayOfMonth + 1 // Start from tomorrow (exclude today)
-    
-    // If there are no remaining days (shouldn't happen due to check above, but safety check)
     if (remainingDaysInMonth <= 0) {
       return NextResponse.json({
         message: 'No remaining days in month - skipping redistribution',
@@ -341,14 +334,21 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Only place highlights when the client explicitly sends highlightIds (e.g. after adding).
-    // When called with no body (e.g. after delete, or from home/import without body), place nothing.
+    // Place highlights when: (1) client sends highlightIds (e.g. after adding), or
+    // (2) on the last day of the month, also assign any "orphans" (no assignment this month) so they can be reviewed.
     const requestedSet = requestedHighlightIds.length > 0 ? new Set(requestedHighlightIds) : null
     let highlightsToRedistribute = requestedSet
       ? highlightsWithScore.filter(
           (h) => requestedSet.has(h.id) && !assignedThisMonthIds.has(h.id)
         )
       : []
+    // On last day of month: also include orphans (not assigned this month) so they get assigned to the last day
+    if (isLastDayOfMonth && highlightsWithScore.length > 0) {
+      const orphans = highlightsWithScore.filter((h) => !assignedThisMonthIds.has(h.id))
+      const orphanById = new Map(orphans.map((h) => [h.id, h]))
+      for (const h of highlightsToRedistribute) orphanById.set(h.id, h)
+      highlightsToRedistribute = Array.from(orphanById.values())
+    }
     // Dedupe by id so we never place the same highlight on multiple days
     const redistributeById = new Map(highlightsToRedistribute.map((h) => [h.id, h]))
     highlightsToRedistribute = Array.from(redistributeById.values())
@@ -367,10 +367,19 @@ export async function POST(request: NextRequest) {
 
       if (allRemainingCompleted) {
         // All remaining days are fully done: add new highlight(s) to the last day only.
-        const lastSummary = typedSummaries?.find((s) => s.date === lastDayDate)
+        let lastSummary = typedSummaries?.find((s) => s.date === lastDayDate)
+        if (!lastSummary) {
+          const { data: newSummary, error: summaryError } = await (supabase
+            .from('daily_summaries') as any)
+            .insert([{ date: lastDayDate, user_id: user.id }])
+            .select()
+            .single()
+          if (summaryError) throw summaryError
+          lastSummary = newSummary
+        }
         if (lastSummary) {
           const summaryHighlights = highlightsToRedistribute.map((h) => ({
-            daily_summary_id: lastSummary.id,
+            daily_summary_id: lastSummary!.id,
             highlight_id: h.id,
           }))
           const { error: linkError } = await (supabase

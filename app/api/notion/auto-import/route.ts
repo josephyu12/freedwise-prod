@@ -468,12 +468,11 @@ export async function GET(request: NextRequest) {
         const now = new Date()
         const year = now.getFullYear()
         const month = now.getMonth() + 1
-        const dayOfMonth = now.getDate()
         const daysInMonth = new Date(year, month, 0).getDate()
+        const monthYear = `${year}-${String(month).padStart(2, '0')}`
 
-        // Don't redistribute if it's the last day of the month
-        if (dayOfMonth !== daysInMonth) {
-          const monthYear = `${year}-${String(month).padStart(2, '0')}`
+        // Redistribute so new imports get assigned to a day this month (including last day)
+        {
 
           // Get all unarchived highlights for this user
           const { data: allHighlightsData, error: highlightsError } = await supabase

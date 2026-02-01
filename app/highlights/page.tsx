@@ -136,7 +136,8 @@ export default function HighlightsPage() {
             daily_summary:daily_summaries (
               id,
               date
-            )
+            ),
+            rating
           )
         `, { count: 'exact' })
         .eq('user_id', user.id)
@@ -191,23 +192,30 @@ export default function HighlightsPage() {
             }))
           : []
 
-        // Get assigned date for current month
+        // Get assigned date for current month and whether this month's assignment has a rating
         let assignedDate: string | null = null
+        let hasRatingThisMonth = false
         if (h.daily_assignments && Array.isArray(h.daily_assignments) && h.daily_assignments.length > 0) {
-          // Find assignment for current month
           const currentMonthStart = `${year}-${String(month).padStart(2, '0')}-01`
           const currentMonthEnd = `${year}-${String(month).padStart(2, '0')}-${String(new Date(year, month, 0).getDate()).padStart(2, '0')}`
-          
+
           const currentMonthAssignment = h.daily_assignments.find((da: any) => {
             const assignmentDate = da.daily_summary?.date
             if (!assignmentDate) return false
             return assignmentDate >= currentMonthStart && assignmentDate <= currentMonthEnd
           })
-          
+
           if (currentMonthAssignment?.daily_summary?.date) {
             assignedDate = currentMonthAssignment.daily_summary.date
+            // Consider reviewed if they have a rating for this month's assignment (source of truth alongside highlight_months_reviewed)
+            hasRatingThisMonth = currentMonthAssignment.rating != null
           }
         }
+
+        const reviewedForCurrentMonth =
+          hasRatingThisMonth ||
+          (Array.isArray(monthsReviewed) &&
+            monthsReviewed.some((mr: any) => (mr.month_year || (typeof mr === 'string' ? mr : null)) === currentMonth))
 
         return {
           ...h,
@@ -215,26 +223,16 @@ export default function HighlightsPage() {
           linked_highlights: h.highlight_links_from || [],
           months_reviewed: monthsReviewed,
           assigned_date: assignedDate,
+          reviewedForCurrentMonth,
         }
       })
 
-      // Filter by review status for current month BEFORE pagination
+      // Filter by review status for current month BEFORE pagination.
+      // Consider "reviewed" if highlight_months_reviewed has this month OR this month's assignment has a rating.
       if (reviewFilter === 'reviewed') {
-        processedHighlights = processedHighlights.filter((h: any) => {
-          if (!h.months_reviewed || h.months_reviewed.length === 0) return false
-          return h.months_reviewed.some((mr: any) => {
-            const monthYear = mr.month_year || (typeof mr === 'string' ? mr : null)
-            return monthYear === currentMonth
-          })
-        })
+        processedHighlights = processedHighlights.filter((h: any) => h.reviewedForCurrentMonth === true)
       } else if (reviewFilter === 'not-reviewed') {
-        processedHighlights = processedHighlights.filter((h: any) => {
-          if (!h.months_reviewed || h.months_reviewed.length === 0) return true
-          return !h.months_reviewed.some((mr: any) => {
-            const monthYear = mr.month_year || (typeof mr === 'string' ? mr : null)
-            return monthYear === currentMonth
-          })
-        })
+        processedHighlights = processedHighlights.filter((h: any) => h.reviewedForCurrentMonth !== true)
       }
 
       // Filter by categories
