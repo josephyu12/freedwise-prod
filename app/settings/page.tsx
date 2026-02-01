@@ -106,11 +106,12 @@ export default function SettingsPage() {
         return
       }
       await loadLastMonthReviewedCount()
+      const parts = []
+      if (data.repaired > 0) parts.push(`${data.repaired} highlight(s) marked as reviewed for last month`)
+      if (data.removedSpuriousCurrentMonth > 0) parts.push(`${data.removedSpuriousCurrentMonth} incorrect current-month entries removed`)
       setMessage({
         type: 'success',
-        text: data.repaired > 0
-          ? `Synced reviewed status: ${data.repaired} highlight(s) marked as reviewed for last month.`
-          : (data.message || 'No missing entries to sync.'),
+        text: parts.length > 0 ? `Synced: ${parts.join('. ')}.` : (data.message || 'No missing entries to sync.'),
       })
     } catch {
       setMessage({ type: 'error', text: 'Failed to sync reviewed status' })

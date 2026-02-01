@@ -583,13 +583,11 @@ export default function DailyPage() {
 
       if (updateError) throw updateError
 
-      // Mark highlight as reviewed for this month immediately after saving rating
-      // (so a lost connection is less likely to leave highlight_months_reviewed out of sync)
-      if (rating !== null) {
-        const now = new Date()
-        const year = now.getFullYear()
-        const month = now.getMonth() + 1
-        const monthYear = `${year}-${String(month).padStart(2, '0')}`
+      // Mark highlight as reviewed for the month of the summary being reviewed (not "today"),
+      // so reviewing January's assignments in February records 2026-01, not 2026-02.
+      if (rating !== null && summary?.date) {
+        const [y, mo] = summary.date.split('-').map(Number)
+        const monthYear = `${y}-${String(mo).padStart(2, '0')}`
         await (supabase
           .from('highlight_months_reviewed') as any)
           .upsert(

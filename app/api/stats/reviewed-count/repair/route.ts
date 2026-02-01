@@ -105,10 +105,67 @@ export async function POST(request: NextRequest) {
       )
     if (upsertError) throw upsertError
 
+    // Remove spurious current-month HMR rows: if the daily page previously used "today"
+    // when marking reviewed, it may have written the current month (e.g. 2026-02) while
+    // the user was actually reviewing last month (2026-01). Delete current-month HMR rows
+    // for highlights that have no rating in the current month's summaries.
+    const now = new Date()
+    const currentYear = now.getFullYear()
+    const currentMonth = now.getMonth() + 1
+    const currentMonthYear = `${currentYear}-${String(currentMonth).padStart(2, '0')}`
+    const currentStart = `${currentYear}-${String(currentMonth).padStart(2, '0')}-01`
+    const currentEndDay = new Date(currentYear, currentMonth, 0).getDate()
+    const currentEnd = `${currentYear}-${String(currentMonth).padStart(2, '0')}-${String(currentEndDay).padStart(2, '0')}`
+
+    const { data: currentSummaries } = await supabase
+      .from('daily_summaries')
+      .select('id')
+      .eq('user_id', user.id)
+      .gte('date', currentStart)
+      .lte('date', currentEnd)
+    const currentSummaryIds = (currentSummaries || []).map((s: { id: string }) => s.id)
+    const ratedInCurrentMonth = new Set<string>()
+    if (currentSummaryIds.length > 0) {
+      let fromCur = 0
+      while (true) {
+        const { data: curRated, error: curErr } = await supabase
+          .from('daily_summary_highlights')
+          .select('highlight_id')
+          .in('daily_summary_id', currentSummaryIds)
+          .not('rating', 'is', null)
+          .range(fromCur, fromCur + PAGE - 1)
+        if (curErr) break
+        const page = (curRated || []) as Array<{ highlight_id: string }>
+        page.forEach((r) => ratedInCurrentMonth.add(r.highlight_id))
+        if (page.length < PAGE) break
+        fromCur += PAGE
+      }
+    }
+
+    const { data: currentHmrRows } = await supabase
+      .from('highlight_months_reviewed')
+      .select('id, highlight_id')
+      .eq('month_year', currentMonthYear)
+    const toDelete = (currentHmrRows || []).filter(
+      (r: { id: string; highlight_id: string }) => !ratedInCurrentMonth.has(r.highlight_id)
+    )
+    let removed = 0
+    for (const row of toDelete) {
+      const { error: delErr } = await supabase
+        .from('highlight_months_reviewed')
+        .delete()
+        .eq('id', row.id)
+      if (!delErr) removed++
+    }
+
     return NextResponse.json({
       month: monthYear,
       repaired: toInsert.length,
-      message: `Backfilled ${toInsert.length} highlight(s) as reviewed for ${monthYear}.`,
+      removedSpuriousCurrentMonth: removed,
+      message: [
+        toInsert.length > 0 && `Backfilled ${toInsert.length} highlight(s) as reviewed for ${monthYear}.`,
+        removed > 0 && `Removed ${removed} incorrect current-month "reviewed" entries.`,
+      ].filter(Boolean).join(' ') || `No missing entries to sync.`,
     })
   } catch (error: any) {
     console.error('Error in reviewed-count repair:', error)
