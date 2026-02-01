@@ -34,8 +34,10 @@ export async function GET(request: NextRequest) {
     const startOfMonth = `${y}-${String(m).padStart(2, '0')}-01`
     const daysInMonth = new Date(y, m, 0).getDate()
     const endOfMonth = `${y}-${String(m).padStart(2, '0')}-${String(daysInMonth).padStart(2, '0')}`
-    const startOfNextMonth = new Date(y, m, 1)
-    const createdBefore = startOfNextMonth.toISOString().slice(0, 10)
+    // “Before the month ended” = strictly before the first day of the next month (UTC, consistent with rest of app)
+    const nextMonth = m === 12 ? 1 : m + 1
+    const nextYear = m === 12 ? y + 1 : y
+    const createdBefore = `${nextYear}-${String(nextMonth).padStart(2, '0')}-01T00:00:00.000Z`
 
     const userHighlightIds = new Set<string>()
     let from = 0
@@ -76,7 +78,7 @@ export async function GET(request: NextRequest) {
         .from('highlights')
         .select('id, text, created_at')
         .eq('user_id', user.id)
-        .lt('created_at', `${createdBefore}T23:59:59.999Z`)
+        .lt('created_at', createdBefore)
         .order('created_at', { ascending: false })
         .range(from, from + PAGE - 1)
       if (error) throw error
