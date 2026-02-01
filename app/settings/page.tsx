@@ -29,6 +29,12 @@ export default function SettingsPage() {
   const [debugRedistributing, setDebugRedistributing] = useState(false)
   const [lastMonthReviewedCount, setLastMonthReviewedCount] = useState<number | null>(null)
   const [lastMonthLabel, setLastMonthLabel] = useState<string>('')
+  const [unreviewedHighlights, setUnreviewedHighlights] = useState<Array<{
+    id: string
+    textSnippet: string
+    created_at: string
+    assigned_date: string | null
+  }>>([])
 
   const loadSettings = useCallback(async () => {
     try {
@@ -73,6 +79,7 @@ export default function SettingsPage() {
       if (!res.ok) return
       const data = await res.json()
       setLastMonthReviewedCount(data.count ?? 0)
+      setUnreviewedHighlights(Array.isArray(data.unreviewedHighlights) ? data.unreviewedHighlights : [])
       if (data.month) {
         const [y, m] = data.month.split('-')
         const d = new Date(parseInt(y, 10), parseInt(m, 10) - 1, 1)
@@ -375,13 +382,49 @@ export default function SettingsPage() {
             <h2 className="text-2xl font-semibold text-gray-900 dark:text-white mb-2">
               Last month reviewed
             </h2>
-            <p className="text-gray-600 dark:text-gray-300 mb-2">
+            <p className="text-gray-600 dark:text-gray-300 mb-4">
               {lastMonthLabel ? (
                 <>In <strong>{lastMonthLabel}</strong>, you reviewed <strong>{lastMonthReviewedCount ?? '—'}</strong> highlight{lastMonthReviewedCount === 1 ? '' : 's'}.</>
               ) : (
                 <>Loading…</>
               )}
             </p>
+            {lastMonthLabel && unreviewedHighlights.length > 0 && (
+              <div className="mt-4 pt-4 border-t border-gray-200 dark:border-gray-600">
+                <h3 className="text-lg font-medium text-gray-900 dark:text-white mb-2">
+                  Highlights added before {lastMonthLabel} ended that were not reviewed
+                </h3>
+                <ul className="space-y-3">
+                  {unreviewedHighlights.map((h) => {
+                    const createdDate = h.created_at ? new Date(h.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : '—'
+                    const assignedLabel = h.assigned_date
+                      ? (() => {
+                          const [yr, mo, day] = h.assigned_date.split('-')
+                          return `Assigned to ${parseInt(mo, 10)}/${parseInt(day, 10)}`
+                        })()
+                      : 'Not assigned a review date'
+                    return (
+                      <li
+                        key={h.id}
+                        className="p-3 bg-gray-50 dark:bg-gray-700/50 rounded-lg text-sm"
+                      >
+                        <p className="text-gray-800 dark:text-gray-200 line-clamp-2 mb-1">
+                          {h.textSnippet || '(no text)'}
+                        </p>
+                        <p className="text-gray-500 dark:text-gray-400 text-xs">
+                          Added {createdDate} · {assignedLabel}
+                        </p>
+                      </li>
+                    )
+                  })}
+                </ul>
+              </div>
+            )}
+            {lastMonthLabel && unreviewedHighlights.length === 0 && lastMonthReviewedCount !== null && (
+              <p className="text-gray-500 dark:text-gray-400 text-sm mt-2">
+                All highlights that existed before {lastMonthLabel} ended were reviewed (or none existed).
+              </p>
+            )}
           </div>
 
           <div className="mt-8 bg-white dark:bg-gray-800 p-6 rounded-lg shadow-lg border border-red-200 dark:border-red-900/50">
