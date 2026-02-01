@@ -160,6 +160,16 @@ function calculateSimilarity(text1: string, text2: string, idf?: Map<string, num
   return cosineSimilarity(vector1, vector2)
 }
 
+// Normalize months_reviewed from Supabase relation to array of { id, month_year, created_at }.
+function normalizeMonthsReviewed(h: any): any[] {
+  if (!h.months_reviewed || !Array.isArray(h.months_reviewed)) return []
+  return h.months_reviewed.map((mr: any) => ({
+    id: mr.id,
+    month_year: mr.month_year ?? (typeof mr === 'string' ? mr : null),
+    created_at: mr.created_at,
+  }))
+}
+
 // Enrich highlight with current month's assigned_date (for "Review on" tags). Uses server's now so it updates when month rolls over.
 function enrichWithAssignedDate(h: any): any {
   const now = new Date()
@@ -178,11 +188,13 @@ function enrichWithAssignedDate(h: any): any {
       assigned_date = currentMonthAssignment.daily_summary.date
     }
   }
+  const months_reviewed = normalizeMonthsReviewed(h)
   const { daily_assignments, ...rest } = h
-  return { ...rest, assigned_date }
+  return { ...rest, assigned_date, months_reviewed }
 }
 
 const dailyAssignmentsSelect = 'daily_assignments:daily_summary_highlights(id,daily_summary:daily_summaries(id,date))'
+const monthsReviewedSelect = 'months_reviewed:highlight_months_reviewed(id,month_year,created_at)'
 
 export async function POST(request: NextRequest) {
   try {
@@ -219,7 +231,8 @@ export async function POST(request: NextRequest) {
               author
             )
           ),
-          ${dailyAssignmentsSelect}
+          ${dailyAssignmentsSelect},
+          ${monthsReviewedSelect}
         `)
         .or(`text.ilike.%${query}%,html_content.ilike.%${query}%`)
         .eq('archived', false)
@@ -280,7 +293,8 @@ export async function POST(request: NextRequest) {
               highlight_categories (
                 category:categories (*)
               ),
-              ${dailyAssignmentsSelect}
+              ${dailyAssignmentsSelect},
+              ${monthsReviewedSelect}
             `)
             .in('id', similarIds)
             .eq('archived', false)
@@ -334,7 +348,8 @@ export async function POST(request: NextRequest) {
               author
             )
           ),
-          ${dailyAssignmentsSelect}
+          ${dailyAssignmentsSelect},
+          ${monthsReviewedSelect}
         `)
         .eq('archived', false)
         .limit(1000) // Limit for performance

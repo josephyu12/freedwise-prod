@@ -649,7 +649,7 @@ export default function SearchPage() {
                             ))}
                           </div>
                         )}
-                        {(highlight.source || highlight.author || (highlight as any).assigned_date) && (
+                        {(highlight.source || highlight.author || (highlight as any).assigned_date || (highlight.average_rating !== undefined && highlight.average_rating > 0) || (highlight.months_reviewed && highlight.months_reviewed.length > 0)) && (
                           <p className="text-sm text-gray-500 dark:text-gray-400 mb-3">
                             {(highlight as any).assigned_date && (
                               <span className="text-gray-500 dark:text-gray-400">
@@ -660,7 +660,15 @@ export default function SearchPage() {
                                 })()}
                               </span>
                             )}
-                            {(highlight as any).assigned_date && (highlight.author || highlight.source) && <span> • </span>}
+                            {(highlight as any).assigned_date && (highlight.author || highlight.source || (highlight.average_rating !== undefined && highlight.average_rating > 0) || (highlight.months_reviewed && highlight.months_reviewed.length > 0)) && <span> • </span>}
+                            {highlight.average_rating !== undefined && highlight.average_rating > 0 && (
+                              <span>Avg Rating: {highlight.average_rating.toFixed(1)}/5</span>
+                            )}
+                            {highlight.average_rating !== undefined && highlight.average_rating > 0 && (highlight.author || highlight.source || (highlight.months_reviewed && highlight.months_reviewed.length > 0)) && <span> • </span>}
+                            {highlight.months_reviewed && highlight.months_reviewed.length > 0 && (
+                              <span>Months reviewed: {highlight.months_reviewed.length}</span>
+                            )}
+                            {(highlight.months_reviewed && highlight.months_reviewed.length > 0) && (highlight.author || highlight.source) && <span> • </span>}
                             {highlight.author && <span>{highlight.author}</span>}
                             {highlight.author && highlight.source && <span> • </span>}
                             {highlight.source && <span>{highlight.source}</span>}
@@ -849,7 +857,7 @@ export default function SearchPage() {
                             ))}
                           </div>
                         )}
-                        {(highlight.source || highlight.author || (highlight as any).assigned_date) && (
+                        {(highlight.source || highlight.author || (highlight as any).assigned_date || (highlight.average_rating !== undefined && highlight.average_rating > 0) || (highlight.months_reviewed && highlight.months_reviewed.length > 0)) && (
                           <p className="text-sm text-gray-500 dark:text-gray-400 mb-3">
                             {(highlight as any).assigned_date && (
                               <span className="text-gray-500 dark:text-gray-400">
@@ -860,7 +868,15 @@ export default function SearchPage() {
                                 })()}
                               </span>
                             )}
-                            {(highlight as any).assigned_date && (highlight.author || highlight.source) && <span> • </span>}
+                            {(highlight as any).assigned_date && (highlight.author || highlight.source || (highlight.average_rating !== undefined && highlight.average_rating > 0) || (highlight.months_reviewed && highlight.months_reviewed.length > 0)) && <span> • </span>}
+                            {highlight.average_rating !== undefined && highlight.average_rating > 0 && (
+                              <span>Avg Rating: {highlight.average_rating.toFixed(1)}/5</span>
+                            )}
+                            {highlight.average_rating !== undefined && highlight.average_rating > 0 && (highlight.author || highlight.source || (highlight.months_reviewed && highlight.months_reviewed.length > 0)) && <span> • </span>}
+                            {highlight.months_reviewed && highlight.months_reviewed.length > 0 && (
+                              <span>Months reviewed: {highlight.months_reviewed.length}</span>
+                            )}
+                            {(highlight.months_reviewed && highlight.months_reviewed.length > 0) && (highlight.author || highlight.source) && <span> • </span>}
                             {highlight.author && <span>{highlight.author}</span>}
                             {highlight.author && highlight.source && <span> • </span>}
                             {highlight.source && <span>{highlight.source}</span>}
