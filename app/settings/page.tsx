@@ -27,6 +27,8 @@ export default function SettingsPage() {
   const [resettingDaily, setResettingDaily] = useState(false)
   const [showResetConfirm, setShowResetConfirm] = useState(false)
   const [debugRedistributing, setDebugRedistributing] = useState(false)
+  const [lastMonthReviewedCount, setLastMonthReviewedCount] = useState<number | null>(null)
+  const [lastMonthLabel, setLastMonthLabel] = useState<string>('')
 
   const loadSettings = useCallback(async () => {
     try {
@@ -64,6 +66,26 @@ export default function SettingsPage() {
   useEffect(() => {
     loadSettings()
   }, [loadSettings])
+
+  const loadLastMonthReviewedCount = useCallback(async () => {
+    try {
+      const res = await fetch('/api/stats/reviewed-count')
+      if (!res.ok) return
+      const data = await res.json()
+      setLastMonthReviewedCount(data.count ?? 0)
+      if (data.month) {
+        const [y, m] = data.month.split('-')
+        const d = new Date(parseInt(y, 10), parseInt(m, 10) - 1, 1)
+        setLastMonthLabel(d.toLocaleString('default', { month: 'long', year: 'numeric' }))
+      }
+    } catch {
+      // ignore
+    }
+  }, [])
+
+  useEffect(() => {
+    loadLastMonthReviewedCount()
+  }, [loadLastMonthReviewedCount])
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -347,6 +369,19 @@ export default function SettingsPage() {
                 )}
               </div>
             </form>
+          </div>
+
+          <div className="mt-8 bg-white dark:bg-gray-800 p-6 rounded-lg shadow-lg">
+            <h2 className="text-2xl font-semibold text-gray-900 dark:text-white mb-2">
+              Last month reviewed
+            </h2>
+            <p className="text-gray-600 dark:text-gray-300 mb-2">
+              {lastMonthLabel ? (
+                <>In <strong>{lastMonthLabel}</strong>, you reviewed <strong>{lastMonthReviewedCount ?? '—'}</strong> highlight{lastMonthReviewedCount === 1 ? '' : 's'}.</>
+              ) : (
+                <>Loading…</>
+              )}
+            </p>
           </div>
 
           <div className="mt-8 bg-white dark:bg-gray-800 p-6 rounded-lg shadow-lg border border-red-200 dark:border-red-900/50">
