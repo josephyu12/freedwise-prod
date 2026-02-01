@@ -583,6 +583,21 @@ export default function DailyPage() {
 
       if (updateError) throw updateError
 
+      // Mark highlight as reviewed for this month immediately after saving rating
+      // (so a lost connection is less likely to leave highlight_months_reviewed out of sync)
+      if (rating !== null) {
+        const now = new Date()
+        const year = now.getFullYear()
+        const month = now.getMonth() + 1
+        const monthYear = `${year}-${String(month).padStart(2, '0')}`
+        await (supabase
+          .from('highlight_months_reviewed') as any)
+          .upsert(
+            { highlight_id: highlightId, month_year: monthYear },
+            { onConflict: 'highlight_id,month_year' }
+          )
+      }
+
       // Recalculate average rating for the highlight
       const { data: allRatingsData, error: ratingsError } = await supabase
         .from('daily_summary_highlights')
@@ -616,26 +631,6 @@ export default function DailyPage() {
           archived: shouldArchive,
         })
         .eq('id', highlightId)
-
-      // Mark highlight as reviewed for this month ONLY if a rating was given
-      if (rating !== null) {
-        // Get current month in YYYY-MM format
-        const now = new Date()
-        const year = now.getFullYear()
-        const month = now.getMonth() + 1
-        const monthYear = `${year}-${String(month).padStart(2, '0')}`
-
-        // Upsert to mark this highlight as reviewed for this month
-        await (supabase
-          .from('highlight_months_reviewed') as any)
-          .upsert(
-            {
-              highlight_id: highlightId,
-              month_year: monthYear,
-            },
-            { onConflict: 'highlight_id,month_year' }
-          )
-      }
 
       // Update overlay state: add overlay when rating is set, remove when cleared
       if (summary) {

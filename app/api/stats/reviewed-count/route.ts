@@ -69,6 +69,32 @@ export async function GET(request: NextRequest) {
       from += PAGE
     }
 
+    // Also treat as reviewed any highlight that has a rating in daily_summary_highlights for this month
+    // (handles the case where rating was saved but highlight_months_reviewed insert failed, e.g. lost signal)
+    const { data: summariesForMonth } = await supabase
+      .from('daily_summaries')
+      .select('id')
+      .eq('user_id', user.id)
+      .gte('date', startOfMonth)
+      .lte('date', endOfMonth)
+    const summaryIdsForMonth = (summariesForMonth || []).map((s: { id: string }) => s.id)
+    if (summaryIdsForMonth.length > 0) {
+      from = 0
+      while (true) {
+        const { data: rated, error: ratedError } = await supabase
+          .from('daily_summary_highlights')
+          .select('highlight_id')
+          .in('daily_summary_id', summaryIdsForMonth)
+          .not('rating', 'is', null)
+          .range(from, from + PAGE - 1)
+        if (ratedError) throw ratedError
+        const page = (rated || []) as Array<{ highlight_id: string }>
+        page.forEach((r) => { if (userHighlightIds.has(r.highlight_id)) reviewedIds.add(r.highlight_id) })
+        if (page.length < PAGE) break
+        from += PAGE
+      }
+    }
+
     const count = reviewedIds.size
 
     const highlightsAddedBeforeMonthEnd: Array<{ id: string; text: string; created_at: string }> = []

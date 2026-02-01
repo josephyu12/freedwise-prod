@@ -29,6 +29,7 @@ export default function SettingsPage() {
   const [debugRedistributing, setDebugRedistributing] = useState(false)
   const [lastMonthReviewedCount, setLastMonthReviewedCount] = useState<number | null>(null)
   const [lastMonthLabel, setLastMonthLabel] = useState<string>('')
+  const [syncingRepair, setSyncingRepair] = useState(false)
   const [unreviewedHighlights, setUnreviewedHighlights] = useState<Array<{
     id: string
     textSnippet: string
@@ -89,6 +90,34 @@ export default function SettingsPage() {
       // ignore
     }
   }, [])
+
+  const handleSyncReviewedStatus = useCallback(async () => {
+    setSyncingRepair(true)
+    setMessage(null)
+    try {
+      const res = await fetch('/api/stats/reviewed-count/repair', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        setMessage({ type: 'error', text: data.error || 'Failed to sync reviewed status' })
+        return
+      }
+      await loadLastMonthReviewedCount()
+      setMessage({
+        type: 'success',
+        text: data.repaired > 0
+          ? `Synced reviewed status: ${data.repaired} highlight(s) marked as reviewed for last month.`
+          : (data.message || 'No missing entries to sync.'),
+      })
+    } catch {
+      setMessage({ type: 'error', text: 'Failed to sync reviewed status' })
+    } finally {
+      setSyncingRepair(false)
+    }
+  }, [loadLastMonthReviewedCount])
 
   useEffect(() => {
     loadLastMonthReviewedCount()
@@ -424,6 +453,21 @@ export default function SettingsPage() {
               <p className="text-gray-500 dark:text-gray-400 text-sm mt-2">
                 All highlights that existed before {lastMonthLabel} ended were reviewed (or none existed).
               </p>
+            )}
+            {lastMonthLabel && (
+              <div className="mt-4 pt-4 border-t border-gray-200 dark:border-gray-600">
+                <p className="text-gray-600 dark:text-gray-300 text-sm mb-2">
+                  If you rated highlights but lost connection during review, the &quot;reviewed&quot; list may be out of sync. Use this to backfill last month.
+                </p>
+                <button
+                  type="button"
+                  onClick={handleSyncReviewedStatus}
+                  disabled={syncingRepair}
+                  className="px-4 py-2 bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-gray-200 rounded-lg hover:bg-gray-300 dark:hover:bg-gray-600 transition disabled:opacity-50 disabled:cursor-not-allowed text-sm"
+                >
+                  {syncingRepair ? 'Syncing…' : 'Sync reviewed status for last month'}
+                </button>
+              </div>
             )}
           </div>
 
