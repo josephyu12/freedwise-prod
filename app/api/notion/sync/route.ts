@@ -726,11 +726,12 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
     } else if (queueItem.operation_type === 'update') {
       // For update, use the ORIGINAL text stored in the queue item to find the block
       // The queue item stores both original and new text
-      const originalText = (queueItem.original_html_content || queueItem.original_text || '').trim().toLowerCase()
-      const originalPlainText = (queueItem.original_text || '').trim().toLowerCase()
+      let originalText = (queueItem.original_html_content || queueItem.original_text || '').trim().toLowerCase()
+      let originalPlainText = (queueItem.original_text || '').trim().toLowerCase()
 
-      if (!originalText && !originalPlainText) {
-        // Fallback: try to get from database (but it will have the new text)
+      if (!originalText && !originalPlainText && queueItem.highlight_id) {
+        // Fallback: get from database. Note: DB may already have new text if client updated before enqueue;
+        // in that case matching may fail. Prefer always sending original from client.
         const { data: currentHighlight } = await (supabase
           .from('highlights') as any)
           .select('text, html_content')
@@ -738,10 +739,12 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
           .maybeSingle()
         
         if (currentHighlight) {
-          // Use current text as fallback (less accurate but better than nothing)
-          const fallbackText = (currentHighlight.html_content || currentHighlight.text).trim().toLowerCase()
-          if (fallbackText) {
+          const fallbackHtml = (currentHighlight.html_content || '').trim().toLowerCase()
+          const fallbackPlain = (currentHighlight.text || '').trim().toLowerCase()
+          if (fallbackHtml || fallbackPlain) {
             console.warn('Using current highlight text as fallback for Notion matching (original text not stored in queue)')
+            originalText = fallbackHtml || originalText
+            originalPlainText = fallbackPlain || originalPlainText
           }
         }
       }

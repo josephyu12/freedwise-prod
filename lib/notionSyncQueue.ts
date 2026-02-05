@@ -29,6 +29,11 @@ export async function addToNotionSyncQueue(params: {
     if (!res.ok && res.status >= 500) {
       console.warn('Failed to add to sync queue:', (data as { error?: string }).error || res.statusText)
     }
+    // Trigger sync immediately so changes reach Notion without waiting for the next 10s poll
+    // (important on mobile when the user may leave the app right after saving)
+    if (res.ok && (data as { enqueued?: boolean }).enqueued === true) {
+      fetch('/api/notion/sync', { method: 'POST' }).catch(() => {})
+    }
     // 200 with enqueued: false and existing: true means deduplicated — no need to warn
   } catch (e) {
     console.warn('Error adding to sync queue:', e)
