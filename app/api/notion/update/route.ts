@@ -1,455 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { Client } from '@notionhq/client'
 import { createClient } from '@/lib/supabase/server'
-
-// Simple HTML to text converter (removes HTML tags)
-function stripHtml(html: string): string {
-  return html
-    .replace(/<[^>]*>/g, '')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .trim()
-}
-
-// Convert HTML to Notion rich text format (properly handles nested formatting)
-function htmlToNotionRichText(html: string): any[] {
-  if (!html || html.trim() === '') {
-    return []
-  }
-
-  // Helper to decode HTML entities (server-safe)
-  function decodeHtmlEntities(text: string): string {
-    return text
-      .replace(/&nbsp;/g, ' ')
-      .replace(/&amp;/g, '&')
-      .replace(/&lt;/g, '<')
-      .replace(/&gt;/g, '>')
-      .replace(/&quot;/g, '"')
-      .replace(/&#39;/g, "'")
-      .replace(/&#x27;/g, "'")
-      .replace(/&#x2F;/g, '/')
-      .replace(/&#x60;/g, '`')
-      .replace(/&#x3D;/g, '=')
-  }
-
-  // Parse HTML and extract text segments with their formatting
-  interface TextSegment {
-    text: string
-    bold: boolean
-    italic: boolean
-    underline: boolean
-    strikethrough: boolean
-    code: boolean
-    link?: string
-  }
-
-  const segments: TextSegment[] = []
-  let currentSegment: TextSegment = {
-    text: '',
-    bold: false,
-    italic: false,
-    underline: false,
-    strikethrough: false,
-    code: false,
-  }
-
-  // Stacks to track nested formatting tags
-  const boldStack: boolean[] = []
-  const italicStack: boolean[] = []
-  const underlineStack: boolean[] = []
-  const strikethroughStack: boolean[] = []
-  const codeStack: boolean[] = []
-  let currentLink: string | null = null
-
-  // Parse HTML character by character, tracking formatting state
-  let i = 0
-  while (i < html.length) {
-    if (html[i] === '<') {
-      const tagEnd = html.indexOf('>', i)
-      if (tagEnd === -1) {
-        // Malformed tag, treat as text
-        currentSegment.text += html[i]
-        i++
-        continue
-      }
-      
-      const tag = html.substring(i, tagEnd + 1)
-      const tagNameMatch = tag.match(/<\/?(\w+)/i)
-      if (!tagNameMatch) {
-        i = tagEnd + 1
-        continue
-      }
-      
-      const tagName = tagNameMatch[1].toLowerCase()
-      const isClosing = tag.startsWith('</')
-      
-      // Handle formatting tags - update stacks first
-      if (tagName === 'strong' || tagName === 'b') {
-        if (isClosing) {
-          boldStack.pop()
-        } else {
-          boldStack.push(true)
-        }
-      } else if (tagName === 'em' || tagName === 'i') {
-        if (isClosing) {
-          italicStack.pop()
-        } else {
-          italicStack.push(true)
-        }
-      } else if (tagName === 'u') {
-        if (isClosing) {
-          underlineStack.pop()
-        } else {
-          underlineStack.push(true)
-        }
-      } else if (tagName === 's' || tagName === 'strike' || tagName === 'del') {
-        if (isClosing) {
-          strikethroughStack.pop()
-        } else {
-          strikethroughStack.push(true)
-        }
-      } else if (tagName === 'code') {
-        if (isClosing) {
-          codeStack.pop()
-        } else {
-          codeStack.push(true)
-        }
-      } else if (tagName === 'a') {
-        if (isClosing) {
-          currentLink = null
-        } else {
-          // Extract href
-          const hrefMatch = tag.match(/href=["']([^"']+)["']/i)
-          if (hrefMatch) {
-            currentLink = hrefMatch[1]
-          }
-        }
-      } else if (tagName === 'br') {
-        currentSegment.text += '\n'
-      }
-      
-      i = tagEnd + 1
-    } else {
-      // Regular text character - check if we need to start a new segment
-      // due to formatting change
-      const newFormatting = {
-        bold: boldStack.length > 0,
-        italic: italicStack.length > 0,
-        underline: underlineStack.length > 0,
-        strikethrough: strikethroughStack.length > 0,
-        code: codeStack.length > 0,
-      }
-      
-      const formattingChanged = 
-        currentSegment.bold !== newFormatting.bold ||
-        currentSegment.italic !== newFormatting.italic ||
-        currentSegment.underline !== newFormatting.underline ||
-        currentSegment.strikethrough !== newFormatting.strikethrough ||
-        currentSegment.code !== newFormatting.code ||
-        (currentLink !== null && currentSegment.link !== currentLink) ||
-        (currentLink === null && currentSegment.link !== undefined)
-      
-      if (formattingChanged && currentSegment.text) {
-        segments.push({ ...currentSegment, link: currentLink || undefined })
-        currentSegment = {
-          text: '',
-          bold: newFormatting.bold,
-          italic: newFormatting.italic,
-          underline: newFormatting.underline,
-          strikethrough: newFormatting.strikethrough,
-          code: newFormatting.code,
-        }
-      } else {
-        // Update formatting state
-        currentSegment.bold = newFormatting.bold
-        currentSegment.italic = newFormatting.italic
-        currentSegment.underline = newFormatting.underline
-        currentSegment.strikethrough = newFormatting.strikethrough
-        currentSegment.code = newFormatting.code
-      }
-      
-      currentSegment.text += html[i]
-      i++
-    }
-  }
-
-  // Add final segment if it has text
-  if (currentSegment.text) {
-    segments.push({ ...currentSegment, link: currentLink || undefined })
-  }
-
-  // Convert segments to Notion rich text format
-  const richText: any[] = []
-  
-  for (let i = 0; i < segments.length; i++) {
-    const segment = segments[i]
-    // Decode HTML entities but preserve spaces between segments
-    let decodedText = decodeHtmlEntities(segment.text)
-    
-    // Only trim leading whitespace from the very first segment
-    if (i === 0) {
-      decodedText = decodedText.replace(/^\s+/, '')
-    }
-    // Only trim trailing whitespace from the very last segment
-    if (i === segments.length - 1) {
-      decodedText = decodedText.replace(/\s+$/, '')
-    }
-    
-    // Skip completely empty segments (but preserve segments that only have spaces in the middle)
-    if (!decodedText.trim() && decodedText.length === 0) continue
-
-    richText.push({
-      type: 'text',
-      text: segment.link ? { content: decodedText, link: { url: segment.link } } : { content: decodedText },
-      annotations: {
-        bold: segment.bold,
-        italic: segment.italic,
-        strikethrough: segment.strikethrough,
-        underline: segment.underline,
-        code: segment.code,
-        color: 'default',
-      },
-      plain_text: decodedText,
-    })
-  }
-
-  // If no segments were created, return a plain text segment
-  if (richText.length === 0) {
-    const plainText = html
-      .replace(/<[^>]*>/g, '')
-      .replace(/&nbsp;/g, ' ')
-      .replace(/&amp;/g, '&')
-      .replace(/&lt;/g, '<')
-      .replace(/&gt;/g, '>')
-      .replace(/&quot;/g, '"')
-      .replace(/&#39;/g, "'")
-      .trim()
-    
-    if (plainText) {
-      richText.push({
-        type: 'text',
-        text: { content: plainText },
-        annotations: {
-          bold: false,
-          italic: false,
-          strikethrough: false,
-          underline: false,
-          code: false,
-          color: 'default',
-        },
-        plain_text: plainText,
-      })
-    }
-  }
-
-  return richText.length > 0 ? richText : []
-}
-
-// Convert HTML to Notion blocks (simplified regex-based parser)
-function htmlToNotionBlocks(html: string): any[] {
-  if (!html || html.trim() === '') {
-    return [{
-      type: 'paragraph',
-      paragraph: { rich_text: [] },
-    }]
-  }
-
-  const blocks: any[] = []
-  
-  // Extract list items separately
-  const ulRegex = /<ul[^>]*>(.*?)<\/ul>/gis
-  const olRegex = /<ol[^>]*>(.*?)<\/ol>/gis
-  
-  // Process unordered lists
-  let ulMatch
-  while ((ulMatch = ulRegex.exec(html)) !== null) {
-    const listContent = ulMatch[1]
-    const liRegex = /<li[^>]*>(.*?)<\/li>/gis
-    let liMatch
-    while ((liMatch = liRegex.exec(listContent)) !== null) {
-      const richText = htmlToNotionRichText(liMatch[1])
-      if (richText.length > 0) {
-        blocks.push({
-          type: 'bulleted_list_item',
-          bulleted_list_item: { rich_text: richText },
-        })
-      }
-    }
-  }
-  
-  // Process ordered lists
-  let olMatch
-  while ((olMatch = olRegex.exec(html)) !== null) {
-    const listContent = olMatch[1]
-    const liRegex = /<li[^>]*>(.*?)<\/li>/gis
-    let liMatch
-    while ((liMatch = liRegex.exec(listContent)) !== null) {
-      const richText = htmlToNotionRichText(liMatch[1])
-      if (richText.length > 0) {
-        blocks.push({
-          type: 'numbered_list_item',
-          numbered_list_item: { rich_text: richText },
-        })
-      }
-    }
-  }
-  
-  // Remove processed lists from HTML
-  let remainingHtml = html
-    .replace(/<ul[^>]*>.*?<\/ul>/gis, '')
-    .replace(/<ol[^>]*>.*?<\/ol>/gis, '')
-  
-  // Process headings
-  const h1Regex = /<h1[^>]*>(.*?)<\/h1>/gi
-  let h1Match
-  while ((h1Match = h1Regex.exec(remainingHtml)) !== null) {
-    const richText = htmlToNotionRichText(h1Match[1])
-    if (richText.length > 0) {
-      blocks.push({
-        type: 'heading_1',
-        heading_1: { rich_text: richText },
-      })
-    }
-    remainingHtml = remainingHtml.replace(h1Match[0], '')
-  }
-  
-  const h2Regex = /<h2[^>]*>(.*?)<\/h2>/gi
-  let h2Match
-  while ((h2Match = h2Regex.exec(remainingHtml)) !== null) {
-    const richText = htmlToNotionRichText(h2Match[1])
-    if (richText.length > 0) {
-      blocks.push({
-        type: 'heading_2',
-        heading_2: { rich_text: richText },
-      })
-    }
-    remainingHtml = remainingHtml.replace(h2Match[0], '')
-  }
-  
-  const h3Regex = /<h3[^>]*>(.*?)<\/h3>/gi
-  let h3Match
-  while ((h3Match = h3Regex.exec(remainingHtml)) !== null) {
-    const richText = htmlToNotionRichText(h3Match[1])
-    if (richText.length > 0) {
-      blocks.push({
-        type: 'heading_3',
-        heading_3: { rich_text: richText },
-      })
-    }
-    remainingHtml = remainingHtml.replace(h3Match[0], '')
-  }
-  
-  // Process blockquotes
-  const blockquoteRegex = /<blockquote[^>]*>(.*?)<\/blockquote>/gi
-  let blockquoteMatch
-  while ((blockquoteMatch = blockquoteRegex.exec(remainingHtml)) !== null) {
-    const richText = htmlToNotionRichText(blockquoteMatch[1])
-    if (richText.length > 0) {
-      blocks.push({
-        type: 'quote',
-        quote: { rich_text: richText },
-      })
-    }
-    remainingHtml = remainingHtml.replace(blockquoteMatch[0], '')
-  }
-  
-  // Process code blocks
-  const preRegex = /<pre[^>]*>(.*?)<\/pre>/gis
-  let preMatch
-  while ((preMatch = preRegex.exec(remainingHtml)) !== null) {
-    const code = stripHtml(preMatch[1])
-    if (code.trim()) {
-      blocks.push({
-        type: 'code',
-        code: {
-          rich_text: [{
-            type: 'text',
-            text: { content: code },
-            annotations: {
-              bold: false,
-              italic: false,
-              strikethrough: false,
-              underline: false,
-              code: false,
-              color: 'default',
-            },
-            plain_text: code,
-          }],
-          language: 'plain text',
-        },
-      })
-    }
-    remainingHtml = remainingHtml.replace(preMatch[0], '')
-  }
-  
-  // Process divs (contenteditable often uses <div> per line; Notion needs one paragraph per line)
-  const divRegex = /<div[^>]*>(.*?)<\/div>/gi
-  let divMatch
-  while ((divMatch = divRegex.exec(remainingHtml)) !== null) {
-    const parts = divMatch[1].split(/<\s*br\s*\/?\s*>/gi)
-    for (const part of parts) {
-      const richText = htmlToNotionRichText(part)
-      if (richText.length > 0 || part.trim() === '') {
-        blocks.push({
-          type: 'paragraph',
-          paragraph: { rich_text: richText },
-        })
-      }
-    }
-  }
-  remainingHtml = remainingHtml.replace(/<div[^>]*>[\s\S]*?<\/div>/gi, '')
-
-  // Process paragraphs (what's left); split by <br> so each line becomes its own Notion paragraph
-  const pRegex = /<p[^>]*>(.*?)<\/p>/gi
-  let pMatch
-  
-  while ((pMatch = pRegex.exec(remainingHtml)) !== null) {
-    const parts = pMatch[1].split(/<\s*br\s*\/?\s*>/gi)
-    for (const part of parts) {
-      const richText = htmlToNotionRichText(part)
-      if (richText.length > 0 || part.trim() === '') {
-        blocks.push({
-          type: 'paragraph',
-          paragraph: { rich_text: richText },
-        })
-      }
-    }
-  }
-  
-  // If no blocks were created, split by <br> or </div><div so each line becomes one Notion paragraph
-  if (blocks.length === 0) {
-    const lineParts = html.split(/(?:<\s*br\s*\/?\s*>|<\/div>\s*<div[^>]*>)/gi)
-    for (const part of lineParts) {
-      const stripped = part.replace(/^<div[^>]*>/i, '').replace(/<\/div>$/i, '').trim()
-      const richText = htmlToNotionRichText(stripped || part)
-      if (richText.length > 0 || (stripped || part).trim() === '') {
-        blocks.push({
-          type: 'paragraph',
-          paragraph: { rich_text: richText },
-        })
-      }
-    }
-  }
-  if (blocks.length === 0) {
-    const plainText = stripHtml(html)
-    if (plainText.trim()) {
-      const richText = htmlToNotionRichText(html)
-      blocks.push({
-        type: 'paragraph',
-        paragraph: { rich_text: richText },
-      })
-    }
-  }
-  
-  return blocks.length > 0 ? blocks : [{
-    type: 'paragraph',
-    paragraph: { rich_text: [] },
-  }]
-}
+import { htmlToNotionBlocks } from '@/lib/notionBlocks'
 
 export async function POST(request: NextRequest) {
   try {
@@ -559,6 +111,7 @@ export async function POST(request: NextRequest) {
     const matchingBlocks: any[] = []
     let currentHighlightBlocks: any[] = []
     let foundMatch = false
+    let exactMatch = false // only append extra new blocks when exact (avoids duplicate at end on partial match)
 
     // Helper to check if a block is a list item
     const isListItem = (block: any) => 
@@ -602,20 +155,19 @@ export async function POST(request: NextRequest) {
         const normalizedOriginalNoHtml = normalizedOriginalText.replace(/<[^>]*>/g, '').trim()
         const normalizedOriginalPlainNoHtml = normalizedOriginalPlainText.replace(/<[^>]*>/g, '').trim()
 
-        if (normalizedCombined === normalizedOriginalNoHtml || 
-            normalizedCombined === normalizedOriginalPlainNoHtml ||
-            (normalizedOriginalPlainNoHtml && (
-              normalizedCombined.includes(normalizedOriginalPlainNoHtml) || 
-              normalizedOriginalPlainNoHtml.includes(normalizedCombined)
-            ))) {
+        const isExact = normalizedCombined === normalizedOriginalNoHtml || normalizedCombined === normalizedOriginalPlainNoHtml
+        const isPartial = normalizedOriginalPlainNoHtml && (
+          normalizedCombined.includes(normalizedOriginalPlainNoHtml) || normalizedOriginalPlainNoHtml.includes(normalizedCombined)
+        )
+        if (isExact || isPartial) {
           matchingBlocks.push(...currentHighlightBlocks)
           foundMatch = true
+          exactMatch = isExact
           break
         }
 
         currentHighlightBlocks = []
         
-        // If this was an empty paragraph, skip it and continue
         if (isEmpty) {
           continue
         }
@@ -640,14 +192,14 @@ export async function POST(request: NextRequest) {
       const normalizedOriginalNoHtml = normalizedOriginalText.replace(/<[^>]*>/g, '').trim()
       const normalizedOriginalPlainNoHtml = normalizedOriginalPlainText.replace(/<[^>]*>/g, '').trim()
 
-      if (normalizedCombined === normalizedOriginalNoHtml || 
-          normalizedCombined === normalizedOriginalPlainNoHtml ||
-          (normalizedOriginalPlainNoHtml && (
-            normalizedCombined.includes(normalizedOriginalPlainNoHtml) || 
-            normalizedOriginalPlainNoHtml.includes(normalizedCombined)
-          ))) {
+      const isExact = normalizedCombined === normalizedOriginalNoHtml || normalizedCombined === normalizedOriginalPlainNoHtml
+      const isPartial = normalizedOriginalPlainNoHtml && (
+        normalizedCombined.includes(normalizedOriginalPlainNoHtml) || normalizedOriginalPlainNoHtml.includes(normalizedCombined)
+      )
+      if (isExact || isPartial) {
         matchingBlocks.push(...currentHighlightBlocks)
         foundMatch = true
+        exactMatch = isExact
       }
     }
 
@@ -715,15 +267,17 @@ export async function POST(request: NextRequest) {
         }
       }
       
-      // Add extra new blocks if there are more new than old
-      for (let i = minLength; i < newBlocks.length; i++) {
-        try {
-          await notion.blocks.children.append({
-            block_id: notionPageId,
-            children: [newBlocks[i]],
-          })
-        } catch (error) {
-          console.warn(`Failed to append new block ${i}:`, error)
+      // Only append extra new blocks when we had an exact match (avoids duplicating at end on partial match)
+      if (exactMatch) {
+        for (let i = minLength; i < newBlocks.length; i++) {
+          try {
+            await notion.blocks.children.append({
+              block_id: notionPageId,
+              children: [newBlocks[i]],
+            })
+          } catch (error) {
+            console.warn(`Failed to append new block ${i}:`, error)
+          }
         }
       }
 
