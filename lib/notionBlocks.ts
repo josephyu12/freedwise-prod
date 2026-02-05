@@ -553,7 +553,11 @@ export function htmlToBlockText(html: string): string {
   const divRegex = /<div[^>]*>([\s\S]*?)<\/div>/gi
   let divMatch
   while ((divMatch = divRegex.exec(html)) !== null) {
-    const t = stripHtml(divMatch[1])
+    const inner = divMatch[1]
+    // Skip div content that is only a list — ul/ol extraction will add list items in order.
+    // Otherwise we'd push stripHtml("<ul><li>A</li><li>B</li></ul>") = "AB" and get "AB A B".
+    if (/<ul[\s>]|<ol[\s>]/i.test(inner)) continue
+    const t = stripHtml(inner)
     if (t) ordered.push({ index: divMatch.index, text: t })
   }
   const ulRegex = /<ul[^>]*>([\s\S]*?)<\/ul>/gis

@@ -119,13 +119,15 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
         return text.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase()
       }
 
-      // Normalize further so Notion vs HTML character differences don't break match (em-dash, unicode spaces)
+      // Normalize so DB/plain text matches Notion block-order text (bullets, dashes, unicode)
       const normalizeForBlockCompare = (text: string): string => {
         return stripHtmlForCompare(text)
-          .replace(/\u2014/g, '-')  // em-dash
-          .replace(/\u2013/g, '-')  // en-dash
-          .replace(/\u00A0/g, ' ')  // nbsp
+          .replace(/\u2014/g, '-')
+          .replace(/\u2013/g, '-')
+          .replace(/\u00A0/g, ' ')
           .replace(/[\u2000-\u200B\u202F\u205F\u3000]/g, ' ')
+          .replace(/[\s•\u2022\u2043\u2219]+/g, ' ')
+          .replace(/\s*[-*]\s+/g, ' ')
           .replace(/\s+/g, ' ')
           .trim()
           .toLowerCase()
@@ -195,9 +197,9 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
           const normalizedOriginalPlainNoHtml = normalizeForBlockCompare(normalizedOriginalPlainText)
 
           const isExact = normalizedCombined === normalizedOriginalNoHtml || normalizedCombined === normalizedOriginalPlainNoHtml
-          const isPartial = normalizedOriginalPlainNoHtml && (
-            normalizedCombined.includes(normalizedOriginalPlainNoHtml) || normalizedOriginalPlainNoHtml.includes(normalizedCombined)
-          )
+          const isPartial =
+            (normalizedOriginalNoHtml && normalizedCombined.includes(normalizedOriginalNoHtml)) ||
+            (normalizedOriginalPlainNoHtml && normalizedCombined.includes(normalizedOriginalPlainNoHtml))
           if (isExact || isPartial) {
             matchingBlocks.push(...currentHighlightBlocks)
             foundMatch = true
@@ -230,9 +232,9 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
         const normalizedOriginalPlainNoHtml = normalizeForBlockCompare(normalizedOriginalPlainText)
 
         const isExact = normalizedCombined === normalizedOriginalNoHtml || normalizedCombined === normalizedOriginalPlainNoHtml
-        const isPartial = normalizedOriginalPlainNoHtml && (
-          normalizedCombined.includes(normalizedOriginalPlainNoHtml) || normalizedOriginalPlainNoHtml.includes(normalizedCombined)
-        )
+        const isPartial =
+          (normalizedOriginalNoHtml && normalizedCombined.includes(normalizedOriginalNoHtml)) ||
+          (normalizedOriginalPlainNoHtml && normalizedCombined.includes(normalizedOriginalPlainNoHtml))
         if (isExact || isPartial) {
           matchingBlocks.push(...currentHighlightBlocks)
           foundMatch = true

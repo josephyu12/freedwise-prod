@@ -108,12 +108,15 @@ export async function POST(request: NextRequest) {
     const stripHtmlForCompare = (text: string): string =>
       text.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase()
 
+    // Normalize so DB/plain text matches Notion block-order text (bullets, dashes, unicode)
     const normalizeForBlockCompare = (text: string): string =>
       stripHtmlForCompare(text)
         .replace(/\u2014/g, '-')
         .replace(/\u2013/g, '-')
         .replace(/\u00A0/g, ' ')
         .replace(/[\u2000-\u200B\u202F\u205F\u3000]/g, ' ')
+        .replace(/[\s•\u2022\u2043\u2219]+/g, ' ') // bullet chars -> space
+        .replace(/\s*[-*]\s+/g, ' ') // "- " or "* " (list markers) -> space
         .replace(/\s+/g, ' ')
         .trim()
         .toLowerCase()
@@ -174,9 +177,10 @@ export async function POST(request: NextRequest) {
         const normalizedOriginalPlainNoHtml = normalizeForBlockCompare(normalizedOriginalPlainText)
 
         const isExact = normalizedCombined === normalizedOriginalNoHtml || normalizedCombined === normalizedOriginalPlainNoHtml
-        const isPartial = normalizedOriginalPlainNoHtml && (
-          normalizedCombined.includes(normalizedOriginalPlainNoHtml) || normalizedOriginalPlainNoHtml.includes(normalizedCombined)
-        )
+        // Partial: accept when block group contains the full highlight (block-order or plain)
+        const isPartial =
+          (normalizedOriginalNoHtml && normalizedCombined.includes(normalizedOriginalNoHtml)) ||
+          (normalizedOriginalPlainNoHtml && normalizedCombined.includes(normalizedOriginalPlainNoHtml))
         if (isExact || isPartial) {
           matchingBlocks.push(...currentHighlightBlocks)
           foundMatch = true
@@ -207,9 +211,9 @@ export async function POST(request: NextRequest) {
       const normalizedOriginalPlainNoHtml = normalizeForBlockCompare(normalizedOriginalPlainText)
 
       const isExact = normalizedCombined === normalizedOriginalNoHtml || normalizedCombined === normalizedOriginalPlainNoHtml
-      const isPartial = normalizedOriginalPlainNoHtml && (
-        normalizedCombined.includes(normalizedOriginalPlainNoHtml) || normalizedOriginalPlainNoHtml.includes(normalizedCombined)
-      )
+      const isPartial =
+        (normalizedOriginalNoHtml && normalizedCombined.includes(normalizedOriginalNoHtml)) ||
+        (normalizedOriginalPlainNoHtml && normalizedCombined.includes(normalizedOriginalPlainNoHtml))
       if (isExact || isPartial) {
         matchingBlocks.push(...currentHighlightBlocks)
         foundMatch = true
