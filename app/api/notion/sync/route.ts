@@ -382,11 +382,11 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
       } while (cursor)
 
       // Function to extract plain text from HTML content (mimics how Notion blocks are structured)
-      // This converts HTML to the same format as what we extract from Notion blocks
+      // This converts HTML to the same format as what we extract from Notion blocks.
+      // We collect <p> and <div> in document order so multi-paragraph (e.g. <p>P1</p><div>P2</div>) matches the full group.
       const htmlToBlockText = (html: string): string => {
         if (!html) return ''
         
-        // Simple HTML to text converter
         const stripHtml = (html: string): string => {
           return html
             .replace(/<[^>]*>/g, '')
@@ -399,75 +399,60 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
             .trim()
         }
         
-        const textParts: string[] = []
+        // Collect (position, text) for block-level elements so we preserve document order
+        const ordered: { index: number; text: string }[] = []
         
-        // Extract text before any HTML tags (like "Yogi Berra Bangers:" before <div>)
-        // This handles cases where text appears directly before structured content
         const textBeforeTags = html.match(/^([^<]+?)(?=<[^>]+>)/)
         if (textBeforeTags && textBeforeTags[1]) {
           const beforeText = stripHtml(textBeforeTags[1])
           if (beforeText) {
-            textParts.push(beforeText)
+            ordered.push({ index: 0, text: beforeText })
           }
         }
         
-        // Extract paragraphs
         const pRegex = /<p[^>]*>(.*?)<\/p>/gi
         let pMatch
         while ((pMatch = pRegex.exec(html)) !== null) {
           const pText = stripHtml(pMatch[1])
-          if (pText) {
-            textParts.push(pText)
-          }
-        }
-
-        // If no <p> found, extract divs (contenteditable often uses one div per paragraph for multi-paragraph)
-        if (textParts.length === 0) {
-          const divRegex = /<div[^>]*>(.*?)<\/div>/gi
-          let divMatch
-          while ((divMatch = divRegex.exec(html)) !== null) {
-            const divText = stripHtml(divMatch[1])
-            if (divText) {
-              textParts.push(divText)
-            }
-          }
+          if (pText) ordered.push({ index: pMatch.index, text: pText })
         }
         
-        // Extract list items from <ul> or <ol>
-        const ulMatch = html.match(/<ul[^>]*>(.*?)<\/ul>/gis)
-        if (ulMatch) {
-          for (const match of ulMatch) {
-            const liRegex = /<li[^>]*>(.*?)<\/li>/gis
-            let liMatch
-            while ((liMatch = liRegex.exec(match)) !== null) {
-              const liText = stripHtml(liMatch[1])
-              if (liText) {
-                textParts.push(liText)
-              }
-            }
+        const divRegex = /<div[^>]*>(.*?)<\/div>/gi
+        let divMatch
+        while ((divMatch = divRegex.exec(html)) !== null) {
+          const divText = stripHtml(divMatch[1])
+          if (divText) ordered.push({ index: divMatch.index, text: divText })
+        }
+        
+        const ulRegex = /<ul[^>]*>(.*?)<\/ul>/gis
+        let ulMatch
+        while ((ulMatch = ulRegex.exec(html)) !== null) {
+          const liRegex = /<li[^>]*>(.*?)<\/li>/gis
+          let liMatch
+          while ((liMatch = liRegex.exec(ulMatch[0])) !== null) {
+            const liText = stripHtml(liMatch[1])
+            if (liText) ordered.push({ index: ulMatch.index + liMatch.index, text: liText })
           }
         }
         
-        const olMatch = html.match(/<ol[^>]*>(.*?)<\/ol>/gis)
-        if (olMatch) {
-          for (const match of olMatch) {
-            const liRegex = /<li[^>]*>(.*?)<\/li>/gis
-            let liMatch
-            while ((liMatch = liRegex.exec(match)) !== null) {
-              const liText = stripHtml(liMatch[1])
-              if (liText) {
-                textParts.push(liText)
-              }
-            }
+        const olRegex = /<ol[^>]*>(.*?)<\/ol>/gis
+        let olMatch
+        while ((olMatch = olRegex.exec(html)) !== null) {
+          const liRegex = /<li[^>]*>(.*?)<\/li>/gis
+          let liMatch
+          while ((liMatch = liRegex.exec(olMatch[0])) !== null) {
+            const liText = stripHtml(liMatch[1])
+            if (liText) ordered.push({ index: olMatch.index + liMatch.index, text: liText })
           }
         }
         
-        // If no structured content found, just strip HTML
-        if (textParts.length === 0) {
-          return stripHtml(html)
+        ordered.sort((a, b) => a.index - b.index)
+        const raw = ordered.map((o) => o.text)
+        const textParts: string[] = []
+        for (const t of raw) {
+          if (textParts[textParts.length - 1] !== t) textParts.push(t)
         }
-        
-        // Join parts with spaces (same as how we join Notion blocks)
+        if (textParts.length === 0) return stripHtml(html)
         return textParts.join(' ')
       }
       
