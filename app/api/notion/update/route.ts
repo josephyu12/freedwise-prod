@@ -138,11 +138,16 @@ export async function POST(request: NextRequest) {
       if (isEmpty && currentHighlightBlocks.length > 0) {
         // Empty paragraph ends the group
         shouldEndGroup = true
-      } else if (currentHighlightBlocks.length > 0) {
-        // Check for type transition: list to non-list or vice versa
-        const currentIsList = isListItem(currentHighlightBlocks[0])
-        if (currentIsList !== isList) {
-          // Transition from list to non-list (or vice versa) ends the group
+      } else if (currentHighlightBlocks.length > 0 && !isEmpty) {
+        // Check for type transition: allow paragraph -> list (same highlight can be para + bullets)
+        const lastBlock = currentHighlightBlocks[currentHighlightBlocks.length - 1]
+        const currentIsList = isListItem(lastBlock)
+        const currentIsParagraph = lastBlock.type === 'paragraph'
+        if (currentIsList && !isList) {
+          // List to non-list ends the group
+          shouldEndGroup = true
+        } else if (!currentIsList && isList && !currentIsParagraph) {
+          // Non-list to list ends the group, unless current is paragraph (allow paragraph -> list)
           shouldEndGroup = true
         }
       }
