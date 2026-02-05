@@ -420,6 +420,18 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
             textParts.push(pText)
           }
         }
+
+        // If no <p> found, extract divs (contenteditable often uses one div per paragraph for multi-paragraph)
+        if (textParts.length === 0) {
+          const divRegex = /<div[^>]*>(.*?)<\/div>/gi
+          let divMatch
+          while ((divMatch = divRegex.exec(html)) !== null) {
+            const divText = stripHtml(divMatch[1])
+            if (divText) {
+              textParts.push(divText)
+            }
+          }
+        }
         
         // Extract list items from <ul> or <ol>
         const ulMatch = html.match(/<ul[^>]*>(.*?)<\/ul>/gis)
@@ -590,7 +602,7 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
         // Add block to current group (unless it's an empty paragraph at the start)
         if (!isEmpty) {
           // Before extending the group, check if the current group alone already matches
-          // (fixes delete for single-block highlights like "Test" when followed by another block with no empty line)
+          // (fixes delete for single-block highlights when followed by another block with no empty line)
           if (currentHighlightBlocks.length > 0) {
             const currentCombined = normalizeText(
               currentHighlightBlocks.map(getBlockText).join(' ')
