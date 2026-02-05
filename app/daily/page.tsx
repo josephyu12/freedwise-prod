@@ -8,6 +8,7 @@ import { useRouter } from 'next/navigation'
 import { format, startOfMonth, endOfMonth, eachDayOfInterval, getDay, isSameMonth, isSameDay, addMonths, subMonths } from 'date-fns'
 import RichTextEditor from '@/components/RichTextEditor'
 import PinDialog from '@/components/PinDialog'
+import { useUnsavedChanges } from '@/hooks/useUnsavedChanges'
 import { Pin, PinOff } from 'lucide-react'
 import { addToNotionSyncQueue } from '@/lib/notionSyncQueue'
 
@@ -184,6 +185,18 @@ export default function DailyPage() {
   const [monthsWithAssignments, setMonthsWithAssignments] = useState<Set<string>>(new Set())
   const supabase = createClient()
   const router = useRouter()
+
+  const editingHighlight = editingId
+    ? summary?.highlights.find((sh) => sh.highlight?.id === editingId)?.highlight
+    : null
+  const hasUnsavedEdit =
+    editingId &&
+    editingHighlight &&
+    (editText !== editingHighlight.text ||
+      (editHtmlContent || editText) !== (editingHighlight.html_content || editingHighlight.text) ||
+      (editSource || '') !== (editingHighlight.source || '') ||
+      (editAuthor || '') !== (editingHighlight.author || ''))
+  useUnsavedChanges(!!hasUnsavedEdit)
 
   // Add item to Notion sync queue via deduplicating API
   const addToSyncQueue = async (

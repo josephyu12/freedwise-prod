@@ -5,6 +5,7 @@ import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import RichTextEditor from '@/components/RichTextEditor'
 import { addToNotionSyncQueue } from '@/lib/notionSyncQueue'
+import { useUnsavedChanges } from '@/hooks/useUnsavedChanges'
 
 export default function Home() {
   const [text, setText] = useState('')
@@ -16,6 +17,9 @@ export default function Home() {
   const [saving, setSaving] = useState(false)
   const [saveSuccess, setSaveSuccess] = useState(false)
   const supabase = createClient()
+
+  const hasUnsavedChanges = text.trim() !== ''
+  useUnsavedChanges(hasUnsavedChanges)
 
   const loadCategories = useCallback(async () => {
     try {

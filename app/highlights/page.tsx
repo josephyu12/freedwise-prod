@@ -6,6 +6,7 @@ import { Highlight, Category } from '@/types/database'
 import Link from 'next/link'
 import RichTextEditor from '@/components/RichTextEditor'
 import PinDialog from '@/components/PinDialog'
+import { useUnsavedChanges } from '@/hooks/useUnsavedChanges'
 import { Pin, PinOff } from 'lucide-react'
 import { addToNotionSyncQueue } from '@/lib/notionSyncQueue'
 
@@ -39,6 +40,21 @@ export default function HighlightsPage() {
   const [pinDialogOpen, setPinDialogOpen] = useState(false)
   const [pendingPinHighlightId, setPendingPinHighlightId] = useState<string | null>(null)
   const supabase = createClient()
+
+  const editingHighlight = editingId ? highlights.find((h) => h.id === editingId) : null
+  const hasUnsavedNewHighlight = text.trim() !== ''
+  const hasUnsavedEdit =
+    editingId &&
+    editingHighlight &&
+    (editText !== editingHighlight.text ||
+      (editHtmlContent || editText) !== (editingHighlight.html_content || editingHighlight.text) ||
+      (() => {
+        const orig = (editingHighlight.categories?.map((c) => c.id) || []).slice().sort()
+        const curr = [...editCategories].sort()
+        return orig.length !== curr.length || orig.some((id, i) => id !== curr[i])
+      })())
+  const hasUnsavedChanges = hasUnsavedNewHighlight || !!hasUnsavedEdit
+  useUnsavedChanges(hasUnsavedChanges)
 
   // Add item to Notion sync queue via deduplicating API
   const addToSyncQueue = async (

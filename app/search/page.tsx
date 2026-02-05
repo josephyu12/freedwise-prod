@@ -7,6 +7,7 @@ import Link from 'next/link'
 import { useDebounce } from '@/hooks/useDebounce'
 import RichTextEditor from '@/components/RichTextEditor'
 import PinDialog from '@/components/PinDialog'
+import { useUnsavedChanges } from '@/hooks/useUnsavedChanges'
 import { Pin, PinOff } from 'lucide-react'
 import { addToNotionSyncQueue } from '@/lib/notionSyncQueue'
 
@@ -31,6 +32,23 @@ export default function SearchPage() {
   const supabase = createClient()
 
   const debouncedQuery = useDebounce(query, 500)
+
+  const editingHighlight = editingId
+    ? results.find((h) => h.id === editingId) || similarResults.find((h) => h.id === editingId)
+    : null
+  const hasUnsavedEdit =
+    editingId &&
+    editingHighlight &&
+    (editText !== editingHighlight.text ||
+      (editHtmlContent || editText) !== (editingHighlight.html_content || editingHighlight.text) ||
+      (editSource || '') !== (editingHighlight.source || '') ||
+      (editAuthor || '') !== (editingHighlight.author || '') ||
+      (() => {
+        const orig = (editingHighlight.categories?.map((c) => c.id) || []).slice().sort()
+        const curr = [...editCategories].sort()
+        return orig.length !== curr.length || orig.some((id, i) => id !== curr[i])
+      })())
+  useUnsavedChanges(!!hasUnsavedEdit)
 
   // Add item to Notion sync queue via deduplicating API
   const addToSyncQueue = async (
