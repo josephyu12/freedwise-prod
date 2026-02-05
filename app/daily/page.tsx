@@ -331,7 +331,9 @@ export default function DailyPage() {
       if (summaryDataRaw) {
         const summaryData = summaryDataRaw as { id: string; date: string; created_at: string }
         
-        // Get highlights for this summary with their ratings
+        // Get highlights for this summary with their ratings.
+        // Order: reviewed first (rating not null), then unreviewed; within each group by id for stable order
+        // so returning to the page or new highlights added to the day doesn't scramble the list.
         const { data: summaryHighlights, error: highlightsError } = await supabase
           .from('daily_summary_highlights')
           .select(`
@@ -362,6 +364,8 @@ export default function DailyPage() {
             )
           `)
           .eq('daily_summary_id', summaryData.id)
+          .order('rating', { ascending: false, nullsFirst: false })
+          .order('id', { ascending: true })
 
         if (highlightsError) throw highlightsError
 
