@@ -103,6 +103,11 @@ export async function POST(request: NextRequest) {
         .toLowerCase()
     }
 
+    // Strip HTML for comparison: replace tags with space so e.g. "</li><li>" doesn't glue list items together
+    const stripHtmlForCompare = (text: string): string => {
+      return text.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase()
+    }
+
     // Normalize the original text for comparison
     const normalizedOriginalText = normalizeText(originalText || originalPlainText)
     const normalizedOriginalPlainText = normalizeText(originalPlainText)
@@ -150,10 +155,10 @@ export async function POST(request: NextRequest) {
             .join(' ')
         )
 
-        // Match using normalized text comparison (strip HTML tags for comparison)
-        const normalizedCombined = combinedText.replace(/<[^>]*>/g, '').trim()
-        const normalizedOriginalNoHtml = normalizedOriginalText.replace(/<[^>]*>/g, '').trim()
-        const normalizedOriginalPlainNoHtml = normalizedOriginalPlainText.replace(/<[^>]*>/g, '').trim()
+        // Match using normalized text (strip HTML, replace tags with space so list items compare correctly)
+        const normalizedCombined = stripHtmlForCompare(combinedText)
+        const normalizedOriginalNoHtml = stripHtmlForCompare(normalizedOriginalText)
+        const normalizedOriginalPlainNoHtml = stripHtmlForCompare(normalizedOriginalPlainText)
 
         const isExact = normalizedCombined === normalizedOriginalNoHtml || normalizedCombined === normalizedOriginalPlainNoHtml
         const isPartial = normalizedOriginalPlainNoHtml && (
@@ -187,10 +192,10 @@ export async function POST(request: NextRequest) {
           .join(' ')
       )
 
-      // Match using normalized text comparison (strip HTML tags for comparison)
-      const normalizedCombined = combinedText.replace(/<[^>]*>/g, '').trim()
-      const normalizedOriginalNoHtml = normalizedOriginalText.replace(/<[^>]*>/g, '').trim()
-      const normalizedOriginalPlainNoHtml = normalizedOriginalPlainText.replace(/<[^>]*>/g, '').trim()
+      // Match using normalized text (strip HTML, replace tags with space so list items compare correctly)
+      const normalizedCombined = stripHtmlForCompare(combinedText)
+      const normalizedOriginalNoHtml = stripHtmlForCompare(normalizedOriginalText)
+      const normalizedOriginalPlainNoHtml = stripHtmlForCompare(normalizedOriginalPlainText)
 
       const isExact = normalizedCombined === normalizedOriginalNoHtml || normalizedCombined === normalizedOriginalPlainNoHtml
       const isPartial = normalizedOriginalPlainNoHtml && (

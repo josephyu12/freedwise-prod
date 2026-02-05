@@ -111,6 +111,11 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
           .toLowerCase()
       }
 
+      // Strip HTML for comparison: replace tags with space so list items (e.g. "</li><li>") don't get glued together
+      const stripHtmlForCompare = (text: string): string => {
+        return text.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase()
+      }
+
       // Normalize the original text for comparison
       const normalizedOriginalText = normalizeText(originalText || originalPlainText)
       const normalizedOriginalPlainText = normalizeText(originalPlainText)
@@ -170,10 +175,10 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
               .join(' ')
           )
 
-          // Match using normalized text comparison (strip HTML tags for comparison)
-          const normalizedCombined = combinedText.replace(/<[^>]*>/g, '').trim()
-          const normalizedOriginalNoHtml = normalizedOriginalText.replace(/<[^>]*>/g, '').trim()
-          const normalizedOriginalPlainNoHtml = normalizedOriginalPlainText.replace(/<[^>]*>/g, '').trim()
+          // Match using normalized text (strip HTML, replace tags with space so list items compare correctly)
+          const normalizedCombined = stripHtmlForCompare(combinedText)
+          const normalizedOriginalNoHtml = stripHtmlForCompare(normalizedOriginalText)
+          const normalizedOriginalPlainNoHtml = stripHtmlForCompare(normalizedOriginalPlainText)
 
           const isExact = normalizedCombined === normalizedOriginalNoHtml || normalizedCombined === normalizedOriginalPlainNoHtml
           const isPartial = normalizedOriginalPlainNoHtml && (
@@ -207,10 +212,10 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
             .join(' ')
         )
 
-        // Match using normalized text comparison (strip HTML tags for comparison)
-        const normalizedCombined = combinedText.replace(/<[^>]*>/g, '').trim()
-        const normalizedOriginalNoHtml = normalizedOriginalText.replace(/<[^>]*>/g, '').trim()
-        const normalizedOriginalPlainNoHtml = normalizedOriginalPlainText.replace(/<[^>]*>/g, '').trim()
+        // Match using normalized text (strip HTML, replace tags with space so list items compare correctly)
+        const normalizedCombined = stripHtmlForCompare(combinedText)
+        const normalizedOriginalNoHtml = stripHtmlForCompare(normalizedOriginalText)
+        const normalizedOriginalPlainNoHtml = stripHtmlForCompare(normalizedOriginalPlainText)
 
         const isExact = normalizedCombined === normalizedOriginalNoHtml || normalizedCombined === normalizedOriginalPlainNoHtml
         const isPartial = normalizedOriginalPlainNoHtml && (
@@ -490,6 +495,11 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
           .trim()
           .toLowerCase()
       }
+
+      // Strip HTML for comparison: replace tags with space so list items don't get glued together
+      const stripHtmlForCompare = (text: string): string => {
+        return text.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase()
+      }
       
       // Convert HTML content to block text format (same as what we extract from Notion)
       const deleteTextFromHtml = queueItem.html_content ? htmlToBlockText(queueItem.html_content) : ''
@@ -549,10 +559,10 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
               .join(' ')
           )
 
-          // Match using normalized text comparison (strip HTML tags for comparison)
-          const normalizedCombined = combinedText.replace(/<[^>]*>/g, '').trim()
-          const normalizedDeleteNoHtml = normalizedDeleteText.replace(/<[^>]*>/g, '').trim()
-          const normalizedDeletePlainNoHtml = normalizedDeletePlainText.replace(/<[^>]*>/g, '').trim()
+          // Match using normalized text (strip HTML, replace tags with space so list items compare correctly)
+          const normalizedCombined = stripHtmlForCompare(combinedText)
+          const normalizedDeleteNoHtml = stripHtmlForCompare(normalizedDeleteText)
+          const normalizedDeletePlainNoHtml = stripHtmlForCompare(normalizedDeletePlainText)
 
           // Exact match only: group text must equal the highlight we're deleting
           if (normalizedCombined === normalizedDeleteNoHtml || normalizedCombined === normalizedDeletePlainNoHtml) {
@@ -585,9 +595,9 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
             const currentCombined = normalizeText(
               currentHighlightBlocks.map(getBlockText).join(' ')
             )
-            const normalizedCurrent = currentCombined.replace(/<[^>]*>/g, '').trim()
-            const normalizedDeleteNoHtml = normalizedDeleteText.replace(/<[^>]*>/g, '').trim()
-            const normalizedDeletePlainNoHtml = normalizedDeletePlainText.replace(/<[^>]*>/g, '').trim()
+            const normalizedCurrent = stripHtmlForCompare(currentCombined)
+            const normalizedDeleteNoHtml = stripHtmlForCompare(normalizedDeleteText)
+            const normalizedDeletePlainNoHtml = stripHtmlForCompare(normalizedDeletePlainText)
             // Exact match only: current group text must equal the highlight we're deleting
             if (normalizedCurrent === normalizedDeleteNoHtml || normalizedCurrent === normalizedDeletePlainNoHtml) {
               matchingBlocks.push(...currentHighlightBlocks)
@@ -612,10 +622,10 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
             .join(' ')
         )
 
-        // Match using normalized text comparison (strip HTML tags for comparison)
-        const normalizedCombined = combinedText.replace(/<[^>]*>/g, '').trim()
-        const normalizedDeleteNoHtml = normalizedDeleteText.replace(/<[^>]*>/g, '').trim()
-        const normalizedDeletePlainNoHtml = normalizedDeletePlainText.replace(/<[^>]*>/g, '').trim()
+        // Match using normalized text (strip HTML, replace tags with space so list items compare correctly)
+        const normalizedCombined = stripHtmlForCompare(combinedText)
+        const normalizedDeleteNoHtml = stripHtmlForCompare(normalizedDeleteText)
+        const normalizedDeletePlainNoHtml = stripHtmlForCompare(normalizedDeletePlainText)
 
         // Exact match only: group text must equal the highlight we're deleting
         if (normalizedCombined === normalizedDeleteNoHtml || normalizedCombined === normalizedDeletePlainNoHtml) {
