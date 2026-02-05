@@ -467,10 +467,13 @@ export function htmlToNotionBlocks(html: string): any[] {
       case 'div': {
         // Skip if this block is only a list (avoids duplicate bullets + paragraph)
         if (isOnlyTopLevelList(block.content)) break
-        // One <p> or <div> = one Notion paragraph (what you type appears as one)
-        const richText = htmlToNotionRichText(block.content)
-        if (richText.length > 0 || block.content.trim() === '') {
-          blocks.push({ type: 'paragraph', paragraph: { rich_text: richText } })
+        // Split by <br> or by adjacent block tags so "Line 1" + Enter + "Line 2" => 2 Notion paragraphs
+        const lineParts = block.content.split(/(?:<\s*br\s*\/?\s*>|<\/div>\s*<div[^>]*>|<\/p>\s*<p[^>]*>)/gi)
+        for (const part of lineParts) {
+          const richText = htmlToNotionRichText(part)
+          if (richText.length > 0 || part.trim() === '') {
+            blocks.push({ type: 'paragraph', paragraph: { rich_text: richText } })
+          }
         }
         break
       }
@@ -482,15 +485,20 @@ export function htmlToNotionBlocks(html: string): any[] {
   if (lastIndex < html.length) {
     const textAfter = html.substring(lastIndex).trim()
     if (textAfter) {
-      const richText = htmlToNotionRichText(textAfter)
-      if (richText.length > 0) {
-        blocks.push({ type: 'paragraph', paragraph: { rich_text: richText } })
+      // Split by <br> or newlines so plain "Line 1\nLine 2" (e.g. from queue text-only) => 2 paragraphs
+      const lineParts = textAfter.split(/(?:<\s*br\s*\/?\s*>|<\/div>\s*<div[^>]*>|\n)/gi)
+      for (const part of lineParts) {
+        const trimmed = part.trim()
+        const richText = htmlToNotionRichText(trimmed || part)
+        if (richText.length > 0 || (trimmed || part) === '') {
+          blocks.push({ type: 'paragraph', paragraph: { rich_text: richText } })
+        }
       }
     }
   }
 
   if (blocks.length === 0) {
-    const lineParts = html.split(/(?:<\s*br\s*\/?\s*>|<\/div>\s*<div[^>]*>)/gi)
+    const lineParts = html.split(/(?:<\s*br\s*\/?\s*>|<\/div>\s*<div[^>]*>|\n)/gi)
     for (const part of lineParts) {
       const stripped = part.replace(/^<div[^>]*>/i, '').replace(/<\/div>$/i, '').trim()
       const richText = htmlToNotionRichText(stripped || part)
