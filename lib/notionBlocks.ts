@@ -554,11 +554,17 @@ export function htmlToBlockText(html: string): string {
   let divMatch
   while ((divMatch = divRegex.exec(html)) !== null) {
     const inner = divMatch[1]
-    // Skip div content that is only a list — ul/ol extraction will add list items in order.
-    // Otherwise we'd push stripHtml("<ul><li>A</li><li>B</li></ul>") = "AB" and get "AB A B".
-    if (/<ul[\s>]|<ol[\s>]/i.test(inner)) continue
-    const t = stripHtml(inner)
-    if (t) ordered.push({ index: divMatch.index, text: t })
+    const listStart = inner.search(/<ul[\s>]|<ol[\s>]/i)
+    if (listStart !== -1) {
+      // Div contains a list: add only the text *before* the first list so we match Notion (paragraph + list items).
+      // ul/ol extraction below will add list items in order.
+      const beforeList = inner.slice(0, listStart)
+      const t = stripHtml(beforeList)
+      if (t) ordered.push({ index: divMatch.index, text: t })
+    } else {
+      const t = stripHtml(inner)
+      if (t) ordered.push({ index: divMatch.index, text: t })
+    }
   }
   const ulRegex = /<ul[^>]*>([\s\S]*?)<\/ul>/gis
   let ulMatch

@@ -65,7 +65,8 @@ export async function POST(request: NextRequest) {
     const originalBlockText = highlight.html_content
       ? htmlToBlockText(highlight.html_content).trim().toLowerCase()
       : ''
-    const originalPlainText = highlight.text.trim().toLowerCase()
+    const originalPlainText = (highlight.text || '').trim().toLowerCase()
+    // Use block-order text when we have html_content so paragraph+list order matches Notion; fall back to plain
     const originalText = originalBlockText || originalPlainText
 
     // Function to extract plain text from a block
@@ -176,15 +177,13 @@ export async function POST(request: NextRequest) {
         const normalizedOriginalNoHtml = normalizeForBlockCompare(normalizedOriginalText)
         const normalizedOriginalPlainNoHtml = normalizeForBlockCompare(normalizedOriginalPlainText)
 
-        const isExact = normalizedCombined === normalizedOriginalNoHtml || normalizedCombined === normalizedOriginalPlainNoHtml
-        // Partial: accept when block group contains the full highlight (block-order or plain)
-        const isPartial =
-          (normalizedOriginalNoHtml && normalizedCombined.includes(normalizedOriginalNoHtml)) ||
-          (normalizedOriginalPlainNoHtml && normalizedCombined.includes(normalizedOriginalPlainNoHtml))
-        if (isExact || isPartial) {
+        const isExact =
+          normalizedCombined === normalizedOriginalNoHtml ||
+          normalizedCombined === normalizedOriginalPlainNoHtml
+        if (isExact) {
           matchingBlocks.push(...currentHighlightBlocks)
           foundMatch = true
-          exactMatch = isExact
+          exactMatch = true
           break
         }
 
@@ -210,14 +209,13 @@ export async function POST(request: NextRequest) {
       const normalizedOriginalNoHtml = normalizeForBlockCompare(normalizedOriginalText)
       const normalizedOriginalPlainNoHtml = normalizeForBlockCompare(normalizedOriginalPlainText)
 
-      const isExact = normalizedCombined === normalizedOriginalNoHtml || normalizedCombined === normalizedOriginalPlainNoHtml
-      const isPartial =
-        (normalizedOriginalNoHtml && normalizedCombined.includes(normalizedOriginalNoHtml)) ||
-        (normalizedOriginalPlainNoHtml && normalizedCombined.includes(normalizedOriginalPlainNoHtml))
-      if (isExact || isPartial) {
+      const isExact =
+        normalizedCombined === normalizedOriginalNoHtml ||
+        normalizedCombined === normalizedOriginalPlainNoHtml
+      if (isExact) {
         matchingBlocks.push(...currentHighlightBlocks)
         foundMatch = true
-        exactMatch = isExact
+        exactMatch = true
       }
     }
 
