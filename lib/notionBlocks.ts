@@ -519,3 +519,68 @@ export function htmlToNotionBlocks(html: string): any[] {
   }
   return blocks
 }
+
+/**
+ * Extract plain text from HTML in block order (p, div, list items by position).
+ * Used when comparing queue item HTML to Notion block text so paragraph + list
+ * highlights match (e.g. <div>P1</div><div><ul><li>P2</li></ul></div> → "P1 P2").
+ */
+export function htmlToBlockText(html: string): string {
+  if (!html || !html.trim()) return ''
+  const stripHtml = (s: string): string =>
+    s
+      .replace(/<[^>]*>/g, '')
+      .replace(/&nbsp;/g, ' ')
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'")
+      .trim()
+  const ordered: { index: number; text: string }[] = []
+  const textBeforeTags = html.match(/^([^<]+?)(?=<[^>]+>)/)
+  if (textBeforeTags?.[1]) {
+    const t = stripHtml(textBeforeTags[1])
+    if (t) ordered.push({ index: 0, text: t })
+  }
+  const pRegex = /<p[^>]*>(.*?)<\/p>/gi
+  let pMatch
+  while ((pMatch = pRegex.exec(html)) !== null) {
+    const t = stripHtml(pMatch[1])
+    if (t) ordered.push({ index: pMatch.index, text: t })
+  }
+  const divRegex = /<div[^>]*>(.*?)<\/div>/gi
+  let divMatch
+  while ((divMatch = divRegex.exec(html)) !== null) {
+    const t = stripHtml(divMatch[1])
+    if (t) ordered.push({ index: divMatch.index, text: t })
+  }
+  const ulRegex = /<ul[^>]*>(.*?)<\/ul>/gis
+  let ulMatch
+  while ((ulMatch = ulRegex.exec(html)) !== null) {
+    const liRegex = /<li[^>]*>(.*?)<\/li>/gis
+    let liMatch
+    while ((liMatch = liRegex.exec(ulMatch[0])) !== null) {
+      const t = stripHtml(liMatch[1])
+      if (t) ordered.push({ index: ulMatch.index + liMatch.index, text: t })
+    }
+  }
+  const olRegex = /<ol[^>]*>(.*?)<\/ol>/gis
+  let olMatch
+  while ((olMatch = olRegex.exec(html)) !== null) {
+    const liRegex = /<li[^>]*>(.*?)<\/li>/gis
+    let liMatch
+    while ((liMatch = liRegex.exec(olMatch[0])) !== null) {
+      const t = stripHtml(liMatch[1])
+      if (t) ordered.push({ index: olMatch.index + liMatch.index, text: t })
+    }
+  }
+  ordered.sort((a, b) => a.index - b.index)
+  const raw = ordered.map((o) => o.text)
+  const parts: string[] = []
+  for (const t of raw) {
+    if (parts[parts.length - 1] !== t) parts.push(t)
+  }
+  if (parts.length === 0) return stripHtml(html)
+  return parts.join(' ')
+}

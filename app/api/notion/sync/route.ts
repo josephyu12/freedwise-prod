@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { Client } from '@notionhq/client'
-import { htmlToNotionBlocks } from '@/lib/notionBlocks'
+import { htmlToNotionBlocks, htmlToBlockText } from '@/lib/notionBlocks'
 
 // Process a single queue item. Claim with status=processing first to avoid duplicate processing when multiple sync requests run.
 async function processQueueItem(supabase: any, queueItem: any, notionSettings: { notion_api_key: string; notion_page_id: string; enabled: boolean }) {
@@ -33,26 +33,29 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
         children: blocks,
       })
     } else if (queueItem.operation_type === 'update') {
-      // For update, use the ORIGINAL text stored in the queue item to find the block
-      // The queue item stores both original and new text
-      let originalText = (queueItem.original_html_content || queueItem.original_text || '').trim().toLowerCase()
+      // For update, use the ORIGINAL text stored in the queue item to find the block.
+      // Convert original_html_content to block-order text (same format as Notion: parts joined by space)
+      // so paragraph + list highlights match.
+      let originalBlockText = ''
       let originalPlainText = (queueItem.original_text || '').trim().toLowerCase()
-
-      if (!originalText && !originalPlainText && queueItem.highlight_id) {
-        // Fallback: get from database. Note: DB may already have new text if client updated before enqueue;
-        // in that case matching may fail. Prefer always sending original from client.
+      if (queueItem.original_html_content) {
+        originalBlockText = htmlToBlockText(queueItem.original_html_content).trim().toLowerCase()
+      }
+      if (!originalBlockText && originalPlainText) {
+        originalBlockText = originalPlainText
+      }
+      if (!originalBlockText && !originalPlainText && queueItem.highlight_id) {
         const { data: currentHighlight } = await (supabase
           .from('highlights') as any)
           .select('text, html_content')
           .eq('id', queueItem.highlight_id)
           .maybeSingle()
-        
         if (currentHighlight) {
-          const fallbackHtml = (currentHighlight.html_content || '').trim().toLowerCase()
+          const fallbackHtml = (currentHighlight.html_content || '').trim()
           const fallbackPlain = (currentHighlight.text || '').trim().toLowerCase()
           if (fallbackHtml || fallbackPlain) {
             console.warn('Using current highlight text as fallback for Notion matching (original text not stored in queue)')
-            originalText = fallbackHtml || originalText
+            originalBlockText = fallbackHtml ? htmlToBlockText(fallbackHtml).trim().toLowerCase() : fallbackPlain
             originalPlainText = fallbackPlain || originalPlainText
           }
         }
@@ -116,8 +119,8 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
         return text.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase()
       }
 
-      // Normalize the original text for comparison
-      const normalizedOriginalText = normalizeText(originalText || originalPlainText)
+      // Normalize the original text for comparison (block-order text so it matches Notion combined blocks)
+      const normalizedOriginalText = normalizeText(originalBlockText || originalPlainText)
       const normalizedOriginalPlainText = normalizeText(originalPlainText)
       
       // Find matching blocks (blocks that contain the original text)
@@ -381,81 +384,7 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
         cursor = response.next_cursor || undefined
       } while (cursor)
 
-      // Function to extract plain text from HTML content (mimics how Notion blocks are structured)
-      // This converts HTML to the same format as what we extract from Notion blocks.
-      // We collect <p> and <div> in document order so multi-paragraph (e.g. <p>P1</p><div>P2</div>) matches the full group.
-      const htmlToBlockText = (html: string): string => {
-        if (!html) return ''
-        
-        const stripHtml = (html: string): string => {
-          return html
-            .replace(/<[^>]*>/g, '')
-            .replace(/&nbsp;/g, ' ')
-            .replace(/&amp;/g, '&')
-            .replace(/&lt;/g, '<')
-            .replace(/&gt;/g, '>')
-            .replace(/&quot;/g, '"')
-            .replace(/&#39;/g, "'")
-            .trim()
-        }
-        
-        // Collect (position, text) for block-level elements so we preserve document order
-        const ordered: { index: number; text: string }[] = []
-        
-        const textBeforeTags = html.match(/^([^<]+?)(?=<[^>]+>)/)
-        if (textBeforeTags && textBeforeTags[1]) {
-          const beforeText = stripHtml(textBeforeTags[1])
-          if (beforeText) {
-            ordered.push({ index: 0, text: beforeText })
-          }
-        }
-        
-        const pRegex = /<p[^>]*>(.*?)<\/p>/gi
-        let pMatch
-        while ((pMatch = pRegex.exec(html)) !== null) {
-          const pText = stripHtml(pMatch[1])
-          if (pText) ordered.push({ index: pMatch.index, text: pText })
-        }
-        
-        const divRegex = /<div[^>]*>(.*?)<\/div>/gi
-        let divMatch
-        while ((divMatch = divRegex.exec(html)) !== null) {
-          const divText = stripHtml(divMatch[1])
-          if (divText) ordered.push({ index: divMatch.index, text: divText })
-        }
-        
-        const ulRegex = /<ul[^>]*>(.*?)<\/ul>/gis
-        let ulMatch
-        while ((ulMatch = ulRegex.exec(html)) !== null) {
-          const liRegex = /<li[^>]*>(.*?)<\/li>/gis
-          let liMatch
-          while ((liMatch = liRegex.exec(ulMatch[0])) !== null) {
-            const liText = stripHtml(liMatch[1])
-            if (liText) ordered.push({ index: ulMatch.index + liMatch.index, text: liText })
-          }
-        }
-        
-        const olRegex = /<ol[^>]*>(.*?)<\/ol>/gis
-        let olMatch
-        while ((olMatch = olRegex.exec(html)) !== null) {
-          const liRegex = /<li[^>]*>(.*?)<\/li>/gis
-          let liMatch
-          while ((liMatch = liRegex.exec(olMatch[0])) !== null) {
-            const liText = stripHtml(liMatch[1])
-            if (liText) ordered.push({ index: olMatch.index + liMatch.index, text: liText })
-          }
-        }
-        
-        ordered.sort((a, b) => a.index - b.index)
-        const raw = ordered.map((o) => o.text)
-        const textParts: string[] = []
-        for (const t of raw) {
-          if (textParts[textParts.length - 1] !== t) textParts.push(t)
-        }
-        if (textParts.length === 0) return stripHtml(html)
-        return textParts.join(' ')
-      }
-      
+      // Use shared htmlToBlockText so delete search text matches Notion block order (paragraph + list).
       // Function to extract plain text from a block
       const getBlockText = (block: any): string => {
         // Handle different block types
