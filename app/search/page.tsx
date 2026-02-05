@@ -892,6 +892,7 @@ export default function SearchPage() {
                           <button
                             onClick={async (e) => {
                               e.stopPropagation()
+                              if (!confirm('Are you sure you want to archive this highlight?')) return
                               try {
                                 // Update in database (no Notion sync - archive status not supported by Notion)
                                 await (supabase

@@ -815,6 +815,7 @@ export default function DailyPage() {
   }
 
   const handleArchive = async (highlightId: string, archive: boolean) => {
+    if (archive && !confirm('Are you sure you want to archive this highlight?')) return
     try {
       const { error } = await (supabase
         .from('highlights') as any)
