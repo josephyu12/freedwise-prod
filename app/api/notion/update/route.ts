@@ -61,12 +61,11 @@ export async function POST(request: NextRequest) {
       cursor = response.next_cursor || undefined
     } while (cursor)
 
-    // Find the block(s) that match the original highlight text (block-order so paragraph+list matches)
+    // Build the exact search string we'll compare to Notion block groups (same order: paragraph then list items).
     const originalBlockText = highlight.html_content
       ? htmlToBlockText(highlight.html_content).trim().toLowerCase()
       : ''
     const originalPlainText = (highlight.text || '').trim().toLowerCase()
-    // Use block-order text when we have html_content so paragraph+list order matches Notion; fall back to plain
     const originalText = originalBlockText || originalPlainText
 
     // Function to extract plain text from a block
@@ -96,34 +95,26 @@ export async function POST(request: NextRequest) {
       return ''
     }
 
-    // Function to normalize text for comparison (remove extra whitespace, normalize quotes, etc.)
-    const normalizeText = (text: string): string => {
-      return text
-        .replace(/\s+/g, ' ') // Normalize whitespace
-        .replace(/[""]/g, '"') // Normalize quotes
-        .replace(/['']/g, "'") // Normalize apostrophes
-        .trim()
-        .toLowerCase()
-    }
-
+    // Single normalization for both DB and Notion text so exact match is reliable.
     const stripHtmlForCompare = (text: string): string =>
       text.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase()
 
-    // Normalize so DB/plain text matches Notion block-order text (bullets, dashes, unicode)
     const normalizeForBlockCompare = (text: string): string =>
       stripHtmlForCompare(text)
         .replace(/\u2014/g, '-')
         .replace(/\u2013/g, '-')
         .replace(/\u00A0/g, ' ')
+        .replace(/[""]/g, '"')
+        .replace(/['']/g, "'")
         .replace(/[\u2000-\u200B\u202F\u205F\u3000]/g, ' ')
-        .replace(/[\s•\u2022\u2043\u2219]+/g, ' ') // bullet chars -> space
-        .replace(/\s*[-*]\s+/g, ' ') // "- " or "* " (list markers) -> space
+        .replace(/[\s•\u2022\u2043\u2219]+/g, ' ')
+        .replace(/\s*[-*]\s+/g, ' ')
         .replace(/\s+/g, ' ')
         .trim()
         .toLowerCase()
 
-    const normalizedOriginalText = normalizeText(originalText || originalPlainText)
-    const normalizedOriginalPlainText = normalizeText(originalPlainText)
+    const normalizedOriginalNoHtml = normalizeForBlockCompare(originalText || originalPlainText)
+    const normalizedOriginalPlainNoHtml = normalizeForBlockCompare(originalPlainText)
 
     // Find matching blocks (blocks that contain the original text)
     const matchingBlocks: any[] = []
@@ -166,16 +157,10 @@ export async function POST(request: NextRequest) {
       }
       
       if (shouldEndGroup) {
-        // Check if this group of blocks matches
-        const combinedText = normalizeText(
-          currentHighlightBlocks
-            .map(getBlockText)
-            .join(' ')
-        )
-
+        const combinedText = currentHighlightBlocks
+          .map(getBlockText)
+          .join(' ')
         const normalizedCombined = normalizeForBlockCompare(combinedText)
-        const normalizedOriginalNoHtml = normalizeForBlockCompare(normalizedOriginalText)
-        const normalizedOriginalPlainNoHtml = normalizeForBlockCompare(normalizedOriginalPlainText)
 
         const isExact =
           normalizedCombined === normalizedOriginalNoHtml ||
@@ -199,15 +184,10 @@ export async function POST(request: NextRequest) {
     }
 
     if (!foundMatch && currentHighlightBlocks.length > 0) {
-      const combinedText = normalizeText(
-        currentHighlightBlocks
-          .map(getBlockText)
-          .join(' ')
-      )
-
+      const combinedText = currentHighlightBlocks
+        .map(getBlockText)
+        .join(' ')
       const normalizedCombined = normalizeForBlockCompare(combinedText)
-      const normalizedOriginalNoHtml = normalizeForBlockCompare(normalizedOriginalText)
-      const normalizedOriginalPlainNoHtml = normalizeForBlockCompare(normalizedOriginalPlainText)
 
       const isExact =
         normalizedCombined === normalizedOriginalNoHtml ||
@@ -220,10 +200,45 @@ export async function POST(request: NextRequest) {
     }
 
     if (!foundMatch || matchingBlocks.length === 0) {
+      // Debug: show what we searched for and sample of normalized block-group strings from Notion
+      const sampleGroups: string[] = []
+      let current: any[] = []
+      const pushGroup = () => {
+        if (current.length > 0) {
+          sampleGroups.push(normalizeForBlockCompare(current.map(getBlockText).join(' ')))
+          current = []
+        }
+      }
+      for (let i = 0; i < blocks.length && sampleGroups.length < 8; i++) {
+        const b = blocks[i]
+        const empty = b.type === 'paragraph' && (!b.paragraph?.rich_text || b.paragraph.rich_text.length === 0)
+        const list = b.type === 'bulleted_list_item' || b.type === 'numbered_list_item'
+        const last = current[current.length - 1]
+        const lastList = last && (last.type === 'bulleted_list_item' || last.type === 'numbered_list_item')
+        const lastPara = last?.type === 'paragraph'
+        if (empty) {
+          pushGroup()
+        } else if (current.length > 0 && lastList && !list) {
+          pushGroup()
+          current.push(b)
+        } else if (current.length > 0 && !lastPara && list) {
+          pushGroup()
+          current.push(b)
+        } else {
+          current.push(b)
+        }
+      }
+      pushGroup()
+
       return NextResponse.json(
-        { 
+        {
           message: 'Highlight not found in Notion page. It may have been deleted or moved.',
-          updated: false 
+          updated: false,
+          debug: {
+            searchFromBlockOrder: normalizedOriginalNoHtml || null,
+            searchFromPlainText: normalizedOriginalPlainNoHtml !== normalizedOriginalNoHtml ? normalizedOriginalPlainNoHtml : undefined,
+            sampleNotionBlockGroups: sampleGroups,
+          },
         },
         { status: 200 }
       )
