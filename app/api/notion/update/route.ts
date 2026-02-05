@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { Client } from '@notionhq/client'
 import { createClient } from '@/lib/supabase/server'
-import { htmlToNotionBlocks } from '@/lib/notionBlocks'
+import { htmlToNotionBlocks, htmlToBlockText } from '@/lib/notionBlocks'
 
 export async function POST(request: NextRequest) {
   try {
@@ -61,10 +61,12 @@ export async function POST(request: NextRequest) {
       cursor = response.next_cursor || undefined
     } while (cursor)
 
-    // Find the block(s) that match the original highlight text
-    // We'll search by comparing plain text content
-    const originalText = (highlight.html_content || highlight.text).trim().toLowerCase()
+    // Find the block(s) that match the original highlight text (block-order so paragraph+list matches)
+    const originalBlockText = highlight.html_content
+      ? htmlToBlockText(highlight.html_content).trim().toLowerCase()
+      : ''
     const originalPlainText = highlight.text.trim().toLowerCase()
+    const originalText = originalBlockText || originalPlainText
 
     // Function to extract plain text from a block
     const getBlockText = (block: any): string => {
@@ -103,12 +105,19 @@ export async function POST(request: NextRequest) {
         .toLowerCase()
     }
 
-    // Strip HTML for comparison: replace tags with space so e.g. "</li><li>" doesn't glue list items together
-    const stripHtmlForCompare = (text: string): string => {
-      return text.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase()
-    }
+    const stripHtmlForCompare = (text: string): string =>
+      text.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase()
 
-    // Normalize the original text for comparison
+    const normalizeForBlockCompare = (text: string): string =>
+      stripHtmlForCompare(text)
+        .replace(/\u2014/g, '-')
+        .replace(/\u2013/g, '-')
+        .replace(/\u00A0/g, ' ')
+        .replace(/[\u2000-\u200B\u202F\u205F\u3000]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .toLowerCase()
+
     const normalizedOriginalText = normalizeText(originalText || originalPlainText)
     const normalizedOriginalPlainText = normalizeText(originalPlainText)
 
@@ -160,10 +169,9 @@ export async function POST(request: NextRequest) {
             .join(' ')
         )
 
-        // Match using normalized text (strip HTML, replace tags with space so list items compare correctly)
-        const normalizedCombined = stripHtmlForCompare(combinedText)
-        const normalizedOriginalNoHtml = stripHtmlForCompare(normalizedOriginalText)
-        const normalizedOriginalPlainNoHtml = stripHtmlForCompare(normalizedOriginalPlainText)
+        const normalizedCombined = normalizeForBlockCompare(combinedText)
+        const normalizedOriginalNoHtml = normalizeForBlockCompare(normalizedOriginalText)
+        const normalizedOriginalPlainNoHtml = normalizeForBlockCompare(normalizedOriginalPlainText)
 
         const isExact = normalizedCombined === normalizedOriginalNoHtml || normalizedCombined === normalizedOriginalPlainNoHtml
         const isPartial = normalizedOriginalPlainNoHtml && (
@@ -177,19 +185,16 @@ export async function POST(request: NextRequest) {
         }
 
         currentHighlightBlocks = []
-        
         if (isEmpty) {
           continue
         }
       }
 
-      // Add block to current group (unless it's an empty paragraph at the start)
       if (!isEmpty || currentHighlightBlocks.length > 0) {
         currentHighlightBlocks.push(block)
       }
     }
 
-    // Check the last group
     if (!foundMatch && currentHighlightBlocks.length > 0) {
       const combinedText = normalizeText(
         currentHighlightBlocks
@@ -197,10 +202,9 @@ export async function POST(request: NextRequest) {
           .join(' ')
       )
 
-      // Match using normalized text (strip HTML, replace tags with space so list items compare correctly)
-      const normalizedCombined = stripHtmlForCompare(combinedText)
-      const normalizedOriginalNoHtml = stripHtmlForCompare(normalizedOriginalText)
-      const normalizedOriginalPlainNoHtml = stripHtmlForCompare(normalizedOriginalPlainText)
+      const normalizedCombined = normalizeForBlockCompare(combinedText)
+      const normalizedOriginalNoHtml = normalizeForBlockCompare(normalizedOriginalText)
+      const normalizedOriginalPlainNoHtml = normalizeForBlockCompare(normalizedOriginalPlainText)
 
       const isExact = normalizedCombined === normalizedOriginalNoHtml || normalizedCombined === normalizedOriginalPlainNoHtml
       const isPartial = normalizedOriginalPlainNoHtml && (

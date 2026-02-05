@@ -119,6 +119,18 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
         return text.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase()
       }
 
+      // Normalize further so Notion vs HTML character differences don't break match (em-dash, unicode spaces)
+      const normalizeForBlockCompare = (text: string): string => {
+        return stripHtmlForCompare(text)
+          .replace(/\u2014/g, '-')  // em-dash
+          .replace(/\u2013/g, '-')  // en-dash
+          .replace(/\u00A0/g, ' ')  // nbsp
+          .replace(/[\u2000-\u200B\u202F\u205F\u3000]/g, ' ')
+          .replace(/\s+/g, ' ')
+          .trim()
+          .toLowerCase()
+      }
+
       // Normalize the original text for comparison (block-order text so it matches Notion combined blocks)
       const normalizedOriginalText = normalizeText(originalBlockText || originalPlainText)
       const normalizedOriginalPlainText = normalizeText(originalPlainText)
@@ -178,10 +190,9 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
               .join(' ')
           )
 
-          // Match using normalized text (strip HTML, replace tags with space so list items compare correctly)
-          const normalizedCombined = stripHtmlForCompare(combinedText)
-          const normalizedOriginalNoHtml = stripHtmlForCompare(normalizedOriginalText)
-          const normalizedOriginalPlainNoHtml = stripHtmlForCompare(normalizedOriginalPlainText)
+          const normalizedCombined = normalizeForBlockCompare(combinedText)
+          const normalizedOriginalNoHtml = normalizeForBlockCompare(normalizedOriginalText)
+          const normalizedOriginalPlainNoHtml = normalizeForBlockCompare(normalizedOriginalPlainText)
 
           const isExact = normalizedCombined === normalizedOriginalNoHtml || normalizedCombined === normalizedOriginalPlainNoHtml
           const isPartial = normalizedOriginalPlainNoHtml && (
@@ -195,9 +206,8 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
           }
 
           currentHighlightBlocks = []
-          
           if (isEmpty) {
-          continue
+            continue
           }
         }
 
@@ -215,10 +225,9 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
             .join(' ')
         )
 
-        // Match using normalized text (strip HTML, replace tags with space so list items compare correctly)
-        const normalizedCombined = stripHtmlForCompare(combinedText)
-        const normalizedOriginalNoHtml = stripHtmlForCompare(normalizedOriginalText)
-        const normalizedOriginalPlainNoHtml = stripHtmlForCompare(normalizedOriginalPlainText)
+        const normalizedCombined = normalizeForBlockCompare(combinedText)
+        const normalizedOriginalNoHtml = normalizeForBlockCompare(normalizedOriginalText)
+        const normalizedOriginalPlainNoHtml = normalizeForBlockCompare(normalizedOriginalPlainText)
 
         const isExact = normalizedCombined === normalizedOriginalNoHtml || normalizedCombined === normalizedOriginalPlainNoHtml
         const isPartial = normalizedOriginalPlainNoHtml && (

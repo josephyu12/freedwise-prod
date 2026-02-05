@@ -543,32 +543,33 @@ export function htmlToBlockText(html: string): string {
     const t = stripHtml(textBeforeTags[1])
     if (t) ordered.push({ index: 0, text: t })
   }
-  const pRegex = /<p[^>]*>(.*?)<\/p>/gi
+  // Use [\s\S]*? so content matches across newlines (e.g. contenteditable HTML)
+  const pRegex = /<p[^>]*>([\s\S]*?)<\/p>/gi
   let pMatch
   while ((pMatch = pRegex.exec(html)) !== null) {
     const t = stripHtml(pMatch[1])
     if (t) ordered.push({ index: pMatch.index, text: t })
   }
-  const divRegex = /<div[^>]*>(.*?)<\/div>/gi
+  const divRegex = /<div[^>]*>([\s\S]*?)<\/div>/gi
   let divMatch
   while ((divMatch = divRegex.exec(html)) !== null) {
     const t = stripHtml(divMatch[1])
     if (t) ordered.push({ index: divMatch.index, text: t })
   }
-  const ulRegex = /<ul[^>]*>(.*?)<\/ul>/gis
+  const ulRegex = /<ul[^>]*>([\s\S]*?)<\/ul>/gis
   let ulMatch
   while ((ulMatch = ulRegex.exec(html)) !== null) {
-    const liRegex = /<li[^>]*>(.*?)<\/li>/gis
+    const liRegex = /<li[^>]*>([\s\S]*?)<\/li>/gis
     let liMatch
     while ((liMatch = liRegex.exec(ulMatch[0])) !== null) {
       const t = stripHtml(liMatch[1])
       if (t) ordered.push({ index: ulMatch.index + liMatch.index, text: t })
     }
   }
-  const olRegex = /<ol[^>]*>(.*?)<\/ol>/gis
+  const olRegex = /<ol[^>]*>([\s\S]*?)<\/ol>/gis
   let olMatch
   while ((olMatch = olRegex.exec(html)) !== null) {
-    const liRegex = /<li[^>]*>(.*?)<\/li>/gis
+    const liRegex = /<li[^>]*>([\s\S]*?)<\/li>/gis
     let liMatch
     while ((liMatch = liRegex.exec(olMatch[0])) !== null) {
       const t = stripHtml(liMatch[1])
