@@ -267,17 +267,19 @@ export async function POST(request: NextRequest) {
         }
       }
       
-      // Only append extra new blocks when we had an exact match (avoids duplicating at end on partial match)
-      if (exactMatch) {
-        for (let i = minLength; i < newBlocks.length; i++) {
-          try {
-            await notion.blocks.children.append({
-              block_id: notionPageId,
-              children: [newBlocks[i]],
-            })
-          } catch (error) {
-            console.warn(`Failed to append new block ${i}:`, error)
-          }
+      // Only append extra new blocks when we had an exact match (avoids duplicating at end on partial match).
+      // Insert after the last matching block so bullets stay with their highlight, not at bottom of page.
+      if (exactMatch && newBlocks.length > minLength) {
+        const lastMatchingId = matchingBlocks[matchingBlocks.length - 1].id
+        const extraBlocks = newBlocks.slice(minLength)
+        try {
+          await notion.blocks.children.append({
+            block_id: notionPageId,
+            children: extraBlocks,
+            after: lastMatchingId,
+          })
+        } catch (error: any) {
+          console.warn('Failed to append new blocks after highlight:', error?.message || error)
         }
       }
 
