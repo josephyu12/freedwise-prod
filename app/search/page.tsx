@@ -26,6 +26,7 @@ export default function SearchPage() {
   const [categories, setCategories] = useState<Category[]>([])
   const [editCategories, setEditCategories] = useState<string[]>([])
   const [skipNotionSync, setSkipNotionSync] = useState(false)
+  const [updatingNotion, setUpdatingNotion] = useState(false)
   const [pinnedHighlightIds, setPinnedHighlightIds] = useState<Set<string>>(new Set())
   const [pinDialogOpen, setPinDialogOpen] = useState(false)
   const [pendingPinHighlightId, setPendingPinHighlightId] = useState<string | null>(null)
@@ -218,6 +219,7 @@ export default function SearchPage() {
     if (!editingId || !editText.trim()) return
 
     try {
+      setUpdatingNotion(true)
       // Get original highlight data before updating (needed for sync queue)
       const allHighlights = [...results, ...similarResults]
       const originalHighlight = allHighlights.find((h) => h.id === editingId)
@@ -259,6 +261,7 @@ export default function SearchPage() {
           })
           
           if (isDuplicate) {
+            setUpdatingNotion(false)
             alert('Error: Your edits make this highlight the same as another highlight.')
             return
           }
@@ -315,6 +318,8 @@ export default function SearchPage() {
     } catch (error) {
       console.error('Error updating highlight:', error)
       alert('Failed to update highlight. Please try again.')
+    } finally {
+      setUpdatingNotion(false)
     }
   }
 
@@ -635,13 +640,15 @@ export default function SearchPage() {
                         <div className="flex gap-2">
                           <button
                             onClick={handleSaveEdit}
-                            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition"
+                            disabled={updatingNotion || !editText.trim()}
+                            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition disabled:opacity-50 disabled:cursor-not-allowed"
                           >
-                            Save
+                            {updatingNotion ? 'Saving...' : 'Save'}
                           </button>
                           <button
                             onClick={handleCancelEdit}
-                            className="px-4 py-2 bg-gray-200 dark:bg-gray-700 rounded-lg hover:bg-gray-300 dark:hover:bg-gray-600 transition"
+                            disabled={updatingNotion}
+                            className="px-4 py-2 bg-gray-200 dark:bg-gray-700 rounded-lg hover:bg-gray-300 dark:hover:bg-gray-600 transition disabled:opacity-50 disabled:cursor-not-allowed"
                           >
                             Cancel
                           </button>
@@ -843,13 +850,15 @@ export default function SearchPage() {
                         <div className="flex gap-2">
                           <button
                             onClick={handleSaveEdit}
-                            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition"
+                            disabled={updatingNotion || !editText.trim()}
+                            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition disabled:opacity-50 disabled:cursor-not-allowed"
                           >
-                            Save
+                            {updatingNotion ? 'Saving...' : 'Save'}
                           </button>
                           <button
                             onClick={handleCancelEdit}
-                            className="px-4 py-2 bg-gray-200 dark:bg-gray-700 rounded-lg hover:bg-gray-300 dark:hover:bg-gray-600 transition"
+                            disabled={updatingNotion}
+                            className="px-4 py-2 bg-gray-200 dark:bg-gray-700 rounded-lg hover:bg-gray-300 dark:hover:bg-gray-600 transition disabled:opacity-50 disabled:cursor-not-allowed"
                           >
                             Cancel
                           </button>
