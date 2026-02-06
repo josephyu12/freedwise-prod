@@ -247,15 +247,15 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
       }
 
       if (!foundMatch || matchingBlocks.length === 0) {
-        const sampleGroups: string[] = []
+        const allGroups: string[] = []
         let current: any[] = []
         const pushGroup = () => {
           if (current.length > 0) {
-            sampleGroups.push(normalizeForBlockCompare(current.map(getBlockText).join(' ')))
+            allGroups.push(normalizeForBlockCompare(current.map(getBlockText).join(' ')))
             current = []
           }
         }
-        for (let i = 0; i < allBlocks.length && sampleGroups.length < 8; i++) {
+        for (let i = 0; i < allBlocks.length; i++) {
           const b = allBlocks[i]
           const empty = b.type === 'paragraph' && (!b.paragraph?.rich_text || b.paragraph.rich_text.length === 0)
           const list = b.type === 'bulleted_list_item' || b.type === 'numbered_list_item'
@@ -275,7 +275,7 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
           }
         }
         pushGroup()
-        debugPayload.sampleNotionBlockGroups = sampleGroups
+        debugPayload.sampleNotionBlockGroups = allGroups.slice(-8)
         console.warn('[notion/sync] update: Highlight not found in Notion page. Full debug:', JSON.stringify(debugPayload, null, 2))
         throw new Error('Highlight not found in Notion page. It may have been deleted or moved.')
       }

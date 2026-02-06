@@ -214,15 +214,15 @@ export async function POST(request: NextRequest) {
 
     if (!foundMatch || matchingBlocks.length === 0) {
       // Debug: show what we searched for and sample of normalized block-group strings from Notion
-      const sampleGroups: string[] = []
+      const allGroups: string[] = []
       let current: any[] = []
       const pushGroup = () => {
         if (current.length > 0) {
-          sampleGroups.push(normalizeForBlockCompare(current.map(getBlockText).join(' ')))
+          allGroups.push(normalizeForBlockCompare(current.map(getBlockText).join(' ')))
           current = []
         }
       }
-      for (let i = 0; i < blocks.length && sampleGroups.length < 8; i++) {
+      for (let i = 0; i < blocks.length; i++) {
         const b = blocks[i]
         const empty = b.type === 'paragraph' && (!b.paragraph?.rich_text || b.paragraph.rich_text.length === 0)
         const list = b.type === 'bulleted_list_item' || b.type === 'numbered_list_item'
@@ -243,7 +243,7 @@ export async function POST(request: NextRequest) {
       }
       pushGroup()
 
-      debugPayload.sampleNotionBlockGroups = sampleGroups
+      debugPayload.sampleNotionBlockGroups = allGroups.slice(-8)
       console.warn('[notion/update] Highlight not found in Notion page. Full debug:', JSON.stringify(debugPayload, null, 2))
 
       return NextResponse.json(
