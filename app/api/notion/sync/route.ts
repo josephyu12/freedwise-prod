@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { Client } from '@notionhq/client'
-import { htmlToNotionBlocks, htmlToBlockText, normalizeForBlockCompare, getBlockText, findMatchingHighlightBlocks, buildNormalizedSearchStrings, flattenBlocksWithChildren, BLOCK_BOUNDARY, buildNormalizedBlockGroups } from '@/lib/notionBlocks'
+import { htmlToNotionBlocks, htmlToBlockText, normalizeForBlockCompare, getBlockText, findMatchingHighlightBlocks, buildNormalizedSearchStrings, flattenBlocksWithChildren, flattenBlocksForSync, BLOCK_BOUNDARY, buildNormalizedBlockGroups } from '@/lib/notionBlocks'
 
 // Process a single queue item. Claim with status=processing first to avoid duplicate processing when multiple sync requests run.
 async function processQueueItem(supabase: any, queueItem: any, notionSettings: { notion_api_key: string; notion_page_id: string; enabled: boolean }) {
@@ -68,9 +68,10 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
         sampleNotionBlockGroups: [] as string[],
       }
 
-      // Convert new content to Notion blocks
+      // Convert new content to Notion blocks; flatten so nested list items align with Notion's flat list
       const newBlocks = htmlToNotionBlocks(queueItem.html_content || queueItem.text)
-      
+      const flatNewBlocks = flattenBlocksForSync(newBlocks)
+
       // Fetch all blocks from Notion page (top-level only first)
       let allBlocks: any[] = []
       let cursor = undefined
@@ -108,18 +109,18 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
       const isListUpdate = matchingBlocks.length > 0 && 
         (matchingBlocks[0].type === 'bulleted_list_item' || matchingBlocks[0].type === 'numbered_list_item')
       
-      if (isListUpdate && newBlocks.length > 0 && 
-          (newBlocks[0].type === 'bulleted_list_item' || newBlocks[0].type === 'numbered_list_item')) {
+      if (isListUpdate && flatNewBlocks.length > 0 && 
+          (flatNewBlocks[0].type === 'bulleted_list_item' || flatNewBlocks[0].type === 'numbered_list_item')) {
         // Update list items in place - update each matching block with corresponding new block
-        const minLength = Math.min(matchingBlocks.length, newBlocks.length)
+        const minLength = Math.min(matchingBlocks.length, flatNewBlocks.length)
         
         // Update matching blocks in place
         for (let i = 0; i < minLength; i++) {
           try {
-            if (matchingBlocks[i].type === newBlocks[i].type) {
+            if (matchingBlocks[i].type === flatNewBlocks[i].type) {
               // Same type, update in place (this preserves the block and updates formatting)
               const blockType = matchingBlocks[i].type
-              const blockData = newBlocks[i][blockType]
+              const blockData = flatNewBlocks[i][blockType]
               
               // Ensure rich_text exists and is an array
               if (blockData && blockData.rich_text && Array.isArray(blockData.rich_text)) {
@@ -140,12 +141,12 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
                 // So we'll append and then reorder if needed, or just append to page
           await notion.blocks.children.append({
             block_id: notionSettings.notion_page_id,
-                  children: [newBlocks[i]],
+                  children: [flatNewBlocks[i]],
                 })
               } else {
                 await notion.blocks.children.append({
                   block_id: notionSettings.notion_page_id,
-                  children: [newBlocks[i]],
+                  children: [flatNewBlocks[i]],
                 })
               }
             }
@@ -164,31 +165,40 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
           }
         }
         
-        // Only append extra new blocks when match was exact. Insert after last matching block so bullets stay with their highlight.
-        if (exactMatch && newBlocks.length > minLength) {
-          const lastMatchingId = matchingBlocks[matchingBlocks.length - 1].id
-          const extraBlocks = newBlocks.slice(minLength)
+        // Only append extra new blocks when match was exact. If last matching block is a list item, append as its children (nested bullet); else append to page after it.
+        if (exactMatch && flatNewBlocks.length > minLength) {
+          const lastMatching = matchingBlocks[matchingBlocks.length - 1]
+          const lastMatchingId = lastMatching.id
+          const extraBlocks = flatNewBlocks.slice(minLength)
+          const isLastList = lastMatching.type === 'bulleted_list_item' || lastMatching.type === 'numbered_list_item'
           try {
-            await notion.blocks.children.append({
-              block_id: notionSettings.notion_page_id,
-              children: extraBlocks,
-              after: lastMatchingId,
-            })
+            if (isLastList) {
+              await notion.blocks.children.append({
+                block_id: lastMatchingId,
+                children: extraBlocks,
+              })
+            } else {
+              await notion.blocks.children.append({
+                block_id: notionSettings.notion_page_id,
+                children: extraBlocks,
+                after: lastMatchingId,
+              })
+            }
           } catch (error: any) {
             console.warn('Failed to append new blocks after highlight:', error?.message || error)
           }
         }
       } else {
         // Non-list update: Update ALL matching blocks in place to preserve structure
-        const minLength = Math.min(matchingBlocks.length, newBlocks.length)
+        const minLength = Math.min(matchingBlocks.length, flatNewBlocks.length)
         
         // Update matching blocks in place
         for (let i = 0; i < minLength; i++) {
           try {
-            if (matchingBlocks[i].type === newBlocks[i].type) {
+            if (matchingBlocks[i].type === flatNewBlocks[i].type) {
               // Same type, update in place (this preserves the block and updates formatting)
               const blockType = matchingBlocks[i].type
-              const blockData = newBlocks[i][blockType]
+              const blockData = flatNewBlocks[i][blockType]
               
               // Ensure rich_text exists and is an array
               if (blockData && blockData.rich_text && Array.isArray(blockData.rich_text)) {
@@ -204,7 +214,7 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
               await notion.blocks.delete({ block_id: matchingBlocks[i].id })
               await notion.blocks.children.append({
                 block_id: notionSettings.notion_page_id,
-                children: [newBlocks[i]],
+                children: [flatNewBlocks[i]],
               })
             }
           } catch (error: any) {
@@ -222,16 +232,25 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
           }
         }
         
-        // Only append extra new blocks when match was exact. Insert after last matching block so bullets stay with their highlight.
-        if (exactMatch && newBlocks.length > minLength) {
-          const lastMatchingId = matchingBlocks[matchingBlocks.length - 1].id
-          const extraBlocks = newBlocks.slice(minLength)
+        // Only append extra new blocks when match was exact. If last matching block is a list item, append as its children; else append to page after it.
+        if (exactMatch && flatNewBlocks.length > minLength) {
+          const lastMatching = matchingBlocks[matchingBlocks.length - 1]
+          const lastMatchingId = lastMatching.id
+          const extraBlocks = flatNewBlocks.slice(minLength)
+          const isLastList = lastMatching.type === 'bulleted_list_item' || lastMatching.type === 'numbered_list_item'
           try {
-            await notion.blocks.children.append({
-              block_id: notionSettings.notion_page_id,
-              children: extraBlocks,
-              after: lastMatchingId,
-            })
+            if (isLastList) {
+              await notion.blocks.children.append({
+                block_id: lastMatchingId,
+                children: extraBlocks,
+              })
+            } else {
+              await notion.blocks.children.append({
+                block_id: notionSettings.notion_page_id,
+                children: extraBlocks,
+                after: lastMatchingId,
+              })
+            }
           } catch (error: any) {
             console.warn('Failed to append new blocks after highlight:', error?.message || error)
           }

@@ -908,3 +908,27 @@ export async function flattenBlocksWithChildren(notion: any, blocks: any[]): Pro
   }
   return flat
 }
+
+/**
+ * Flatten the tree from htmlToNotionBlocks into a depth-first list of blocks
+ * for sync/update. Each block is emitted without children (rich_text only) so
+ * counts and indices align with Notion's flat matchingBlocks and we don't
+ * delete nested bullets that are still in the new content.
+ */
+export function flattenBlocksForSync(blocks: any[]): any[] {
+  const out: any[] = []
+  for (const b of blocks) {
+    if (b.type === 'bulleted_list_item' || b.type === 'numbered_list_item') {
+      const key = b.type
+      const data = (b as any)[key]
+      const richText = data?.rich_text ?? []
+      out.push({ type: b.type, [key]: { rich_text: richText } })
+      if (data?.children?.length) {
+        out.push(...flattenBlocksForSync(data.children))
+      }
+    } else {
+      out.push(b)
+    }
+  }
+  return out
+}
