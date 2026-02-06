@@ -156,12 +156,10 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
           }
         }
         
-        // Delete extra old blocks only when they're not list items (never delete nested bullets; new content may have omitted them)
+        // Delete extra old blocks so Notion matches new content (DB → Notion)
         for (let i = minLength; i < matchingBlocks.length; i++) {
-          const block = matchingBlocks[i]
-          if (block.type === 'bulleted_list_item' || block.type === 'numbered_list_item') continue
           try {
-            await notion.blocks.delete({ block_id: block.id })
+            await notion.blocks.delete({ block_id: matchingBlocks[i].id })
           } catch (error) {
             console.warn(`Failed to delete extra old block ${i}:`, error)
           }
@@ -225,12 +223,10 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
           }
         }
         
-        // Delete extra old blocks only when they're not list items (never delete nested bullets; new content may have omitted them)
+        // Delete extra old blocks so Notion matches new content (DB → Notion)
         for (let i = minLength; i < matchingBlocks.length; i++) {
-          const block = matchingBlocks[i]
-          if (block.type === 'bulleted_list_item' || block.type === 'numbered_list_item') continue
           try {
-            await notion.blocks.delete({ block_id: block.id })
+            await notion.blocks.delete({ block_id: matchingBlocks[i].id })
           } catch (error) {
             console.warn(`Failed to delete extra old block ${i}:`, error)
           }
