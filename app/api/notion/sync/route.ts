@@ -120,9 +120,9 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
         return text.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase()
       }
 
-      // Normalize so DB/plain text matches Notion block-order text (bullets, dashes, unicode)
+      // Normalize so DB/plain text matches Notion block-order text (bullets, dashes, unicode, period spacing)
       const normalizeForBlockCompare = (text: string): string => {
-        return stripHtmlForCompare(text)
+        let s = stripHtmlForCompare(text)
           .replace(/\u2014/g, '-')
           .replace(/\u2013/g, '-')
           .replace(/\u00A0/g, ' ')
@@ -132,6 +132,9 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
           .replace(/\s+/g, ' ')
           .trim()
           .toLowerCase()
+        // Normalize period spacing so "thing. testing" and "thing.testing" compare equal
+        s = s.replace(/\.\s+/g, '. ').replace(/\.([^\s])/g, '. $1')
+        return s
       }
 
       // Normalize the original text for comparison (block-order text so it matches Notion combined blocks)
@@ -204,13 +207,10 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
           const normalizedCombined = normalizeForBlockCompare(combinedText)
 
           const isExact = normalizedCombined === normalizedOriginalNoHtml || normalizedCombined === normalizedOriginalPlainNoHtml
-          const isPartial =
-            (normalizedOriginalNoHtml && normalizedCombined.includes(normalizedOriginalNoHtml)) ||
-            (normalizedOriginalPlainNoHtml && normalizedCombined.includes(normalizedOriginalPlainNoHtml))
-          if (isExact || isPartial) {
+          if (isExact) {
             matchingBlocks.push(...currentHighlightBlocks)
             foundMatch = true
-            exactMatch = isExact
+            exactMatch = true
             debugPayload.sampleNotionBlockGroups = [normalizedCombined]
             break
           }
@@ -238,13 +238,10 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
         const normalizedCombined = normalizeForBlockCompare(combinedText)
 
         const isExact = normalizedCombined === normalizedOriginalNoHtml || normalizedCombined === normalizedOriginalPlainNoHtml
-        const isPartial =
-          (normalizedOriginalNoHtml && normalizedCombined.includes(normalizedOriginalNoHtml)) ||
-          (normalizedOriginalPlainNoHtml && normalizedCombined.includes(normalizedOriginalPlainNoHtml))
-        if (isExact || isPartial) {
+        if (isExact) {
           matchingBlocks.push(...currentHighlightBlocks)
           foundMatch = true
-          exactMatch = isExact
+          exactMatch = true
           debugPayload.sampleNotionBlockGroups = [normalizedCombined]
         }
       }

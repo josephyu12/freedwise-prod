@@ -100,8 +100,8 @@ export async function POST(request: NextRequest) {
     const stripHtmlForCompare = (text: string): string =>
       text.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase()
 
-    const normalizeForBlockCompare = (text: string): string =>
-      stripHtmlForCompare(text)
+    const normalizeForBlockCompare = (text: string): string => {
+      let s = stripHtmlForCompare(text)
         .replace(/\u2014/g, '-')
         .replace(/\u2013/g, '-')
         .replace(/\u00A0/g, ' ')
@@ -113,6 +113,10 @@ export async function POST(request: NextRequest) {
         .replace(/\s+/g, ' ')
         .trim()
         .toLowerCase()
+      // Normalize period spacing so "thing. testing" and "thing.testing" compare equal
+      s = s.replace(/\.\s+/g, '. ').replace(/\.([^\s])/g, '. $1')
+      return s
+    }
 
     const normalizedOriginalNoHtml = normalizeForBlockCompare(originalText || originalPlainText)
     const normalizedOriginalPlainNoHtml = normalizeForBlockCompare(originalPlainText)
