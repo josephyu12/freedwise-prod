@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { Client } from '@notionhq/client'
-import { htmlToNotionBlocks, htmlToBlockText, normalizeForBlockCompare, getBlockText, findMatchingHighlightBlocks, buildNormalizedSearchStrings } from '@/lib/notionBlocks'
+import { htmlToNotionBlocks, htmlToBlockText, normalizeForBlockCompare, getBlockText, findMatchingHighlightBlocks, buildNormalizedSearchStrings, flattenBlocksWithChildren, BLOCK_BOUNDARY } from '@/lib/notionBlocks'
 
 // Process a single queue item. Claim with status=processing first to avoid duplicate processing when multiple sync requests run.
 async function processQueueItem(supabase: any, queueItem: any, notionSettings: { notion_api_key: string; notion_page_id: string; enabled: boolean }) {
@@ -71,10 +71,9 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
       // Convert new content to Notion blocks
       const newBlocks = htmlToNotionBlocks(queueItem.html_content || queueItem.text)
       
-      // Fetch all blocks from Notion page
-      const allBlocks: any[] = []
+      // Fetch all blocks from Notion page (top-level only first)
+      let allBlocks: any[] = []
       let cursor = undefined
-      
       do {
         const response = await notion.blocks.children.list({
           block_id: notionSettings.notion_page_id,
@@ -83,6 +82,9 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
         allBlocks.push(...response.results)
         cursor = response.next_cursor || undefined
       } while (cursor)
+
+      // Include nested/indented children so sub-bullets are in the list and can match
+      allBlocks = await flattenBlocksWithChildren(notion, allBlocks)
 
       const { matchingBlocks, foundMatch, exactMatch } = findMatchingHighlightBlocks(
         allBlocks,
@@ -95,7 +97,7 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
         let current: any[] = []
         const pushGroup = () => {
           if (current.length > 0) {
-            allGroups.push(normalizeForBlockCompare(current.map(getBlockText).join(' ')))
+            allGroups.push(normalizeForBlockCompare(current.map(getBlockText).join(BLOCK_BOUNDARY)))
             current = []
           }
         }
@@ -125,7 +127,7 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
       }
 
       if (foundMatch && matchingBlocks.length > 0) {
-        debugPayload.sampleNotionBlockGroups = [normalizeForBlockCompare(matchingBlocks.map(getBlockText).join(' '))]
+        debugPayload.sampleNotionBlockGroups = [normalizeForBlockCompare(matchingBlocks.map(getBlockText).join(BLOCK_BOUNDARY))]
       }
       console.warn('[notion/sync] update: Highlight found. Full debug:', JSON.stringify(debugPayload, null, 2))
 

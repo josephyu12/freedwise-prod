@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { Client } from '@notionhq/client'
 import { createClient } from '@/lib/supabase/server'
-import { htmlToNotionBlocks, htmlToBlockText, normalizeForBlockCompare, getBlockText, findMatchingHighlightBlocks, buildNormalizedSearchStrings } from '@/lib/notionBlocks'
+import { htmlToNotionBlocks, htmlToBlockText, normalizeForBlockCompare, getBlockText, findMatchingHighlightBlocks, buildNormalizedSearchStrings, flattenBlocksWithChildren, BLOCK_BOUNDARY } from '@/lib/notionBlocks'
 
 export async function POST(request: NextRequest) {
   try {
@@ -47,19 +47,20 @@ export async function POST(request: NextRequest) {
       auth: notionApiKey,
     })
 
-    // Fetch all blocks from the Notion page
-    const blocks: any[] = []
+    // Fetch all blocks from the Notion page (top-level only first)
+    let blocks: any[] = []
     let cursor = undefined
-
     do {
       const response = await notion.blocks.children.list({
         block_id: notionPageId,
         start_cursor: cursor,
       })
-
       blocks.push(...response.results)
       cursor = response.next_cursor || undefined
     } while (cursor)
+
+    // Include nested/indented children so sub-bullets are in the list and can match
+    blocks = await flattenBlocksWithChildren(notion, blocks)
 
     const originalBlockText = highlight.html_content
       ? htmlToBlockText(highlight.html_content).trim().toLowerCase()
@@ -84,7 +85,7 @@ export async function POST(request: NextRequest) {
       let current: any[] = []
       const pushGroup = () => {
         if (current.length > 0) {
-          allGroups.push(normalizeForBlockCompare(current.map(getBlockText).join(' ')))
+          allGroups.push(normalizeForBlockCompare(current.map(getBlockText).join(BLOCK_BOUNDARY)))
           current = []
         }
       }
@@ -121,7 +122,7 @@ export async function POST(request: NextRequest) {
     }
 
     if (foundMatch && matchingBlocks.length > 0) {
-      debugPayload.sampleNotionBlockGroups = [normalizeForBlockCompare(matchingBlocks.map(getBlockText).join(' '))]
+      debugPayload.sampleNotionBlockGroups = [normalizeForBlockCompare(matchingBlocks.map(getBlockText).join(BLOCK_BOUNDARY))]
     }
     console.warn('[notion/update] Highlight found. Full debug:', JSON.stringify(debugPayload, null, 2))
 

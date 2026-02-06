@@ -593,8 +593,11 @@ export function htmlToBlockText(html: string): string {
     if (parts[parts.length - 1] !== t) parts.push(t)
   }
   if (parts.length === 0) return stripHtml(html)
-  return parts.join(' ')
+  return parts.join(BLOCK_BOUNDARY)
 }
+
+/** Separator between blocks/layers when building combined text. Normalized to space for comparison. */
+export const BLOCK_BOUNDARY = '\u2029'
 
 /**
  * Single normalization for comparing highlight text to Notion block groups.
@@ -616,6 +619,8 @@ export function normalizeForBlockCompare(text: string): string {
     .trim()
     .toLowerCase()
   s = s.replace(/\.\s+/g, '. ').replace(/\.([^\s])/g, '. $1')
+  s = s.replace(new RegExp(BLOCK_BOUNDARY.replace(/[.*+?^${}()|[\]\\]/g, '\\$0') + '+', 'g'), ' ')
+  s = s.replace(/\s+/g, ' ').trim()
   return s
 }
 
@@ -682,7 +687,7 @@ export function findMatchingHighlightBlocks(
     }
 
     if (shouldEndGroup) {
-      const combinedText = currentHighlightBlocks.map(getBlockText).join(' ')
+      const combinedText = currentHighlightBlocks.map(getBlockText).join(BLOCK_BOUNDARY)
       const normalizedCombined = normalizeForBlockCompare(combinedText)
       const isExact =
         normalizedCombined === normalizedOriginalNoHtml || normalizedCombined === normalizedOriginalPlainNoHtml
@@ -702,7 +707,7 @@ export function findMatchingHighlightBlocks(
   }
 
   if (currentHighlightBlocks.length > 0) {
-    const combinedText = currentHighlightBlocks.map(getBlockText).join(' ')
+    const combinedText = currentHighlightBlocks.map(getBlockText).join(BLOCK_BOUNDARY)
     const normalizedCombined = normalizeForBlockCompare(combinedText)
     const isExact =
       normalizedCombined === normalizedOriginalNoHtml || normalizedCombined === normalizedOriginalPlainNoHtml
@@ -725,4 +730,41 @@ export function buildNormalizedSearchStrings(originalBlockText: string, original
     normalizedOriginalNoHtml: normalizeForBlockCompare(originalText || originalPlainText),
     normalizedOriginalPlainNoHtml: normalizeForBlockCompare(originalPlainText),
   }
+}
+
+/**
+ * Recursively fetch all children of a block (with pagination) and return a flat list
+ * so that nested/indented list items are included in order. Used so sub-bullets match.
+ */
+export async function getBlockChildrenFlattened(notion: any, blockId: string): Promise<any[]> {
+  const result: any[] = []
+  let cursor: string | undefined
+  do {
+    const response = await notion.blocks.children.list({ block_id: blockId, start_cursor: cursor })
+    for (const block of response.results) {
+      result.push(block)
+      if ((block as any).has_children) {
+        const nested = await getBlockChildrenFlattened(notion, block.id)
+        result.push(...nested)
+      }
+    }
+    cursor = response.next_cursor ?? undefined
+  } while (cursor)
+  return result
+}
+
+/**
+ * Flatten a list of top-level blocks into a list that includes all nested children
+ * (depth-first), so sub-indented bullets are present and can match.
+ */
+export async function flattenBlocksWithChildren(notion: any, blocks: any[]): Promise<any[]> {
+  const flat: any[] = []
+  for (const block of blocks) {
+    flat.push(block)
+    if ((block as any).has_children) {
+      const children = await getBlockChildrenFlattened(notion, block.id)
+      flat.push(...children)
+    }
+  }
+  return flat
 }
