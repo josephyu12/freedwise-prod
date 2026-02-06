@@ -263,6 +263,47 @@ function processListItems(listContent: string, listType: 'ul' | 'ol', blocks: an
   }
 }
 
+/** Same structure as processListItems but returns one plain-text string per block (parent then nested). Used so htmlToBlockText matches Notion block order. */
+function listContentToTexts(listContent: string, listType: 'ul' | 'ol', stripHtml: (s: string) => string): string[] {
+  const result: string[] = []
+  let pos = 0
+  const liStartRegex = /<li[^>]*>/gi
+  while (pos < listContent.length) {
+    const remaining = listContent.substring(pos)
+    const liStartMatch = liStartRegex.exec(remaining)
+    if (!liStartMatch) break
+    const liStartPos = pos + liStartMatch.index + liStartMatch[0].length
+    let depth = 0
+    let liEndPos = liStartPos
+    let found = false
+    for (let i = liStartPos; i < listContent.length; i++) {
+      if (listContent.substring(i).startsWith('<li')) {
+        depth++
+        i += 2
+      } else if (listContent.substring(i).startsWith('</li>')) {
+        if (depth === 0) {
+          liEndPos = i
+          found = true
+          break
+        }
+        depth--
+        i += 4
+      }
+    }
+    if (!found) break
+    const liContent = listContent.substring(liStartPos, liEndPos)
+    const { text, nestedLists } = parseListItem(liContent)
+    const plain = stripHtml(text).trim()
+    if (plain) result.push(plain)
+    for (const nested of nestedLists) {
+      result.push(...listContentToTexts(nested.content, nested.type, stripHtml))
+    }
+    pos = liEndPos + 5
+    liStartRegex.lastIndex = 0
+  }
+  return result
+}
+
 /** True if content is only whitespace and a single top-level <ul>...</ul> or <ol>...</ol>. */
 function isOnlyTopLevelList(html: string): boolean {
   const t = html.trim()
@@ -521,9 +562,8 @@ export function htmlToNotionBlocks(html: string): any[] {
 }
 
 /**
- * Extract plain text from HTML in block order (p, div, list items by position).
- * Used when comparing queue item HTML to Notion block text so paragraph + list
- * highlights match (e.g. <div>P1</div><div><ul><li>P2</li></ul></div> → "P1 P2").
+ * Extract plain text from HTML in the same block order as htmlToNotionBlocks produces.
+ * One segment per block (paragraph, list item, etc.) so search string matches Notion.
  */
 export function htmlToBlockText(html: string): string {
   if (!html || !html.trim()) return ''
@@ -537,67 +577,117 @@ export function htmlToBlockText(html: string): string {
       .replace(/&quot;/g, '"')
       .replace(/&#39;/g, "'")
       .trim()
-  const ordered: { index: number; text: string }[] = []
-  const textBeforeTags = html.match(/^([^<]+?)(?=<[^>]+>)/)
-  if (textBeforeTags?.[1]) {
-    const t = stripHtml(textBeforeTags[1])
-    if (t) ordered.push({ index: 0, text: t })
+
+  interface ContentBlock {
+    index: number
+    type: 'ul' | 'ol' | 'h1' | 'h2' | 'h3' | 'blockquote' | 'pre' | 'p' | 'div' | 'text'
+    content: string
+    fullMatch: string
   }
-  // Use [\s\S]*? so content matches across newlines (e.g. contenteditable HTML)
+  const contentBlocks: ContentBlock[] = []
+  for (const ul of findTopLevelLists(html, 'ul')) {
+    contentBlocks.push({ index: ul.index, type: 'ul', content: ul.content, fullMatch: ul.fullMatch })
+  }
+  for (const ol of findTopLevelLists(html, 'ol')) {
+    contentBlocks.push({ index: ol.index, type: 'ol', content: ol.content, fullMatch: ol.fullMatch })
+  }
   const pRegex = /<p[^>]*>([\s\S]*?)<\/p>/gi
   let pMatch
   while ((pMatch = pRegex.exec(html)) !== null) {
-    const t = stripHtml(pMatch[1])
-    if (t) ordered.push({ index: pMatch.index, text: t })
+    contentBlocks.push({ index: pMatch.index, type: 'p', content: pMatch[1], fullMatch: pMatch[0] })
   }
   const divRegex = /<div[^>]*>([\s\S]*?)<\/div>/gi
   let divMatch
   while ((divMatch = divRegex.exec(html)) !== null) {
-    const inner = divMatch[1]
-    const listStart = inner.search(/<ul[\s>]|<ol[\s>]/i)
-    if (listStart !== -1) {
-      // Div contains a list: add only the text *before* the first list so we match Notion (paragraph + list items).
-      // ul/ol extraction below will add list items in order.
-      const beforeList = inner.slice(0, listStart)
-      const t = stripHtml(beforeList)
-      if (t) ordered.push({ index: divMatch.index, text: t })
-    } else {
-      const t = stripHtml(inner)
-      if (t) ordered.push({ index: divMatch.index, text: t })
-    }
+    contentBlocks.push({ index: divMatch.index, type: 'div', content: divMatch[1], fullMatch: divMatch[0] })
   }
-  const ulRegex = /<ul[^>]*>([\s\S]*?)<\/ul>/gis
-  let ulMatch
-  while ((ulMatch = ulRegex.exec(html)) !== null) {
-    const liRegex = /<li[^>]*>([\s\S]*?)<\/li>/gis
-    let liMatch
-    while ((liMatch = liRegex.exec(ulMatch[0])) !== null) {
-      // If this <li> contains a nested <ul>/<ol>, strip it out so we don't mush child items into parent text.
-      // Nested list items will be extracted separately by the ul/ol loops below.
-      const { text } = parseListItem(liMatch[1])
-      const t = stripHtml(text)
-      if (t) ordered.push({ index: ulMatch.index + liMatch.index, text: t })
-    }
+  const h1Regex = /<h1[^>]*>(.*?)<\/h1>/gi
+  let h1Match
+  while ((h1Match = h1Regex.exec(html)) !== null) {
+    contentBlocks.push({ index: h1Match.index, type: 'h1', content: h1Match[1], fullMatch: h1Match[0] })
   }
-  const olRegex = /<ol[^>]*>([\s\S]*?)<\/ol>/gis
-  let olMatch
-  while ((olMatch = olRegex.exec(html)) !== null) {
-    const liRegex = /<li[^>]*>([\s\S]*?)<\/li>/gis
-    let liMatch
-    while ((liMatch = liRegex.exec(olMatch[0])) !== null) {
-      const { text } = parseListItem(liMatch[1])
-      const t = stripHtml(text)
-      if (t) ordered.push({ index: olMatch.index + liMatch.index, text: t })
-    }
+  const h2Regex = /<h2[^>]*>(.*?)<\/h2>/gi
+  let h2Match
+  while ((h2Match = h2Regex.exec(html)) !== null) {
+    contentBlocks.push({ index: h2Match.index, type: 'h2', content: h2Match[1], fullMatch: h2Match[0] })
   }
-  ordered.sort((a, b) => a.index - b.index)
-  const raw = ordered.map((o) => o.text)
+  const h3Regex = /<h3[^>]*>(.*?)<\/h3>/gi
+  let h3Match
+  while ((h3Match = h3Regex.exec(html)) !== null) {
+    contentBlocks.push({ index: h3Match.index, type: 'h3', content: h3Match[1], fullMatch: h3Match[0] })
+  }
+  const blockquoteRegex = /<blockquote[^>]*>(.*?)<\/blockquote>/gi
+  let bqMatch
+  while ((bqMatch = blockquoteRegex.exec(html)) !== null) {
+    contentBlocks.push({ index: bqMatch.index, type: 'blockquote', content: bqMatch[1], fullMatch: bqMatch[0] })
+  }
+  const preRegex = /<pre[^>]*>(.*?)<\/pre>/gis
+  let preMatch
+  while ((preMatch = preRegex.exec(html)) !== null) {
+    contentBlocks.push({ index: preMatch.index, type: 'pre', content: preMatch[1], fullMatch: preMatch[0] })
+  }
+  contentBlocks.sort((a, b) => a.index - b.index)
+
   const parts: string[] = []
-  for (const t of raw) {
-    if (parts[parts.length - 1] !== t) parts.push(t)
+  let lastIndex = 0
+  const lineSplitRegex = /(?:<\s*br\s*\/?\s*>|<\/div>\s*<div[^>]*>|<\/p>\s*<p[^>]*>|\n)/gi
+
+  for (const block of contentBlocks) {
+    if (block.index > lastIndex) {
+      const textBefore = html.substring(lastIndex, block.index).trim()
+      if (textBefore) {
+        const lineParts = textBefore.split(lineSplitRegex)
+        for (const part of lineParts) {
+          const t = stripHtml(part).trim()
+          if (t) parts.push(t)
+        }
+      }
+    }
+    switch (block.type) {
+      case 'ul':
+        parts.push(...listContentToTexts(block.content, 'ul', stripHtml))
+        break
+      case 'ol':
+        parts.push(...listContentToTexts(block.content, 'ol', stripHtml))
+        break
+      case 'h1':
+      case 'h2':
+      case 'h3':
+      case 'blockquote':
+      case 'pre': {
+        const t = stripHtml(block.content).trim()
+        if (t) parts.push(t)
+        break
+      }
+      case 'p':
+      case 'div': {
+        if (isOnlyTopLevelList(block.content)) break
+        const lineParts = block.content.split(lineSplitRegex)
+        for (const part of lineParts) {
+          const t = stripHtml(part).trim()
+          if (t) parts.push(t)
+        }
+        break
+      }
+      default:
+        break
+    }
+    lastIndex = block.index + block.fullMatch.length
   }
+
+  if (lastIndex < html.length) {
+    const textAfter = html.substring(lastIndex).trim()
+    if (textAfter) {
+      const lineParts = textAfter.split(lineSplitRegex)
+      for (const part of lineParts) {
+        const t = stripHtml(part).trim()
+        if (t) parts.push(t)
+      }
+    }
+  }
+
   if (parts.length === 0) return stripHtml(html)
-  return parts.join(BLOCK_BOUNDARY)
+  return parts.filter((p) => p.length > 0).join(BLOCK_BOUNDARY)
 }
 
 /** Separator between blocks/layers when building combined text. Normalized to space for comparison. */
