@@ -120,6 +120,12 @@ export async function POST(request: NextRequest) {
     const normalizedOriginalNoHtml = normalizeForBlockCompare(originalText || originalPlainText)
     const normalizedOriginalPlainNoHtml = normalizeForBlockCompare(originalPlainText)
 
+    const debugPayload = {
+      searchFromBlockOrder: normalizedOriginalNoHtml || null,
+      searchFromPlainText: normalizedOriginalPlainNoHtml !== normalizedOriginalNoHtml ? normalizedOriginalPlainNoHtml : undefined,
+      sampleNotionBlockGroups: [] as string[],
+    }
+
     // Find matching blocks (blocks that contain the original text)
     const matchingBlocks: any[] = []
     let currentHighlightBlocks: any[] = []
@@ -173,6 +179,7 @@ export async function POST(request: NextRequest) {
         matchingBlocks.push(...currentHighlightBlocks)
         foundMatch = true
         exactMatch = true
+        debugPayload.sampleNotionBlockGroups = [normalizedCombined]
         break
       }
 
@@ -200,18 +207,52 @@ export async function POST(request: NextRequest) {
         matchingBlocks.push(...currentHighlightBlocks)
         foundMatch = true
         exactMatch = true
+        debugPayload.sampleNotionBlockGroups = [normalizedCombined]
       }
     }
 
     if (!foundMatch || matchingBlocks.length === 0) {
+      const allGroups: string[] = []
+      let current: any[] = []
+      const pushGroup = () => {
+        if (current.length > 0) {
+          allGroups.push(normalizeForBlockCompare(current.map(getBlockText).join(' ')))
+          current = []
+        }
+      }
+      for (let i = 0; i < blocks.length; i++) {
+        const b = blocks[i]
+        const empty = b.type === 'paragraph' && (!b.paragraph?.rich_text || b.paragraph.rich_text.length === 0)
+        const list = b.type === 'bulleted_list_item' || b.type === 'numbered_list_item'
+        const last = current[current.length - 1]
+        const lastList = last && (last.type === 'bulleted_list_item' || last.type === 'numbered_list_item')
+        const lastPara = last?.type === 'paragraph'
+        if (empty) {
+          pushGroup()
+        } else if (current.length > 0 && lastList && !list) {
+          pushGroup()
+          current.push(b)
+        } else if (current.length > 0 && !lastPara && list) {
+          pushGroup()
+          current.push(b)
+        } else {
+          current.push(b)
+        }
+      }
+      pushGroup()
+      debugPayload.sampleNotionBlockGroups = allGroups.slice(-8)
+      console.warn('[notion/update] Highlight not found. Full debug (last 8 block groups):', JSON.stringify(debugPayload, null, 2))
       return NextResponse.json(
         {
           message: 'Highlight not found in Notion page. It may have been deleted or moved.',
           updated: false,
+          debug: debugPayload,
         },
         { status: 200 }
       )
     }
+
+    console.warn('[notion/update] Highlight found. Full debug:', JSON.stringify(debugPayload, null, 2))
 
     // Convert new HTML content to Notion blocks
     const newBlocks = htmlToNotionBlocks(htmlContent || text)
