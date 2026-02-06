@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { Client } from '@notionhq/client'
 import { createClient } from '@/lib/supabase/server'
-import { htmlToNotionBlocks, htmlToBlockText } from '@/lib/notionBlocks'
+import { htmlToNotionBlocks, htmlToBlockText, normalizeForBlockCompare, getBlockText, findMatchingHighlightBlocks, buildNormalizedSearchStrings } from '@/lib/notionBlocks'
 
 export async function POST(request: NextRequest) {
   try {
@@ -61,64 +61,11 @@ export async function POST(request: NextRequest) {
       cursor = response.next_cursor || undefined
     } while (cursor)
 
-    // Build the exact search string we'll compare to Notion block groups (same order: paragraph then list items).
     const originalBlockText = highlight.html_content
       ? htmlToBlockText(highlight.html_content).trim().toLowerCase()
       : ''
     const originalPlainText = (highlight.text || '').trim().toLowerCase()
-    const originalText = originalBlockText || originalPlainText
-
-    // Function to extract plain text from a block
-    const getBlockText = (block: any): string => {
-      // Handle different block types
-      if (block.type === 'bulleted_list_item' && block.bulleted_list_item?.rich_text) {
-        return block.bulleted_list_item.rich_text
-          .map((t: any) => t.plain_text || '')
-          .join('')
-          .trim()
-          .toLowerCase()
-      }
-      if (block.type === 'numbered_list_item' && block.numbered_list_item?.rich_text) {
-        return block.numbered_list_item.rich_text
-          .map((t: any) => t.plain_text || '')
-          .join('')
-          .trim()
-          .toLowerCase()
-      }
-      if (block[block.type]?.rich_text) {
-        return block[block.type].rich_text
-          .map((t: any) => t.plain_text || '')
-          .join('')
-          .trim()
-          .toLowerCase()
-      }
-      return ''
-    }
-
-    // Single normalization for both DB and Notion text so exact match is reliable.
-    const stripHtmlForCompare = (text: string): string =>
-      text.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase()
-
-    const normalizeForBlockCompare = (text: string): string => {
-      let s = stripHtmlForCompare(text)
-        .replace(/\u2014/g, '-')
-        .replace(/\u2013/g, '-')
-        .replace(/\u00A0/g, ' ')
-        .replace(/[""]/g, '"')
-        .replace(/['']/g, "'")
-        .replace(/[\u2000-\u200B\u202F\u205F\u3000]/g, ' ')
-        .replace(/[\s•\u2022\u2043\u2219]+/g, ' ')
-        .replace(/\s*[-*]\s+/g, ' ')
-        .replace(/\s+/g, ' ')
-        .trim()
-        .toLowerCase()
-      // Normalize period spacing so "thing. testing" and "thing.testing" compare equal
-      s = s.replace(/\.\s+/g, '. ').replace(/\.([^\s])/g, '. $1')
-      return s
-    }
-
-    const normalizedOriginalNoHtml = normalizeForBlockCompare(originalText || originalPlainText)
-    const normalizedOriginalPlainNoHtml = normalizeForBlockCompare(originalPlainText)
+    const { normalizedOriginalNoHtml, normalizedOriginalPlainNoHtml } = buildNormalizedSearchStrings(originalBlockText, originalPlainText)
 
     const debugPayload = {
       searchFromBlockOrder: normalizedOriginalNoHtml || null,
@@ -126,90 +73,11 @@ export async function POST(request: NextRequest) {
       sampleNotionBlockGroups: [] as string[],
     }
 
-    // Find matching blocks (blocks that contain the original text)
-    const matchingBlocks: any[] = []
-    let currentHighlightBlocks: any[] = []
-    let foundMatch = false
-    let exactMatch = false // only append extra new blocks when exact (avoids duplicate at end on partial match)
-
-    // Helper to check if a block is a list item
-    const isListItem = (block: any) => 
-      block.type === 'bulleted_list_item' || block.type === 'numbered_list_item'
-    
-    // Helper to check if a block is an empty paragraph
-    const isEmptyParagraph = (block: any) =>
-      block.type === 'paragraph' &&
-      (!block.paragraph?.rich_text || block.paragraph.rich_text.length === 0)
-
-    for (let i = 0; i < blocks.length; i++) {
-      const block = blocks[i]
-      const isEmpty = isEmptyParagraph(block)
-      const isList = isListItem(block)
-      
-      // Determine if we should end the current group
-      let shouldEndGroup = false
-      
-      if (isEmpty && currentHighlightBlocks.length > 0) {
-        // Empty paragraph ends the group
-        shouldEndGroup = true
-      } else if (currentHighlightBlocks.length > 0 && !isEmpty) {
-        // Check for type transition: allow paragraph -> list (same highlight can be para + bullets)
-        const lastBlock = currentHighlightBlocks[currentHighlightBlocks.length - 1]
-        const currentIsList = isListItem(lastBlock)
-        const currentIsParagraph = lastBlock.type === 'paragraph'
-        if (currentIsList && !isList) {
-          // List to non-list ends the group
-          shouldEndGroup = true
-        } else if (!currentIsList && isList && !currentIsParagraph) {
-          // Non-list to list ends the group, unless current is paragraph (allow paragraph -> list)
-          shouldEndGroup = true
-        }
-      }
-      
-      if (shouldEndGroup) {
-        const combinedText = currentHighlightBlocks
-          .map(getBlockText)
-          .join(' ')
-        const normalizedCombined = normalizeForBlockCompare(combinedText)
-
-        const isExact =
-          normalizedCombined === normalizedOriginalNoHtml ||
-          normalizedCombined === normalizedOriginalPlainNoHtml
-      if (isExact) {
-        matchingBlocks.push(...currentHighlightBlocks)
-        foundMatch = true
-        exactMatch = true
-        debugPayload.sampleNotionBlockGroups = [normalizedCombined]
-        break
-      }
-
-        currentHighlightBlocks = []
-        if (isEmpty) {
-          continue
-        }
-      }
-
-      if (!isEmpty || currentHighlightBlocks.length > 0) {
-        currentHighlightBlocks.push(block)
-      }
-    }
-
-    if (!foundMatch && currentHighlightBlocks.length > 0) {
-      const combinedText = currentHighlightBlocks
-        .map(getBlockText)
-        .join(' ')
-      const normalizedCombined = normalizeForBlockCompare(combinedText)
-
-      const isExact =
-        normalizedCombined === normalizedOriginalNoHtml ||
-        normalizedCombined === normalizedOriginalPlainNoHtml
-      if (isExact) {
-        matchingBlocks.push(...currentHighlightBlocks)
-        foundMatch = true
-        exactMatch = true
-        debugPayload.sampleNotionBlockGroups = [normalizedCombined]
-      }
-    }
+    const { matchingBlocks, foundMatch, exactMatch } = findMatchingHighlightBlocks(
+      blocks,
+      normalizedOriginalNoHtml,
+      normalizedOriginalPlainNoHtml
+    )
 
     if (!foundMatch || matchingBlocks.length === 0) {
       const allGroups: string[] = []
@@ -252,6 +120,9 @@ export async function POST(request: NextRequest) {
       )
     }
 
+    if (foundMatch && matchingBlocks.length > 0) {
+      debugPayload.sampleNotionBlockGroups = [normalizeForBlockCompare(matchingBlocks.map(getBlockText).join(' '))]
+    }
     console.warn('[notion/update] Highlight found. Full debug:', JSON.stringify(debugPayload, null, 2))
 
     // Convert new HTML content to Notion blocks

@@ -595,3 +595,135 @@ export function htmlToBlockText(html: string): string {
   if (parts.length === 0) return stripHtml(html)
   return parts.join(' ')
 }
+
+/**
+ * Single normalization for comparing highlight text to Notion block groups.
+ * Used by both update and sync routes so matching behavior is identical.
+ */
+export function normalizeForBlockCompare(text: string): string {
+  const stripHtmlForCompare = (t: string): string =>
+    t.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase()
+  let s = stripHtmlForCompare(text)
+    .replace(/\u2014/g, '-')
+    .replace(/\u2013/g, '-')
+    .replace(/\u00A0/g, ' ')
+    .replace(/[""]/g, '"')
+    .replace(/['']/g, "'")
+    .replace(/[\u2000-\u200B\u202F\u205F\u3000]/g, ' ')
+    .replace(/[\s•\u2022\u2043\u2219]+/g, ' ')
+    .replace(/\s*[-*]\s+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase()
+  s = s.replace(/\.\s+/g, '. ').replace(/\.([^\s])/g, '. $1')
+  s = s.replace(/([a-zA-Z])and(\s+)/g, '$1 and$2').replace(/([a-zA-Z])or(\s+)/g, '$1 or$2').replace(/([a-zA-Z])to(\s+)/g, '$1 to$2')
+  return s
+}
+
+/**
+ * Extract plain text from a Notion block. Used by both update and sync routes.
+ */
+export function getBlockText(block: any): string {
+  if (block.type === 'bulleted_list_item' && block.bulleted_list_item?.rich_text) {
+    return block.bulleted_list_item.rich_text
+      .map((t: any) => t.plain_text || '')
+      .join('')
+      .trim()
+      .toLowerCase()
+  }
+  if (block.type === 'numbered_list_item' && block.numbered_list_item?.rich_text) {
+    return block.numbered_list_item.rich_text
+      .map((t: any) => t.plain_text || '')
+      .join('')
+      .trim()
+      .toLowerCase()
+  }
+  if (block[block.type]?.rich_text) {
+    return block[block.type].rich_text
+      .map((t: any) => t.plain_text || '')
+      .join('')
+      .trim()
+      .toLowerCase()
+  }
+  return ''
+}
+
+/**
+ * Find the group of Notion blocks that exactly matches the normalized highlight text.
+ * Same grouping rules and exact-match logic in both update and sync routes.
+ */
+export function findMatchingHighlightBlocks(
+  blocks: any[],
+  normalizedOriginalNoHtml: string,
+  normalizedOriginalPlainNoHtml: string
+): { matchingBlocks: any[]; foundMatch: boolean; exactMatch: boolean } {
+  const isListItem = (b: any) => b.type === 'bulleted_list_item' || b.type === 'numbered_list_item'
+  const isEmptyParagraph = (b: any) =>
+    b.type === 'paragraph' && (!b.paragraph?.rich_text || b.paragraph.rich_text.length === 0)
+
+  const matchingBlocks: any[] = []
+  let currentHighlightBlocks: any[] = []
+  let foundMatch = false
+  let exactMatch = false
+
+  for (let i = 0; i < blocks.length; i++) {
+    const block = blocks[i]
+    const isEmpty = isEmptyParagraph(block)
+    const isList = isListItem(block)
+    let shouldEndGroup = false
+
+    if (isEmpty && currentHighlightBlocks.length > 0) {
+      shouldEndGroup = true
+    } else if (currentHighlightBlocks.length > 0 && !isEmpty) {
+      const lastBlock = currentHighlightBlocks[currentHighlightBlocks.length - 1]
+      const currentIsList = isListItem(lastBlock)
+      const currentIsParagraph = lastBlock.type === 'paragraph'
+      if (currentIsList && !isList) shouldEndGroup = true
+      else if (!currentIsList && isList && !currentIsParagraph) shouldEndGroup = true
+    }
+
+    if (shouldEndGroup) {
+      const combinedText = currentHighlightBlocks.map(getBlockText).join(' ')
+      const normalizedCombined = normalizeForBlockCompare(combinedText)
+      const isExact =
+        normalizedCombined === normalizedOriginalNoHtml || normalizedCombined === normalizedOriginalPlainNoHtml
+      if (isExact) {
+        matchingBlocks.push(...currentHighlightBlocks)
+        foundMatch = true
+        exactMatch = true
+        return { matchingBlocks, foundMatch, exactMatch }
+      }
+      currentHighlightBlocks = []
+      if (isEmpty) continue
+    }
+
+    if (!isEmpty || currentHighlightBlocks.length > 0) {
+      currentHighlightBlocks.push(block)
+    }
+  }
+
+  if (currentHighlightBlocks.length > 0) {
+    const combinedText = currentHighlightBlocks.map(getBlockText).join(' ')
+    const normalizedCombined = normalizeForBlockCompare(combinedText)
+    const isExact =
+      normalizedCombined === normalizedOriginalNoHtml || normalizedCombined === normalizedOriginalPlainNoHtml
+    if (isExact) {
+      matchingBlocks.push(...currentHighlightBlocks)
+      foundMatch = true
+      exactMatch = true
+    }
+  }
+
+  return { matchingBlocks, foundMatch, exactMatch }
+}
+
+/**
+ * Build normalized search strings from original block-order and plain text. Same in both routes.
+ */
+export function buildNormalizedSearchStrings(originalBlockText: string, originalPlainText: string) {
+  const originalText = originalBlockText || originalPlainText
+  return {
+    normalizedOriginalNoHtml: normalizeForBlockCompare(originalText || originalPlainText),
+    normalizedOriginalPlainNoHtml: normalizeForBlockCompare(originalPlainText),
+  }
+}
