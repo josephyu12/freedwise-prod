@@ -7,6 +7,7 @@ export async function POST(request: NextRequest) {
   try {
     const supabase = await createClient()
     const { highlightId, text, htmlContent } = await request.json()
+    console.warn('[notion/update] POST called, highlightId:', highlightId ?? '(missing)')
 
     if (!highlightId || !text) {
       return NextResponse.json(
@@ -239,7 +240,7 @@ export async function POST(request: NextRequest) {
       pushGroup()
 
       debugPayload.sampleNotionBlockGroups = sampleGroups
-      console.log('[notion/update] Highlight not found in Notion page. Full debug:', JSON.stringify(debugPayload, null, 2))
+      console.warn('[notion/update] Highlight not found in Notion page. Full debug:', JSON.stringify(debugPayload, null, 2))
 
       return NextResponse.json(
         {
@@ -251,7 +252,7 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    console.log('[notion/update] Highlight found in Notion. Full debug:', JSON.stringify(debugPayload, null, 2))
+    console.warn('[notion/update] Highlight found in Notion. Full debug:', JSON.stringify(debugPayload, null, 2))
 
     // Convert new HTML content to Notion blocks
     const newBlocks = htmlToNotionBlocks(htmlContent || text)
