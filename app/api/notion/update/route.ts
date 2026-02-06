@@ -116,6 +116,12 @@ export async function POST(request: NextRequest) {
     const normalizedOriginalNoHtml = normalizeForBlockCompare(originalText || originalPlainText)
     const normalizedOriginalPlainNoHtml = normalizeForBlockCompare(originalPlainText)
 
+    const debugPayload = {
+      searchFromBlockOrder: normalizedOriginalNoHtml || null,
+      searchFromPlainText: normalizedOriginalPlainNoHtml !== normalizedOriginalNoHtml ? normalizedOriginalPlainNoHtml : undefined,
+      sampleNotionBlockGroups: [] as string[],
+    }
+
     // Find matching blocks (blocks that contain the original text)
     const matchingBlocks: any[] = []
     let currentHighlightBlocks: any[] = []
@@ -165,12 +171,13 @@ export async function POST(request: NextRequest) {
         const isExact =
           normalizedCombined === normalizedOriginalNoHtml ||
           normalizedCombined === normalizedOriginalPlainNoHtml
-        if (isExact) {
-          matchingBlocks.push(...currentHighlightBlocks)
-          foundMatch = true
-          exactMatch = true
-          break
-        }
+      if (isExact) {
+        matchingBlocks.push(...currentHighlightBlocks)
+        foundMatch = true
+        exactMatch = true
+        debugPayload.sampleNotionBlockGroups = [normalizedCombined]
+        break
+      }
 
         currentHighlightBlocks = []
         if (isEmpty) {
@@ -196,6 +203,7 @@ export async function POST(request: NextRequest) {
         matchingBlocks.push(...currentHighlightBlocks)
         foundMatch = true
         exactMatch = true
+        debugPayload.sampleNotionBlockGroups = [normalizedCombined]
       }
     }
 
@@ -230,19 +238,20 @@ export async function POST(request: NextRequest) {
       }
       pushGroup()
 
+      debugPayload.sampleNotionBlockGroups = sampleGroups
+      console.log('[notion/update] Highlight not found in Notion page. Full debug:', JSON.stringify(debugPayload, null, 2))
+
       return NextResponse.json(
         {
           message: 'Highlight not found in Notion page. It may have been deleted or moved.',
           updated: false,
-          debug: {
-            searchFromBlockOrder: normalizedOriginalNoHtml || null,
-            searchFromPlainText: normalizedOriginalPlainNoHtml !== normalizedOriginalNoHtml ? normalizedOriginalPlainNoHtml : undefined,
-            sampleNotionBlockGroups: sampleGroups,
-          },
+          debug: debugPayload,
         },
         { status: 200 }
       )
     }
+
+    console.log('[notion/update] Highlight found in Notion. Full debug:', JSON.stringify(debugPayload, null, 2))
 
     // Convert new HTML content to Notion blocks
     const newBlocks = htmlToNotionBlocks(htmlContent || text)
