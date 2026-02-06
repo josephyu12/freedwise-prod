@@ -572,7 +572,10 @@ export function htmlToBlockText(html: string): string {
     const liRegex = /<li[^>]*>([\s\S]*?)<\/li>/gis
     let liMatch
     while ((liMatch = liRegex.exec(ulMatch[0])) !== null) {
-      const t = stripHtml(liMatch[1])
+      // If this <li> contains a nested <ul>/<ol>, strip it out so we don't mush child items into parent text.
+      // Nested list items will be extracted separately by the ul/ol loops below.
+      const { text } = parseListItem(liMatch[1])
+      const t = stripHtml(text)
       if (t) ordered.push({ index: ulMatch.index + liMatch.index, text: t })
     }
   }
@@ -582,7 +585,8 @@ export function htmlToBlockText(html: string): string {
     const liRegex = /<li[^>]*>([\s\S]*?)<\/li>/gis
     let liMatch
     while ((liMatch = liRegex.exec(olMatch[0])) !== null) {
-      const t = stripHtml(liMatch[1])
+      const { text } = parseListItem(liMatch[1])
+      const t = stripHtml(text)
       if (t) ordered.push({ index: olMatch.index + liMatch.index, text: t })
     }
   }
@@ -719,6 +723,52 @@ export function findMatchingHighlightBlocks(
   }
 
   return { matchingBlocks, foundMatch, exactMatch }
+}
+
+/**
+ * Build normalized block-group strings using the same grouping rules as the matcher.
+ * Useful for debug logs (e.g. "last 8 groups").
+ */
+export function buildNormalizedBlockGroups(blocks: any[]): string[] {
+  const isListItem = (b: any) => b.type === 'bulleted_list_item' || b.type === 'numbered_list_item'
+  const isEmptyParagraph = (b: any) =>
+    b.type === 'paragraph' && (!b.paragraph?.rich_text || b.paragraph.rich_text.length === 0)
+
+  const groups: string[] = []
+  let current: any[] = []
+
+  const push = () => {
+    if (current.length === 0) return
+    groups.push(normalizeForBlockCompare(current.map(getBlockText).join(BLOCK_BOUNDARY)))
+    current = []
+  }
+
+  for (let i = 0; i < blocks.length; i++) {
+    const b = blocks[i]
+    const empty = isEmptyParagraph(b)
+    const list = isListItem(b)
+    let shouldEnd = false
+
+    if (empty && current.length > 0) {
+      shouldEnd = true
+    } else if (current.length > 0 && !empty) {
+      const last = current[current.length - 1]
+      const lastIsList = isListItem(last)
+      const lastIsParagraph = last.type === 'paragraph'
+      if (lastIsList && !list) shouldEnd = true
+      else if (!lastIsList && list && !lastIsParagraph) shouldEnd = true
+    }
+
+    if (shouldEnd) {
+      push()
+      if (empty) continue
+    }
+
+    if (!empty || current.length > 0) current.push(b)
+  }
+  push()
+
+  return groups
 }
 
 /**

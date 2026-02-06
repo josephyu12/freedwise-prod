@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { Client } from '@notionhq/client'
 import { createClient } from '@/lib/supabase/server'
-import { htmlToNotionBlocks, htmlToBlockText, normalizeForBlockCompare, getBlockText, findMatchingHighlightBlocks, buildNormalizedSearchStrings, flattenBlocksWithChildren, BLOCK_BOUNDARY } from '@/lib/notionBlocks'
+import { htmlToNotionBlocks, htmlToBlockText, normalizeForBlockCompare, getBlockText, findMatchingHighlightBlocks, buildNormalizedSearchStrings, flattenBlocksWithChildren, BLOCK_BOUNDARY, buildNormalizedBlockGroups } from '@/lib/notionBlocks'
 
 export async function POST(request: NextRequest) {
   try {
@@ -81,35 +81,7 @@ export async function POST(request: NextRequest) {
     )
 
     if (!foundMatch || matchingBlocks.length === 0) {
-      const allGroups: string[] = []
-      let current: any[] = []
-      const pushGroup = () => {
-        if (current.length > 0) {
-          allGroups.push(normalizeForBlockCompare(current.map(getBlockText).join(BLOCK_BOUNDARY)))
-          current = []
-        }
-      }
-      for (let i = 0; i < blocks.length; i++) {
-        const b = blocks[i]
-        const empty = b.type === 'paragraph' && (!b.paragraph?.rich_text || b.paragraph.rich_text.length === 0)
-        const list = b.type === 'bulleted_list_item' || b.type === 'numbered_list_item'
-        const last = current[current.length - 1]
-        const lastList = last && (last.type === 'bulleted_list_item' || last.type === 'numbered_list_item')
-        const lastPara = last?.type === 'paragraph'
-        if (empty) {
-          pushGroup()
-        } else if (current.length > 0 && lastList && !list) {
-          pushGroup()
-          current.push(b)
-        } else if (current.length > 0 && !lastPara && list) {
-          pushGroup()
-          current.push(b)
-        } else {
-          current.push(b)
-        }
-      }
-      pushGroup()
-      debugPayload.sampleNotionBlockGroups = allGroups.slice(-8)
+      debugPayload.sampleNotionBlockGroups = buildNormalizedBlockGroups(blocks).slice(-8)
       console.warn('[notion/update] Highlight not found. Full debug (last 8 block groups):', JSON.stringify(debugPayload, null, 2))
       return NextResponse.json(
         {
