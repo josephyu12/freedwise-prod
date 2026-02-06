@@ -33,7 +33,6 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
         children: blocks,
       })
     } else if (queueItem.operation_type === 'update') {
-      console.warn('[notion/sync] Processing update for queue id:', queueItem.id, 'highlightId:', queueItem.highlight_id ?? '(none)')
       // For update, use the ORIGINAL text stored in the queue item to find the block.
       // Convert original_html_content to block-order text (same format as Notion: parts joined by space)
       // so paragraph + list highlights match.
@@ -55,7 +54,6 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
           const fallbackHtml = (currentHighlight.html_content || '').trim()
           const fallbackPlain = (currentHighlight.text || '').trim().toLowerCase()
           if (fallbackHtml || fallbackPlain) {
-            console.warn('Using current highlight text as fallback for Notion matching (original text not stored in queue)')
             originalBlockText = fallbackHtml ? htmlToBlockText(fallbackHtml).trim().toLowerCase() : fallbackPlain
             originalPlainText = fallbackPlain || originalPlainText
           }
@@ -143,12 +141,6 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
       const normalizedOriginalNoHtml = normalizeForBlockCompare(normalizedOriginalText)
       const normalizedOriginalPlainNoHtml = normalizeForBlockCompare(normalizedOriginalPlainText)
 
-      const debugPayload = {
-        searchFromBlockOrder: normalizedOriginalNoHtml || null,
-        searchFromPlainText: normalizedOriginalPlainNoHtml !== normalizedOriginalNoHtml ? normalizedOriginalPlainNoHtml : undefined,
-        sampleNotionBlockGroups: [] as string[],
-      }
-
       // Find matching blocks (blocks that contain the original text)
       // Group blocks by empty line separators OR by block type transitions
       // List items (bulleted/numbered) should be grouped together
@@ -211,7 +203,6 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
             matchingBlocks.push(...currentHighlightBlocks)
             foundMatch = true
             exactMatch = true
-            debugPayload.sampleNotionBlockGroups = [normalizedCombined]
             break
           }
 
@@ -242,45 +233,12 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
           matchingBlocks.push(...currentHighlightBlocks)
           foundMatch = true
           exactMatch = true
-          debugPayload.sampleNotionBlockGroups = [normalizedCombined]
         }
       }
 
       if (!foundMatch || matchingBlocks.length === 0) {
-        const allGroups: string[] = []
-        let current: any[] = []
-        const pushGroup = () => {
-          if (current.length > 0) {
-            allGroups.push(normalizeForBlockCompare(current.map(getBlockText).join(' ')))
-            current = []
-          }
-        }
-        for (let i = 0; i < allBlocks.length; i++) {
-          const b = allBlocks[i]
-          const empty = b.type === 'paragraph' && (!b.paragraph?.rich_text || b.paragraph.rich_text.length === 0)
-          const list = b.type === 'bulleted_list_item' || b.type === 'numbered_list_item'
-          const last = current[current.length - 1]
-          const lastList = last && (last.type === 'bulleted_list_item' || last.type === 'numbered_list_item')
-          const lastPara = last?.type === 'paragraph'
-          if (empty) {
-            pushGroup()
-          } else if (current.length > 0 && lastList && !list) {
-            pushGroup()
-            current.push(b)
-          } else if (current.length > 0 && !lastPara && list) {
-            pushGroup()
-            current.push(b)
-          } else {
-            current.push(b)
-          }
-        }
-        pushGroup()
-        debugPayload.sampleNotionBlockGroups = allGroups.slice(-8)
-        console.warn('[notion/sync] update: Highlight not found in Notion page. Full debug:', JSON.stringify(debugPayload, null, 2))
         throw new Error('Highlight not found in Notion page. It may have been deleted or moved.')
       }
-
-      console.warn('[notion/sync] update: Highlight found in Notion. Full debug:', JSON.stringify(debugPayload, null, 2))
 
       // Update the matching blocks with new content
       // For list items, update all matching items in place to preserve grouping
