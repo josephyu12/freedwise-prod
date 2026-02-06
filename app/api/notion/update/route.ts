@@ -144,10 +144,12 @@ export async function POST(request: NextRequest) {
         }
       }
       
-      // Delete extra old blocks if there are more old than new
+      // Delete extra old blocks only when they're not list items (never delete nested bullets; new content may have omitted them)
       for (let i = minLength; i < matchingBlocks.length; i++) {
+        const block = matchingBlocks[i]
+        if (block.type === 'bulleted_list_item' || block.type === 'numbered_list_item') continue
         try {
-          await notion.blocks.delete({ block_id: matchingBlocks[i].id })
+          await notion.blocks.delete({ block_id: block.id })
         } catch (error) {
           console.warn(`Failed to delete extra old block ${i}:`, error)
         }
