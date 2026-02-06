@@ -616,7 +616,6 @@ export function normalizeForBlockCompare(text: string): string {
     .trim()
     .toLowerCase()
   s = s.replace(/\.\s+/g, '. ').replace(/\.([^\s])/g, '. $1')
-  s = s.replace(/([a-zA-Z])and(\s+)/g, '$1 and$2').replace(/([a-zA-Z])or(\s+)/g, '$1 or$2').replace(/([a-zA-Z])to(\s+)/g, '$1 to$2')
   return s
 }
 
