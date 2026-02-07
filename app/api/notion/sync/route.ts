@@ -68,8 +68,22 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
         sampleNotionBlockGroups: [] as string[],
       }
 
+      // Use DB as source of truth for new content (DB → Notion). Prefer current highlight row so nested bullets etc. are included even if queue payload was stale.
+      let newContentHtml = queueItem.html_content ?? null
+      let newContentText = queueItem.text ?? null
+      if (queueItem.highlight_id) {
+        const { data: currentHighlight } = await (supabase
+          .from('highlights') as any)
+          .select('text, html_content')
+          .eq('id', queueItem.highlight_id)
+          .maybeSingle()
+        if (currentHighlight?.text != null || currentHighlight?.html_content != null) {
+          newContentText = currentHighlight.text ?? newContentText
+          newContentHtml = currentHighlight.html_content ?? newContentHtml
+        }
+      }
       // Convert new content to Notion blocks; flatten so nested list items align with Notion's flat list
-      const newBlocks = htmlToNotionBlocks(queueItem.html_content || queueItem.text)
+      const newBlocks = htmlToNotionBlocks(newContentHtml || newContentText || '')
       const flatNewBlocks = flattenBlocksForSync(newBlocks)
 
       // Fetch all blocks from Notion page (top-level only first)
@@ -152,7 +166,7 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
             }
           } catch (error: any) {
             console.error(`Failed to update list item ${i}:`, error.message || error, error.response?.data || '')
-            // Continue with other blocks even if one fails
+            throw error
           }
         }
         
@@ -160,8 +174,9 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
         for (let i = minLength; i < matchingBlocks.length; i++) {
           try {
             await notion.blocks.delete({ block_id: matchingBlocks[i].id })
-          } catch (error) {
-            console.warn(`Failed to delete extra old block ${i}:`, error)
+          } catch (error: any) {
+            console.warn(`Failed to delete extra old block ${i}:`, error?.message || error)
+            throw error
           }
         }
         
@@ -171,21 +186,17 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
           const lastMatchingId = lastMatching.id
           const extraBlocks = flatNewBlocks.slice(minLength)
           const isLastList = lastMatching.type === 'bulleted_list_item' || lastMatching.type === 'numbered_list_item'
-          try {
-            if (isLastList) {
-              await notion.blocks.children.append({
-                block_id: lastMatchingId,
-                children: extraBlocks,
-              })
-            } else {
-              await notion.blocks.children.append({
-                block_id: notionSettings.notion_page_id,
-                children: extraBlocks,
-                after: lastMatchingId,
-              })
-            }
-          } catch (error: any) {
-            console.warn('Failed to append new blocks after highlight:', error?.message || error)
+          if (isLastList) {
+            await notion.blocks.children.append({
+              block_id: lastMatchingId,
+              children: extraBlocks,
+            })
+          } else {
+            await notion.blocks.children.append({
+              block_id: notionSettings.notion_page_id,
+              children: extraBlocks,
+              after: lastMatchingId,
+            })
           }
         }
       } else {
@@ -219,7 +230,7 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
             }
           } catch (error: any) {
             console.error(`Failed to update block ${i} (${matchingBlocks[i]?.type}):`, error.message || error, error.response?.data || '')
-            // Don't re-throw for non-list updates to allow other blocks to update
+            throw error
           }
         }
         
@@ -227,8 +238,9 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
         for (let i = minLength; i < matchingBlocks.length; i++) {
           try {
             await notion.blocks.delete({ block_id: matchingBlocks[i].id })
-          } catch (error) {
-            console.warn(`Failed to delete extra old block ${i}:`, error)
+          } catch (error: any) {
+            console.warn(`Failed to delete extra old block ${i}:`, error?.message || error)
+            throw error
           }
         }
         
@@ -238,21 +250,17 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
           const lastMatchingId = lastMatching.id
           const extraBlocks = flatNewBlocks.slice(minLength)
           const isLastList = lastMatching.type === 'bulleted_list_item' || lastMatching.type === 'numbered_list_item'
-          try {
-            if (isLastList) {
-              await notion.blocks.children.append({
-                block_id: lastMatchingId,
-                children: extraBlocks,
-              })
-            } else {
-              await notion.blocks.children.append({
-                block_id: notionSettings.notion_page_id,
-                children: extraBlocks,
-                after: lastMatchingId,
-              })
-            }
-          } catch (error: any) {
-            console.warn('Failed to append new blocks after highlight:', error?.message || error)
+          if (isLastList) {
+            await notion.blocks.children.append({
+              block_id: lastMatchingId,
+              children: extraBlocks,
+            })
+          } else {
+            await notion.blocks.children.append({
+              block_id: notionSettings.notion_page_id,
+              children: extraBlocks,
+              after: lastMatchingId,
+            })
           }
         }
       }
