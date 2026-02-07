@@ -118,6 +118,22 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
       }
       console.warn('[notion/sync] update: Highlight found. Full debug:', JSON.stringify(debugPayload, null, 2))
 
+      // Re-fetch highlight from DB right before pushing so we have the latest saved content (e.g. new nested bullet)
+      if (queueItem.highlight_id) {
+        const { data: latestHighlight } = await (supabase
+          .from('highlights') as any)
+          .select('text, html_content')
+          .eq('id', queueItem.highlight_id)
+          .maybeSingle()
+        if (latestHighlight?.text != null || latestHighlight?.html_content != null) {
+          newContentText = latestHighlight.text ?? newContentText
+          newContentHtml = latestHighlight.html_content ?? newContentHtml
+          const latestBlocks = htmlToNotionBlocks(newContentHtml || newContentText || '')
+          flatNewBlocks.length = 0
+          flatNewBlocks.push(...flattenBlocksForSync(latestBlocks))
+        }
+      }
+
       // Update the matching blocks with new content
       // For list items, update all matching items in place to preserve grouping
       const isListUpdate = matchingBlocks.length > 0 && 
@@ -170,10 +186,12 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
           }
         }
         
-        // Delete extra old blocks so Notion matches new content (DB → Notion)
+        // Delete extra old blocks so Notion matches new content. Never delete list items when new has fewer blocks — new content may be incomplete (nested bullets missing from payload/DB).
         for (let i = minLength; i < matchingBlocks.length; i++) {
+          const block = matchingBlocks[i]
+          if (block.type === 'bulleted_list_item' || block.type === 'numbered_list_item') continue
           try {
-            await notion.blocks.delete({ block_id: matchingBlocks[i].id })
+            await notion.blocks.delete({ block_id: block.id })
           } catch (error: any) {
             console.warn(`Failed to delete extra old block ${i}:`, error?.message || error)
             throw error
@@ -234,10 +252,12 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
           }
         }
         
-        // Delete extra old blocks so Notion matches new content (DB → Notion)
+        // Delete extra old blocks. Never delete list items when new has fewer blocks — new content may be incomplete (nested bullets missing).
         for (let i = minLength; i < matchingBlocks.length; i++) {
+          const block = matchingBlocks[i]
+          if (block.type === 'bulleted_list_item' || block.type === 'numbered_list_item') continue
           try {
-            await notion.blocks.delete({ block_id: matchingBlocks[i].id })
+            await notion.blocks.delete({ block_id: block.id })
           } catch (error: any) {
             console.warn(`Failed to delete extra old block ${i}:`, error?.message || error)
             throw error
