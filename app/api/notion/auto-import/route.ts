@@ -176,30 +176,37 @@ async function blocksToHTML(blocks: any[], notion?: Client): Promise<string> {
   return html
 }
 
-function blocksToText(blocks: any[]): string {
-  return blocks
-    .map((block: any) => {
-      if (block[block.type]?.rich_text) {
-        return block[block.type].rich_text.map((t: any) => t.plain_text).join('')
-      }
-      return ''
-    })
-    .filter((text: string) => text.length > 0)
-    .join('\n')
+// Extract plain text from HTML by stripping tags
+// This ensures text field matches the HTML content exactly
+function htmlToPlainText(html: string): string {
+  if (!html) return ''
+  return html
+    .replace(/<[^>]*>/g, '') // Strip HTML tags
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .trim()
 }
 
 export async function GET(request: NextRequest) {
   try {
+    console.warn('[notion/auto-import] ========== AUTO IMPORT STARTED ==========')
     const supabase = await createClient()
-    
+
     // Get authenticated user
     const { data: { user }, error: userError } = await supabase.auth.getUser()
     if (userError || !user) {
+      console.warn('[notion/auto-import] Auth failed:', userError)
       return NextResponse.json(
         { error: 'Unauthorized - must be authenticated' },
         { status: 401 }
       )
     }
+
+    console.warn('[notion/auto-import] Authenticated user:', user.id)
     
     // Get Notion credentials from environment variables
     const notionApiKey = process.env.NOTION_API_KEY
@@ -260,7 +267,7 @@ export async function GET(request: NextRequest) {
 
       if (isEmpty && currentHighlightBlocks.length > 0) {
         const html = await blocksToHTML(currentHighlightBlocks, notion)
-        const text = blocksToText(currentHighlightBlocks)
+        const text = htmlToPlainText(html)
 
         if (text.trim().length > 0) {
           highlights.push({ text: text.trim(), html: html.trim() })
@@ -277,7 +284,7 @@ export async function GET(request: NextRequest) {
 
     if (currentHighlightBlocks.length > 0) {
       const html = await blocksToHTML(currentHighlightBlocks, notion)
-      const text = blocksToText(currentHighlightBlocks)
+      const text = htmlToPlainText(html)
 
       if (text.trim().length > 0) {
         highlights.push({ text: text.trim(), html: html.trim() })
@@ -330,142 +337,66 @@ export async function GET(request: NextRequest) {
       return plainText.trim().toLowerCase().replace(/\s+/g, ' ')
     }
 
-    // Debug: find first index where two strings differ (for logging)
-    const findFirstDiff = (a: string, b: string): number => {
-      const len = Math.min(a.length, b.length)
-      for (let i = 0; i < len; i++) if (a[i] !== b[i]) return i
-      return a.length !== b.length ? len : -1
-    }
-
-    // Debug: safe snippet around index (for logging)
-    const snippet = (s: string, index: number, radius = 40): string => {
-      if (index < 0) return '(no diff)'
-      const start = Math.max(0, index - radius)
-      const end = Math.min(s.length, index + radius)
-      const pre = s.slice(start, index)
-      const post = s.slice(index, end)
-      const charAt = index < s.length ? s[index] : '(end)'
-      const code = index < s.length ? s.charCodeAt(index) : 0
-      return `...[${pre}]|${charAt}(U+${code.toString(16).toUpperCase()})|[${post}]...`
-    }
-    
-    // Helper function to calculate similarity (simple Levenshtein-like approach)
-    const calculateSimilarity = (str1: string, str2: string): number => {
-      const s1 = normalize(str1)
-      const s2 = normalize(str2)
-      if (s1 === s2) return 1.0
-      if (s1.length === 0 || s2.length === 0) return 0.0
-      
-      // Simple similarity: check if one contains the other or vice versa
-      if (s1.includes(s2) || s2.includes(s1)) {
-        const longer = s1.length > s2.length ? s1 : s2
-        const shorter = s1.length > s2.length ? s2 : s1
-        return shorter.length / longer.length
-      }
-      
-      // Check word overlap
-      const words1 = s1.split(' ')
-      const words2 = s2.split(' ')
-      const commonWords = words1.filter(w => words2.includes(w))
-      return (commonWords.length * 2) / (words1.length + words2.length)
-    }
-
     const newHighlights: typeof highlights = []
     const updatedHighlights: Array<{ id: string; text: string; html: string }> = []
     let skipped = 0
 
+    console.warn('[notion/auto-import] Starting matching process for', highlights.length, 'Notion highlights against', existingHighlights.length, 'DB highlights')
+
     for (const highlight of highlights) {
-      const textNormalized = normalize(highlight.text)
       const htmlNormalized = normalize(highlight.html)
-      
-      // Try to find a matching highlight
+
+      console.warn('[notion/auto-import] Processing highlight:', {
+        textPreview: highlight.text.substring(0, 100),
+        htmlLen: highlight.html.length,
+        normalizedPreview: htmlNormalized.substring(0, 100),
+      })
+
+      // Try to find an exact match
       let matched = false
-      let bestMatch: { id: string; similarity: number } | null = null
-      
+
       for (const existing of existingHighlights || []) {
-        const existingText = normalize(existing.text || '')
         const existingHtml = normalize(existing.html_content || '')
-        
-        // Check exact match first
-        if (existingText === textNormalized || existingHtml === htmlNormalized ||
-            existingText === htmlNormalized || existingHtml === textNormalized) {
-          // Exact match - check if content has changed
+
+        // Check for exact match on normalized HTML
+        // Since text is now derived from HTML, we only need to compare HTML
+        if (existingHtml === htmlNormalized) {
+          console.warn('[notion/auto-import] Found exact match:', {
+            highlightId: existing.id,
+          })
+
+          // Check if raw content has changed (e.g., formatting changes)
           const currentText = highlight.text.trim()
           const currentHtml = highlight.html.trim()
           const dbText = existing.text?.trim() || ''
           const dbHtml = existing.html_content?.trim() || ''
-          
+
           const textDiffers = currentText !== dbText
           const htmlDiffers = currentHtml !== dbHtml
 
           if (textDiffers || htmlDiffers) {
-            // Content has changed — log why so we can investigate false positives
-            const textDiffIdx = findFirstDiff(currentText, dbText)
-            const htmlDiffIdx = findFirstDiff(currentHtml, dbHtml)
-            console.warn('[notion/auto-import] exact match → UPDATE (raw differs) highlightId=', existing.id, {
-              normalizedMatch: {
-                textMatch: existingText === textNormalized,
-                htmlMatch: existingHtml === htmlNormalized,
-                textVsHtml: existingText === htmlNormalized || existingHtml === textNormalized,
-              },
-              rawComparison: {
-                textDiffers,
-                htmlDiffers,
-                notionTextLen: currentText.length,
-                dbTextLen: dbText.length,
-                notionHtmlLen: currentHtml.length,
-                dbHtmlLen: dbHtml.length,
-              },
-              firstTextDiffAt: textDiffIdx,
-              textSnippetNotion: textDiffIdx >= 0 ? snippet(currentText, textDiffIdx) : undefined,
-              textSnippetDb: textDiffIdx >= 0 ? snippet(dbText, textDiffIdx) : undefined,
-              firstHtmlDiffAt: htmlDiffIdx,
-              htmlSnippetNotion: htmlDiffIdx >= 0 ? snippet(currentHtml, htmlDiffIdx) : undefined,
-              htmlSnippetDb: htmlDiffIdx >= 0 ? snippet(dbHtml, htmlDiffIdx) : undefined,
-            })
+            console.warn('[notion/auto-import] exact match → UPDATE (formatting changed) highlightId=', existing.id)
             updatedHighlights.push({
               id: existing.id,
               text: currentText,
               html: currentHtml,
             })
           } else {
-            console.warn('[notion/auto-import] exact match → SKIP (identical raw) highlightId=', existing.id)
+            console.warn('[notion/auto-import] exact match → SKIP (identical) highlightId=', existing.id)
             skipped++
           }
           matched = true
           break
         }
-        
-        // Check similarity for fuzzy matching (if text is similar enough, consider it the same)
-        const textSimilarity = calculateSimilarity(highlight.text, existing.text || '')
-        const htmlSimilarity = existing.html_content 
-          ? calculateSimilarity(highlight.html, existing.html_content)
-          : 0
-        
-        const maxSimilarity = Math.max(textSimilarity, htmlSimilarity)
-        
-        // If similarity is high enough (>= 0.8), consider it a match
-        if (maxSimilarity >= 0.8) {
-          if (!bestMatch || maxSimilarity > bestMatch.similarity) {
-            bestMatch = { id: existing.id, similarity: maxSimilarity }
-          }
-        }
       }
-      
-      // If we found a fuzzy match, update it
-      if (!matched && bestMatch) {
-        console.warn('[notion/auto-import] fuzzy match → UPDATE highlightId=', bestMatch.id, 'similarity=', bestMatch.similarity)
-        updatedHighlights.push({
-          id: bestMatch.id,
-          text: highlight.text.trim(),
-          html: highlight.html.trim(),
-        })
-        matched = true
-      }
-      
+
       // If no match found, it's a new highlight
       if (!matched) {
-        console.warn('[notion/auto-import] no match → NEW highlight (textLen=', highlight.text.length, ')')
+        console.warn('[notion/auto-import] no match → NEW highlight', {
+          htmlLen: highlight.html.length,
+          textPreview: highlight.text.substring(0, 150),
+          normalizedPreview: htmlNormalized.substring(0, 150),
+        })
         newHighlights.push(highlight)
       }
     }
@@ -776,6 +707,13 @@ export async function GET(request: NextRequest) {
         // Don't fail the import if redistribution fails
       }
     }
+
+    console.warn('[notion/auto-import] ========== AUTO IMPORT COMPLETED ==========', {
+      total: highlights.length,
+      imported: importedCount,
+      updated: updatedCount,
+      skipped: skipped,
+    })
 
     return NextResponse.json({
       message: 'Sync completed successfully',

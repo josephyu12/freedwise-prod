@@ -188,17 +188,19 @@ async function blocksToHTML(blocks: any[], notion?: Client): Promise<string> {
   return html
 }
 
-// Extract plain text from blocks for text field
-function blocksToText(blocks: any[]): string {
-  return blocks
-    .map((block: any) => {
-      if (block[block.type]?.rich_text) {
-        return block[block.type].rich_text.map((t: any) => t.plain_text).join('')
-      }
-      return ''
-    })
-    .filter((text: string) => text.length > 0)
-    .join('\n')
+// Extract plain text from HTML by stripping tags
+// This ensures text field matches the HTML content exactly
+function htmlToPlainText(html: string): string {
+  if (!html) return ''
+  return html
+    .replace(/<[^>]*>/g, '') // Strip HTML tags
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .trim()
 }
 
 export async function POST(request: NextRequest) {
@@ -254,12 +256,12 @@ export async function POST(request: NextRequest) {
       if (isEmpty && currentHighlightBlocks.length > 0) {
         // Save current highlight
         const html = await blocksToHTML(currentHighlightBlocks, notion)
-        const text = blocksToText(currentHighlightBlocks)
-        
+        const text = htmlToPlainText(html)
+
         if (text.trim().length > 0) {
           highlights.push({ text: text.trim(), html: html.trim() })
         }
-        
+
         // Reset for next highlight
         currentHighlightBlocks = []
         // Skip the empty block
@@ -275,18 +277,18 @@ export async function POST(request: NextRequest) {
     // Don't forget the last highlight if there's content
     if (currentHighlightBlocks.length > 0) {
       const html = await blocksToHTML(currentHighlightBlocks, notion)
-      const text = blocksToText(currentHighlightBlocks)
-      
+      const text = htmlToPlainText(html)
+
       if (text.trim().length > 0) {
         highlights.push({ text: text.trim(), html: html.trim() })
       }
     }
-    
+
     // If no highlights found (maybe no empty lines), return everything as one highlight
     if (highlights.length === 0) {
       const html = await blocksToHTML(blocks, notion)
-      const text = blocksToText(blocks)
-      
+      const text = htmlToPlainText(html)
+
       if (text.trim().length > 0) {
         highlights.push({ text: text.trim(), html: html.trim() })
       }
