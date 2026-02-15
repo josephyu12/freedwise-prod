@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { Client } from '@notionhq/client'
 import { createClient } from '@/lib/supabase/server'
+import { normalizeForBlockCompare } from '@/lib/notionBlocks'
 
 // Convert Notion rich text to HTML (same as in import route)
 function notionRichTextToHTML(richText: any[]): string {
@@ -193,20 +194,20 @@ function htmlToPlainText(html: string): string {
 
 export async function GET(request: NextRequest) {
   try {
-    console.warn('[notion/auto-import] ========== AUTO IMPORT STARTED ==========')
+    console.error('[notion/auto-import] ========== AUTO IMPORT STARTED ==========')
     const supabase = await createClient()
 
     // Get authenticated user
     const { data: { user }, error: userError } = await supabase.auth.getUser()
     if (userError || !user) {
-      console.warn('[notion/auto-import] Auth failed:', userError)
+      console.error('[notion/auto-import] Auth failed:', userError)
       return NextResponse.json(
         { error: 'Unauthorized - must be authenticated' },
         { status: 401 }
       )
     }
 
-    console.warn('[notion/auto-import] Authenticated user:', user.id)
+    console.error('[notion/auto-import] Authenticated user:', user.id)
     
     // Get Notion credentials from environment variables
     const notionApiKey = process.env.NOTION_API_KEY
@@ -326,25 +327,16 @@ export async function GET(request: NextRequest) {
       fetchCursor += pageSize
     }
 
-    console.warn('[notion/auto-import] Running: notionHighlights=', highlights.length, 'dbHighlights=', existingHighlights.length)
-
-    // Helper function to normalize text for comparison (strip HTML tags, trim, lowercase, normalize whitespace)
-    const normalize = (text: string) => {
-      if (!text) return ''
-      // Strip HTML tags first
-      const plainText = text.replace(/<[^>]*>/g, '')
-      // Trim, lowercase, and normalize whitespace
-      return plainText.trim().toLowerCase().replace(/\s+/g, ' ')
-    }
+    console.error('[notion/auto-import] Running: notionHighlights=', highlights.length, 'dbHighlights=', existingHighlights.length)
 
     const newHighlights: typeof highlights = []
     const updatedHighlights: Array<{ id: string; text: string; html: string }> = []
     let skipped = 0
 
-    console.warn('[notion/auto-import] Starting matching process for', highlights.length, 'Notion highlights against', existingHighlights.length, 'DB highlights')
+    console.error('[notion/auto-import] Starting matching process for', highlights.length, 'Notion highlights against', existingHighlights.length, 'DB highlights')
 
     for (const highlight of highlights) {
-      const htmlNormalized = normalize(highlight.html)
+      const htmlNormalized = normalizeForBlockCompare(highlight.html)
 
       console.warn('[notion/auto-import] Processing highlight:', {
         textPreview: highlight.text.substring(0, 100),
@@ -356,7 +348,7 @@ export async function GET(request: NextRequest) {
       let matched = false
 
       for (const existing of existingHighlights || []) {
-        const existingHtml = normalize(existing.html_content || '')
+        const existingHtml = normalizeForBlockCompare(existing.html_content || '')
 
         // Check for exact match on normalized HTML
         // Since text is now derived from HTML, we only need to compare HTML
@@ -708,7 +700,7 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    console.warn('[notion/auto-import] ========== AUTO IMPORT COMPLETED ==========', {
+    console.error('[notion/auto-import] ========== AUTO IMPORT COMPLETED ==========', {
       total: highlights.length,
       imported: importedCount,
       updated: updatedCount,

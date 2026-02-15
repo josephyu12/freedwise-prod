@@ -3,17 +3,11 @@
 import { useState, useEffect } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import Link from 'next/link'
+import { normalizeForBlockCompare } from '@/lib/notionBlocks'
 
 interface HighlightPreview {
   text: string
   html: string
-}
-
-// Normalize text for comparison (strip HTML, trim, lowercase, collapse whitespace)
-function normalizeText(text: string): string {
-  if (!text) return ''
-  const plainText = text.replace(/<[^>]*>/g, '')
-  return plainText.trim().toLowerCase().replace(/\s+/g, ' ')
 }
 
 export default function ImportPage() {
@@ -109,11 +103,11 @@ export default function ImportPage() {
         // Text field may be incomplete in old highlights (missing nested bullets)
         const notionHtmls = new Set<string>()
         for (const h of data.highlights) {
-          const html = normalizeText(h.html)
+          const html = normalizeForBlockCompare(h.html)
           if (html) notionHtmls.add(html)
         }
         const notInNotion = existingHighlights.filter((h) => {
-          const html = normalizeText(h.html_content || '')
+          const html = normalizeForBlockCompare(h.html_content || '')
           return !(html && notionHtmls.has(html))
         })
         setNotInNotionCount(notInNotion.length)
@@ -180,13 +174,13 @@ export default function ImportPage() {
       // Text field may be incomplete in old highlights (missing nested bullets)
       const existingHtmls = new Set<string>()
       for (const h of existingHighlights || []) {
-        const htmlNormalized = normalizeText(h.html_content || '')
+        const htmlNormalized = normalizeForBlockCompare(h.html_content || '')
         if (htmlNormalized) existingHtmls.add(htmlNormalized)
       }
 
       // Filter out duplicates
       const newHighlights = preview.filter((highlight) => {
-        const htmlNormalized = normalizeText(highlight.html)
+        const htmlNormalized = normalizeForBlockCompare(highlight.html)
         return !(htmlNormalized && existingHtmls.has(htmlNormalized))
       })
 
