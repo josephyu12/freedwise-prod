@@ -30,30 +30,53 @@ export async function POST(request: NextRequest) {
 
     console.log('[migrate-text-fields] Starting migration for user:', user.id)
 
-    // Get all highlights with html_content
-    const { data: highlights, error: fetchError } = await supabase
-      .from('highlights')
-      .select('id, html_content')
-      .eq('user_id', user.id)
-      .not('html_content', 'is', null)
+    // Get ALL highlights with html_content (paginate to avoid limit)
+    const allHighlights: Array<{ id: string; text: string | null; html_content: string }> = []
+    let fetchCursor = 0
+    const pageSize = 1000
 
-    if (fetchError) throw fetchError
+    while (true) {
+      const { data: batch, error: fetchError } = await supabase
+        .from('highlights')
+        .select('id, text, html_content')
+        .eq('user_id', user.id)
+        .not('html_content', 'is', null)
+        .range(fetchCursor, fetchCursor + pageSize - 1)
 
-    if (!highlights || highlights.length === 0) {
+      if (fetchError) throw fetchError
+
+      if (!batch || batch.length === 0) break
+
+      allHighlights.push(...(batch as Array<{ id: string; text: string | null; html_content: string }>))
+
+      console.log('[migrate-text-fields] Fetched batch:', batch.length, 'total so far:', allHighlights.length)
+
+      // If we got fewer than pageSize, we've reached the end
+      if (batch.length < pageSize) break
+
+      fetchCursor += pageSize
+    }
+
+    if (allHighlights.length === 0) {
       return NextResponse.json({
         message: 'No highlights to migrate',
         updated: 0,
       })
     }
 
-    console.log('[migrate-text-fields] Found', highlights.length, 'highlights to update')
-
-    // Type the highlights array
-    const typedHighlights = highlights as Array<{ id: string; html_content: string }>
+    console.log('[migrate-text-fields] Found', allHighlights.length, 'highlights total')
 
     let updated = 0
-    for (const highlight of typedHighlights) {
+    let skipped = 0
+    for (const highlight of allHighlights) {
       const newText = htmlToPlainText(highlight.html_content)
+      const currentText = (highlight.text || '').trim()
+
+      // Skip if text is already correct
+      if (currentText === newText) {
+        skipped++
+        continue
+      }
 
       const { error: updateError } = await (supabase
         .from('highlights') as any)
@@ -65,15 +88,19 @@ export async function POST(request: NextRequest) {
         console.error('[migrate-text-fields] Failed to update highlight', highlight.id, updateError)
       } else {
         updated++
+        if (updated % 100 === 0) {
+          console.log('[migrate-text-fields] Progress:', updated, 'updated,', skipped, 'skipped')
+        }
       }
     }
 
-    console.log('[migrate-text-fields] Migration complete. Updated', updated, 'highlights')
+    console.log('[migrate-text-fields] Migration complete. Updated:', updated, 'Skipped:', skipped, 'Total:', allHighlights.length)
 
     return NextResponse.json({
       message: 'Migration completed successfully',
-      total: highlights.length,
+      total: allHighlights.length,
       updated: updated,
+      skipped: skipped,
     })
   } catch (error: any) {
     console.error('[migrate-text-fields] Error:', error)
