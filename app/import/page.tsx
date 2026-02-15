@@ -105,17 +105,16 @@ export default function ImportPage() {
           if (batch.length < pageSize) break
           cursor += pageSize
         }
-        const notionTexts = new Set<string>()
+        // Only compare HTML since it's the source of truth and always complete
+        // Text field may be incomplete in old highlights (missing nested bullets)
+        const notionHtmls = new Set<string>()
         for (const h of data.highlights) {
-          const t = normalizeText(h.text)
           const html = normalizeText(h.html)
-          if (t) notionTexts.add(t)
-          if (html && html !== t) notionTexts.add(html)
+          if (html) notionHtmls.add(html)
         }
         const notInNotion = existingHighlights.filter((h) => {
-          const t = normalizeText(h.text || '')
           const html = normalizeText(h.html_content || '')
-          return !(t && notionTexts.has(t)) && !(html && notionTexts.has(html))
+          return !(html && notionHtmls.has(html))
         })
         setNotInNotionCount(notInNotion.length)
         setNotInNotionSnippets(
@@ -177,24 +176,18 @@ export default function ImportPage() {
         fetchCursor += pageSize
       }
 
-      // Create a set of existing highlight texts (normalized for comparison)
-      // Add both text and html_content (normalized) to catch duplicates regardless of which field matches
-      const existingTexts = new Set<string>()
+      // Only compare HTML since it's the source of truth and always complete
+      // Text field may be incomplete in old highlights (missing nested bullets)
+      const existingHtmls = new Set<string>()
       for (const h of existingHighlights || []) {
-        const textNormalized = normalizeText(h.text || '')
         const htmlNormalized = normalizeText(h.html_content || '')
-        // Add both to the set (if they're different)
-        if (textNormalized) existingTexts.add(textNormalized)
-        if (htmlNormalized && htmlNormalized !== textNormalized) existingTexts.add(htmlNormalized)
+        if (htmlNormalized) existingHtmls.add(htmlNormalized)
       }
 
       // Filter out duplicates
       const newHighlights = preview.filter((highlight) => {
-        const textNormalized = normalizeText(highlight.text)
         const htmlNormalized = normalizeText(highlight.html)
-        const textMatch = textNormalized && existingTexts.has(textNormalized)
-        const htmlMatch = htmlNormalized && existingTexts.has(htmlNormalized)
-        return !textMatch && !htmlMatch
+        return !(htmlNormalized && existingHtmls.has(htmlNormalized))
       })
 
       const skipped = preview.length - newHighlights.length
