@@ -48,9 +48,12 @@ export async function POST(request: NextRequest) {
 
     console.log('[migrate-text-fields] Found', highlights.length, 'highlights to update')
 
+    // Type the highlights array
+    const typedHighlights = highlights as Array<{ id: string; html_content: string }>
+
     let updated = 0
-    for (const highlight of highlights) {
-      const newText = htmlToPlainText(highlight.html_content!)
+    for (const highlight of typedHighlights) {
+      const newText = htmlToPlainText(highlight.html_content)
 
       const { error: updateError } = await supabase
         .from('highlights')
