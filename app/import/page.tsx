@@ -103,33 +103,15 @@ export default function ImportPage() {
         // Text field may be incomplete in old highlights (missing nested bullets)
         const notionHtmls = new Set<string>()
 
-        console.log('[IMPORT] Building Notion highlights set...')
         for (const h of data.highlights) {
           const html = normalizeForBlockCompare(h.html)
           if (html) notionHtmls.add(html)
         }
-        console.log('[IMPORT] Notion highlights normalized count:', notionHtmls.size)
-
-        // Log first few normalized Notion highlights for debugging
-        const notionArray = Array.from(notionHtmls).slice(0, 3)
-        console.log('[IMPORT] First 3 normalized Notion highlights:', notionArray.map(h => h.substring(0, 100)))
 
         const notInNotion = existingHighlights.filter((h) => {
           const html = normalizeForBlockCompare(h.html_content || '')
           return !(html && notionHtmls.has(html))
         })
-
-        // Log the highlights that were NOT found in Notion
-        if (notInNotion.length > 0) {
-          console.error('[IMPORT] ⚠️ Highlights NOT found in Notion:', notInNotion.length)
-          notInNotion.forEach((h, idx) => {
-            const normalized = normalizeForBlockCompare(h.html_content || '')
-            console.error(`[IMPORT] Missing #${idx + 1}:`)
-            console.error('  Raw HTML:', (h.html_content || '').substring(0, 200))
-            console.error('  Normalized:', normalized.substring(0, 200))
-            console.error('  Text preview:', (h.text || '').substring(0, 100))
-          })
-        }
         setNotInNotionCount(notInNotion.length)
         setNotInNotionSnippets(
           notInNotion.slice(0, 5).map((h) => {
@@ -194,12 +176,10 @@ export default function ImportPage() {
       // Text field may be incomplete in old highlights (missing nested bullets)
       const existingHtmls = new Set<string>()
 
-      console.log('[IMPORT] Building existing DB highlights set...')
       for (const h of existingHighlights || []) {
         const htmlNormalized = normalizeForBlockCompare(h.html_content || '')
         if (htmlNormalized) existingHtmls.add(htmlNormalized)
       }
-      console.log('[IMPORT] Existing DB highlights normalized count:', existingHtmls.size)
 
       // Filter out duplicates
       const newHighlights = preview.filter((highlight) => {
@@ -209,7 +189,6 @@ export default function ImportPage() {
       })
 
       const skipped = preview.length - newHighlights.length
-      console.log('[IMPORT] Duplicate check: Total=', preview.length, 'New=', newHighlights.length, 'Skipped=', skipped)
 
       if (newHighlights.length === 0) {
         alert(`All ${preview.length} highlights already exist in the database. No new highlights imported.`)

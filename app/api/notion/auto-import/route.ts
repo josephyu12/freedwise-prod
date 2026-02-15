@@ -194,20 +194,16 @@ function htmlToPlainText(html: string): string {
 
 export async function GET(request: NextRequest) {
   try {
-    console.error('[notion/auto-import] ========== AUTO IMPORT STARTED ==========')
     const supabase = await createClient()
 
     // Get authenticated user
     const { data: { user }, error: userError } = await supabase.auth.getUser()
     if (userError || !user) {
-      console.error('[notion/auto-import] Auth failed:', userError)
       return NextResponse.json(
         { error: 'Unauthorized - must be authenticated' },
         { status: 401 }
       )
     }
-
-    console.error('[notion/auto-import] Authenticated user:', user.id)
     
     // Get Notion credentials from environment variables
     const notionApiKey = process.env.NOTION_API_KEY
@@ -327,22 +323,12 @@ export async function GET(request: NextRequest) {
       fetchCursor += pageSize
     }
 
-    console.error('[notion/auto-import] Running: notionHighlights=', highlights.length, 'dbHighlights=', existingHighlights.length)
-
     const newHighlights: typeof highlights = []
     const updatedHighlights: Array<{ id: string; text: string; html: string }> = []
     let skipped = 0
 
-    console.error('[notion/auto-import] Starting matching process for', highlights.length, 'Notion highlights against', existingHighlights.length, 'DB highlights')
-
     for (const highlight of highlights) {
       const htmlNormalized = normalizeForBlockCompare(highlight.html)
-
-      console.warn('[notion/auto-import] Processing highlight:', {
-        textPreview: highlight.text.substring(0, 100),
-        htmlLen: highlight.html.length,
-        normalizedPreview: htmlNormalized.substring(0, 100),
-      })
 
       // Try to find an exact match
       let matched = false
@@ -353,10 +339,6 @@ export async function GET(request: NextRequest) {
         // Check for exact match on normalized HTML
         // Since text is now derived from HTML, we only need to compare HTML
         if (existingHtml === htmlNormalized) {
-          console.warn('[notion/auto-import] Found exact match:', {
-            highlightId: existing.id,
-          })
-
           // Check if raw content has changed (e.g., formatting changes)
           const currentText = highlight.text.trim()
           const currentHtml = highlight.html.trim()
@@ -367,14 +349,12 @@ export async function GET(request: NextRequest) {
           const htmlDiffers = currentHtml !== dbHtml
 
           if (textDiffers || htmlDiffers) {
-            console.warn('[notion/auto-import] exact match → UPDATE (formatting changed) highlightId=', existing.id)
             updatedHighlights.push({
               id: existing.id,
               text: currentText,
               html: currentHtml,
             })
           } else {
-            console.warn('[notion/auto-import] exact match → SKIP (identical) highlightId=', existing.id)
             skipped++
           }
           matched = true
@@ -384,11 +364,6 @@ export async function GET(request: NextRequest) {
 
       // If no match found, it's a new highlight
       if (!matched) {
-        console.warn('[notion/auto-import] no match → NEW highlight', {
-          htmlLen: highlight.html.length,
-          textPreview: highlight.text.substring(0, 150),
-          normalizedPreview: htmlNormalized.substring(0, 150),
-        })
         newHighlights.push(highlight)
       }
     }
@@ -699,13 +674,6 @@ export async function GET(request: NextRequest) {
         // Don't fail the import if redistribution fails
       }
     }
-
-    console.error('[notion/auto-import] ========== AUTO IMPORT COMPLETED ==========', {
-      total: highlights.length,
-      imported: importedCount,
-      updated: updatedCount,
-      skipped: skipped,
-    })
 
     return NextResponse.json({
       message: 'Sync completed successfully',
