@@ -116,7 +116,6 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
       if (foundMatch && matchingBlocks.length > 0) {
         debugPayload.sampleNotionBlockGroups = [normalizeForBlockCompare(matchingBlocks.map(getBlockText).join(BLOCK_BOUNDARY))]
       }
-      console.warn('[notion/sync] update: Highlight found. Full debug:', JSON.stringify(debugPayload, null, 2))
 
       // Re-fetch highlight from DB right before pushing so we have the latest saved content (e.g. new nested bullet)
       if (queueItem.highlight_id) {
@@ -128,11 +127,23 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
         if (latestHighlight?.text != null || latestHighlight?.html_content != null) {
           newContentText = latestHighlight.text ?? newContentText
           newContentHtml = latestHighlight.html_content ?? newContentHtml
-          const latestBlocks = htmlToNotionBlocks(newContentHtml || newContentText || '')
-          flatNewBlocks.length = 0
-          flatNewBlocks.push(...flattenBlocksForSync(latestBlocks))
+          // Only rebuild flatNewBlocks from HTML — using plain text would collapse lists into one paragraph and lose nested bullets
+          const hasHtml = newContentHtml && newContentHtml.trim()
+          if (hasHtml) {
+            const latestBlocks = htmlToNotionBlocks(newContentHtml!)
+            flatNewBlocks.length = 0
+            flatNewBlocks.push(...flattenBlocksForSync(latestBlocks))
+          }
         }
       }
+
+      const minLen = Math.min(matchingBlocks.length, flatNewBlocks.length)
+      const willAppend = exactMatch && flatNewBlocks.length > minLen
+      ;(debugPayload as any).flatNewBlocksLength = flatNewBlocks.length
+      ;(debugPayload as any).matchingBlocksLength = matchingBlocks.length
+      ;(debugPayload as any).willAppend = willAppend
+      ;(debugPayload as any).usedHtml = !!(newContentHtml && newContentHtml.trim())
+      console.warn('[notion/sync] update: Highlight found. Full debug:', JSON.stringify(debugPayload, null, 2))
 
       // Update the matching blocks with new content
       // For list items, update all matching items in place to preserve grouping
@@ -186,10 +197,11 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
           }
         }
         
-        // Delete extra old blocks so Notion matches new content. Never delete list items when new has fewer blocks — new content may be incomplete (nested bullets missing from payload/DB).
+        // Delete extra old blocks so Notion matches new content. Only skip deleting list items when new content ends with a list item (incomplete payload); otherwise delete so user can remove bullets.
+        const newEndsWithList = flatNewBlocks.length > 0 && (flatNewBlocks[flatNewBlocks.length - 1].type === 'bulleted_list_item' || flatNewBlocks[flatNewBlocks.length - 1].type === 'numbered_list_item')
         for (let i = minLength; i < matchingBlocks.length; i++) {
           const block = matchingBlocks[i]
-          if (block.type === 'bulleted_list_item' || block.type === 'numbered_list_item') continue
+          if ((block.type === 'bulleted_list_item' || block.type === 'numbered_list_item') && newEndsWithList) continue
           try {
             await notion.blocks.delete({ block_id: block.id })
           } catch (error: any) {
@@ -252,10 +264,11 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
           }
         }
         
-        // Delete extra old blocks. Never delete list items when new has fewer blocks — new content may be incomplete (nested bullets missing).
+        // Delete extra old blocks. Only skip deleting list items when new content ends with a list item (incomplete payload); otherwise delete so user can remove bullets.
+        const newEndsWithListElse = flatNewBlocks.length > 0 && (flatNewBlocks[flatNewBlocks.length - 1].type === 'bulleted_list_item' || flatNewBlocks[flatNewBlocks.length - 1].type === 'numbered_list_item')
         for (let i = minLength; i < matchingBlocks.length; i++) {
           const block = matchingBlocks[i]
-          if (block.type === 'bulleted_list_item' || block.type === 'numbered_list_item') continue
+          if ((block.type === 'bulleted_list_item' || block.type === 'numbered_list_item') && newEndsWithListElse) continue
           try {
             await notion.blocks.delete({ block_id: block.id })
           } catch (error: any) {

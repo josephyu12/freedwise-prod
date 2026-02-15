@@ -327,6 +327,25 @@ export async function GET(request: NextRequest) {
       // Trim, lowercase, and normalize whitespace
       return plainText.trim().toLowerCase().replace(/\s+/g, ' ')
     }
+
+    // Debug: find first index where two strings differ (for logging)
+    const findFirstDiff = (a: string, b: string): number => {
+      const len = Math.min(a.length, b.length)
+      for (let i = 0; i < len; i++) if (a[i] !== b[i]) return i
+      return a.length !== b.length ? len : -1
+    }
+
+    // Debug: safe snippet around index (for logging)
+    const snippet = (s: string, index: number, radius = 40): string => {
+      if (index < 0) return '(no diff)'
+      const start = Math.max(0, index - radius)
+      const end = Math.min(s.length, index + radius)
+      const pre = s.slice(start, index)
+      const post = s.slice(index, end)
+      const charAt = index < s.length ? s[index] : '(end)'
+      const code = index < s.length ? s.charCodeAt(index) : 0
+      return `...[${pre}]|${charAt}(U+${code.toString(16).toUpperCase()})|[${post}]...`
+    }
     
     // Helper function to calculate similarity (simple Levenshtein-like approach)
     const calculateSimilarity = (str1: string, str2: string): number => {
@@ -374,8 +393,35 @@ export async function GET(request: NextRequest) {
           const dbText = existing.text?.trim() || ''
           const dbHtml = existing.html_content?.trim() || ''
           
-          if (currentText !== dbText || currentHtml !== dbHtml) {
-            // Content has changed, update it
+          const textDiffers = currentText !== dbText
+          const htmlDiffers = currentHtml !== dbHtml
+
+          if (textDiffers || htmlDiffers) {
+            // Content has changed — log why so we can investigate false positives
+            const textDiffIdx = findFirstDiff(currentText, dbText)
+            const htmlDiffIdx = findFirstDiff(currentHtml, dbHtml)
+            console.warn('[notion/auto-import] Treating as different despite normalized match:', {
+              highlightId: existing.id,
+              normalizedMatch: {
+                textMatch: existingText === textNormalized,
+                htmlMatch: existingHtml === htmlNormalized,
+                textVsHtml: existingText === htmlNormalized || existingHtml === textNormalized,
+              },
+              rawComparison: {
+                textDiffers,
+                htmlDiffers,
+                notionTextLen: currentText.length,
+                dbTextLen: dbText.length,
+                notionHtmlLen: currentHtml.length,
+                dbHtmlLen: dbHtml.length,
+              },
+              firstTextDiffAt: textDiffIdx,
+              textSnippetNotion: textDiffIdx >= 0 ? snippet(currentText, textDiffIdx) : undefined,
+              textSnippetDb: textDiffIdx >= 0 ? snippet(dbText, textDiffIdx) : undefined,
+              firstHtmlDiffAt: htmlDiffIdx,
+              htmlSnippetNotion: htmlDiffIdx >= 0 ? snippet(currentHtml, htmlDiffIdx) : undefined,
+              htmlSnippetDb: htmlDiffIdx >= 0 ? snippet(dbHtml, htmlDiffIdx) : undefined,
+            })
             updatedHighlights.push({
               id: existing.id,
               text: currentText,
