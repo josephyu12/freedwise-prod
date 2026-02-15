@@ -55,8 +55,8 @@ export async function POST(request: NextRequest) {
     for (const highlight of typedHighlights) {
       const newText = htmlToPlainText(highlight.html_content)
 
-      const { error: updateError } = await supabase
-        .from('highlights')
+      const { error: updateError } = await (supabase
+        .from('highlights') as any)
         .update({ text: newText })
         .eq('id', highlight.id)
         .eq('user_id', user.id)
