@@ -319,6 +319,8 @@ export async function GET(request: NextRequest) {
       fetchCursor += pageSize
     }
 
+    console.warn('[notion/auto-import] Running: notionHighlights=', highlights.length, 'dbHighlights=', existingHighlights.length)
+
     // Helper function to normalize text for comparison (strip HTML tags, trim, lowercase, normalize whitespace)
     const normalize = (text: string) => {
       if (!text) return ''
@@ -400,8 +402,7 @@ export async function GET(request: NextRequest) {
             // Content has changed — log why so we can investigate false positives
             const textDiffIdx = findFirstDiff(currentText, dbText)
             const htmlDiffIdx = findFirstDiff(currentHtml, dbHtml)
-            console.warn('[notion/auto-import] Treating as different despite normalized match:', {
-              highlightId: existing.id,
+            console.warn('[notion/auto-import] exact match → UPDATE (raw differs) highlightId=', existing.id, {
               normalizedMatch: {
                 textMatch: existingText === textNormalized,
                 htmlMatch: existingHtml === htmlNormalized,
@@ -428,6 +429,7 @@ export async function GET(request: NextRequest) {
               html: currentHtml,
             })
           } else {
+            console.warn('[notion/auto-import] exact match → SKIP (identical raw) highlightId=', existing.id)
             skipped++
           }
           matched = true
@@ -452,6 +454,7 @@ export async function GET(request: NextRequest) {
       
       // If we found a fuzzy match, update it
       if (!matched && bestMatch) {
+        console.warn('[notion/auto-import] fuzzy match → UPDATE highlightId=', bestMatch.id, 'similarity=', bestMatch.similarity)
         updatedHighlights.push({
           id: bestMatch.id,
           text: highlight.text.trim(),
@@ -462,6 +465,7 @@ export async function GET(request: NextRequest) {
       
       // If no match found, it's a new highlight
       if (!matched) {
+        console.warn('[notion/auto-import] no match → NEW highlight (textLen=', highlight.text.length, ')')
         newHighlights.push(highlight)
       }
     }
