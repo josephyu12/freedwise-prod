@@ -4,8 +4,10 @@ import { updateSession } from '@/lib/supabase/middleware'
 export async function middleware(request: NextRequest) {
   // Allow cron job endpoints to bypass authentication
   const pathname = request.nextUrl.pathname
-  if (pathname.startsWith('/api/daily/prepare-next-month') || 
-      pathname.startsWith('/api/notion/auto-import')) {
+  if (pathname.startsWith('/api/daily/prepare-next-month') ||
+      pathname.startsWith('/api/notion/auto-import') ||
+      pathname.startsWith('/api/review/widget') ||
+      pathname.startsWith('/api/widget-token')) {
     // Always allow cron endpoints through - they handle their own authentication
     // The route handlers will check for x-vercel-cron header or CRON_SECRET
     return NextResponse.next()

@@ -41,12 +41,12 @@ const COLORS = {
 // ─── API call ───────────────────────────────────────────────
 
 async function fetchWidgetData() {
-  if (!WIDGET_TOKEN) return null
+  if (!WIDGET_TOKEN) return { _debug: 'No token set' }
+
+  const url = `${APP_URL}/api/review/widget?token=${encodeURIComponent(WIDGET_TOKEN)}`
 
   try {
-    const req = new Request(
-      `${APP_URL}/api/review/widget?token=${encodeURIComponent(WIDGET_TOKEN)}`
-    )
+    const req = new Request(url)
     req.headers = { 'Accept': 'application/json' }
     const res = await req.loadJSON()
 
@@ -56,7 +56,7 @@ async function fetchWidgetData() {
 
     return res
   } catch (e) {
-    return null
+    return { _debug: `Fetch error: ${e.message || e}` }
   }
 }
 
@@ -102,8 +102,17 @@ async function createWidget() {
 
   const data = await fetchWidgetData()
 
+  // Debug: show raw response info
+  if (data && data._debug) {
+    const msg = widget.addText(`Debug: ${data._debug}`)
+    msg.font = Font.mediumSystemFont(11)
+    msg.textColor = isDark ? COLORS.textDark : COLORS.text
+    widget.url = `${APP_URL}/review`
+    return widget
+  }
+
   if (!data) {
-    const msg = widget.addText('Could not load highlights')
+    const msg = widget.addText('Could not load highlights (null response)')
     msg.font = Font.mediumSystemFont(14)
     msg.textColor = isDark ? COLORS.textDark : COLORS.text
     widget.url = `${APP_URL}/review`
