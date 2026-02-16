@@ -1187,59 +1187,63 @@ export default function HighlightsPage() {
                     </div>
                   )}
                   <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center mt-4 gap-3">
-                    <div className="text-xs text-gray-400 dark:text-gray-500">
-                      <div>
-                        {(highlight as any).assigned_date && (
-                          <span className="text-gray-500 dark:text-gray-400">
-                            Review on {(() => {
-                              // assigned_date is "YYYY-MM-DD" from DB; parse as local date to avoid UTC-off-by-one
-                              const raw = (highlight as any).assigned_date
-                              const [y, m, d] = String(raw).split('T')[0].split('-').map(Number)
-                              const month = m
-                              const day = d
-                              return `${month}/${day}`
-                            })()}
-                            {' • '}
-                          </span>
-                        )}
-                        Resurfaced {highlight.resurface_count} time{highlight.resurface_count !== 1 ? 's' : ''}
-                        {highlight.last_resurfaced && (
-                          <span> • Last: {new Date(highlight.last_resurfaced).toLocaleDateString()}</span>
-                        )}
-                        {highlight.average_rating !== undefined && highlight.average_rating > 0 && (
-                          <span> • Avg Rating: {highlight.average_rating.toFixed(1)}/3</span>
+                    <div className="flex items-start gap-2">
+                      {editingId !== highlight.id && (
+                        <button
+                          onClick={() => handlePin(highlight.id)}
+                          className={`p-1 rounded transition flex-shrink-0 ${
+                            pinnedHighlightIds.has(highlight.id)
+                              ? 'text-yellow-600 dark:text-yellow-400 hover:text-yellow-700 dark:hover:text-yellow-300'
+                              : 'text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300'
+                          }`}
+                          title={pinnedHighlightIds.has(highlight.id) ? 'Unpin' : 'Pin'}
+                        >
+                          {pinnedHighlightIds.has(highlight.id) ? (
+                            <PinOff className="w-4 h-4" />
+                          ) : (
+                            <Pin className="w-4 h-4" />
+                          )}
+                        </button>
+                      )}
+                      <div className="text-xs text-gray-400 dark:text-gray-500">
+                        <div>
+                          {(highlight as any).assigned_date && (
+                            <span className="text-gray-500 dark:text-gray-400">
+                              Review on {(() => {
+                                // assigned_date is "YYYY-MM-DD" from DB; parse as local date to avoid UTC-off-by-one
+                                const raw = (highlight as any).assigned_date
+                                const [y, m, d] = String(raw).split('T')[0].split('-').map(Number)
+                                const month = m
+                                const day = d
+                                return `${month}/${day}`
+                              })()}
+                              {' • '}
+                            </span>
+                          )}
+                          Resurfaced {highlight.resurface_count} time{highlight.resurface_count !== 1 ? 's' : ''}
+                          {highlight.last_resurfaced && (
+                            <span> • Last: {new Date(highlight.last_resurfaced).toLocaleDateString()}</span>
+                          )}
+                          {highlight.average_rating !== undefined && highlight.average_rating > 0 && (
+                            <span> • Avg Rating: {highlight.average_rating.toFixed(1)}/3</span>
+                          )}
+                        </div>
+                        {highlight.months_reviewed && highlight.months_reviewed.length > 0 && (
+                          <div className="mt-1">
+                            Months reviewed: {highlight.months_reviewed
+                              .map((mr: any) => {
+                                const [year, month] = mr.month_year.split('-')
+                                const monthNames = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']
+                                return `${monthNames[parseInt(month) - 1]} ${year}`
+                              })
+                              .join(', ')}
+                          </div>
                         )}
                       </div>
-                      {highlight.months_reviewed && highlight.months_reviewed.length > 0 && (
-                        <div className="mt-1">
-                          Months reviewed: {highlight.months_reviewed
-                            .map((mr: any) => {
-                              const [year, month] = mr.month_year.split('-')
-                              const monthNames = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']
-                              return `${monthNames[parseInt(month) - 1]} ${year}`
-                            })
-                            .join(', ')}
-                        </div>
-                      )}
                     </div>
-                    <div className="flex flex-col sm:flex-row gap-2">
+                    <div className="flex flex-row flex-wrap gap-2">
                       {editingId !== highlight.id && (
                         <>
-                          <button
-                            onClick={() => handlePin(highlight.id)}
-                            className={`px-3 py-1 text-sm rounded transition ${
-                              pinnedHighlightIds.has(highlight.id)
-                                ? 'bg-yellow-100 dark:bg-yellow-900 text-yellow-700 dark:text-yellow-300 hover:bg-yellow-200 dark:hover:bg-yellow-800'
-                                : 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'
-                            }`}
-                            title={pinnedHighlightIds.has(highlight.id) ? 'Unpin' : 'Pin'}
-                          >
-                            {pinnedHighlightIds.has(highlight.id) ? (
-                              <PinOff className="w-4 h-4" />
-                            ) : (
-                              <Pin className="w-4 h-4" />
-                            )}
-                          </button>
                           <button
                             onClick={() => handleStartEdit(highlight)}
                             className="px-3 py-1 text-sm bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300 rounded hover:bg-blue-200 dark:hover:bg-blue-800 transition"

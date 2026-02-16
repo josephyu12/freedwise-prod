@@ -771,16 +771,16 @@ export default function SearchPage() {
                             {highlight.source && <span>{highlight.source}</span>}
                           </p>
                         )}
-                        <div className="flex flex-col sm:flex-row gap-2 mt-3" onClick={(e) => e.stopPropagation()}>
+                        <div className="flex items-center gap-2 mt-3" onClick={(e) => e.stopPropagation()}>
                           <button
                             onClick={(e) => {
                               e.stopPropagation()
                               handlePin(highlight.id)
                             }}
-                            className={`px-3 py-1 text-sm rounded transition ${
+                            className={`p-1 rounded transition flex-shrink-0 ${
                               pinnedHighlightIds.has(highlight.id)
-                                ? 'bg-yellow-100 dark:bg-yellow-900 text-yellow-700 dark:text-yellow-300 hover:bg-yellow-200 dark:hover:bg-yellow-800'
-                                : 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'
+                                ? 'text-yellow-600 dark:text-yellow-400 hover:text-yellow-700 dark:hover:text-yellow-300'
+                                : 'text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300'
                             }`}
                             title={pinnedHighlightIds.has(highlight.id) ? 'Unpin' : 'Pin'}
                           >
