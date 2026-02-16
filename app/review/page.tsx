@@ -456,8 +456,8 @@ function ReviewPageContent() {
               )}
 
               <div
-                className="highlight-content text-lg leading-relaxed prose dark:prose-invert max-w-none mb-4 overflow-hidden"
-                style={{ maxHeight: '12em', WebkitMaskImage: (current.highlight.text?.length || 0) > 300 ? 'linear-gradient(to bottom, black 70%, transparent 100%)' : undefined }}
+                className="highlight-content text-lg leading-relaxed prose dark:prose-invert max-w-none mb-4 overflow-y-auto"
+                style={{ maxHeight: '24em' }}
                 dangerouslySetInnerHTML={{
                   __html: current.highlight.html_content || current.highlight.text,
                 }}

@@ -92,27 +92,31 @@ function stripHtml(html) {
   if (!html) return ''
 
   let text = html
-
-  // Track nesting level for bullets
   let nestLevel = 0
 
-  // Replace nested lists with indented bullets
-  // This is a simplified approach - handles up to 2 levels
-  text = text.replace(/<ul[^>]*>|<ol[^>]*>/gi, () => {
-    nestLevel++
+  // Process HTML in a single pass, tracking nesting as we go
+  text = text.replace(/<(\/?)(?:ul|ol|li)[^>]*>/gi, (match, isClosing) => {
+    const tag = match.toLowerCase().match(/<\/?(\w+)/)[1]
+
+    if (tag === 'ul' || tag === 'ol') {
+      if (isClosing === '/') {
+        nestLevel = Math.max(0, nestLevel - 1)
+        return '\n'
+      } else {
+        nestLevel++
+        return ''
+      }
+    } else if (tag === 'li') {
+      if (isClosing === '/') {
+        return ''
+      } else {
+        // Add bullet based on current nesting level
+        if (nestLevel > 1) return '\n  ◦ ' // Nested bullet with indent
+        return '\n• ' // Top-level bullet
+      }
+    }
     return ''
   })
-  text = text.replace(/<\/ul>|<\/ol>/gi, () => {
-    nestLevel = Math.max(0, nestLevel - 1)
-    return '\n'
-  })
-
-  // Convert list items to bullets based on nesting
-  text = text.replace(/<li[^>]*>/gi, () => {
-    if (nestLevel > 1) return '\n  ◦ ' // Nested bullet with indent
-    return '\n• ' // Top-level bullet
-  })
-  text = text.replace(/<\/li>/gi, '')
 
   // Handle other block elements
   text = text
