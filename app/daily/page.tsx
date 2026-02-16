@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { createClient } from '@/lib/supabase/client'
-import { DailySummary, DailySummaryHighlight } from '@/types/database'
+import { DailySummary, DailySummaryHighlight, Category } from '@/types/database'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { format, startOfMonth, endOfMonth, eachDayOfInterval, getDay, isSameMonth, isSameDay, addMonths, subMonths } from 'date-fns'
@@ -166,6 +166,10 @@ export default function DailyPage() {
   const [editHtmlContent, setEditHtmlContent] = useState('')
   const [editSource, setEditSource] = useState('')
   const [editAuthor, setEditAuthor] = useState('')
+  const [categories, setCategories] = useState<Category[]>([])
+  const [editCategories, setEditCategories] = useState<string[]>([])
+  const [newCategoryName, setNewCategoryName] = useState('')
+  const [showCategoryInput, setShowCategoryInput] = useState(false)
   const [skipNotionSync, setSkipNotionSync] = useState(false)
   const [monthReviewStatus, setMonthReviewStatus] = useState<Map<string, 'completed' | 'partial' | 'none'>>(new Map())
   const [pinnedHighlightIds, setPinnedHighlightIds] = useState<Set<string>>(new Set())
@@ -427,7 +431,7 @@ export default function DailyPage() {
         const summariesData = summaries as Array<{ id: string; date: string }>
         const summaryIds = summariesData.map((s) => s.id)
         const PAGE = 1000
-        let highlights: Array<{ daily_summary_id: string; rating: number | null }> = []
+        let highlights: Array<{ daily_summary_id: string; rating: string | null }> = []
         let from = 0
         while (true) {
           const { data: page, error: highlightsError } = await supabase
@@ -436,7 +440,7 @@ export default function DailyPage() {
             .in('daily_summary_id', summaryIds)
             .range(from, from + PAGE - 1)
           if (highlightsError) throw highlightsError
-          const list = (page || []) as Array<{ daily_summary_id: string; rating: number | null }>
+          const list = (page || []) as Array<{ daily_summary_id: string; rating: string | null }>
           highlights = highlights.concat(list)
           if (list.length < PAGE) break
           from += PAGE
@@ -501,11 +505,51 @@ export default function DailyPage() {
     }
   }, [supabase])
 
+  // Load categories on mount
+  useEffect(() => {
+    const loadCategories = async () => {
+      try {
+        const { data: categoriesData, error } = await supabase
+          .from('categories')
+          .select('*')
+          .order('name')
+
+        if (error) throw error
+        setCategories((categoriesData || []) as any[])
+      } catch (error) {
+        console.error('Error loading categories:', error)
+      }
+    }
+    loadCategories()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   useEffect(() => {
     loadDailySummary(date)
     setHasShownCompletionDialog(false)
     setShowCompletionDialog(false)
   }, [date, loadDailySummary])
+
+  // Auto-scroll to the first unreviewed highlight when returning to a partial review
+  useEffect(() => {
+    if (loading || !summary || summary.highlights.length === 0) return
+
+    const firstUnreviewed = summary.highlights.find((sh) => sh.rating === null)
+    if (!firstUnreviewed?.highlight?.id) return
+
+    // Only scroll if there are some reviewed highlights (i.e. partially done)
+    const hasReviewed = summary.highlights.some((sh) => sh.rating !== null)
+    if (!hasReviewed) return
+
+    // Short delay to let DOM render the highlight cards
+    const timer = setTimeout(() => {
+      const el = document.getElementById(`highlight-${firstUnreviewed.highlight!.id}`)
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      }
+    }, 300)
+    return () => clearTimeout(timer)
+  }, [loading, summary])
 
   // Check if all highlights are rated
   const allHighlightsRated = useMemo(() => {
@@ -578,7 +622,7 @@ export default function DailyPage() {
   const handleRatingChange = async (
     summaryHighlightId: string,
     highlightId: string,
-    rating: 1 | 2 | 3 | 4 | 5 | null
+    rating: 'low' | 'med' | 'high' | null
   ) => {
     try {
       // Optimistically update the UI first
@@ -622,19 +666,20 @@ export default function DailyPage() {
 
       if (ratingsError) throw ratingsError
 
-      const allRatings = (allRatingsData || []) as Array<{ rating: number }>
+      const allRatings = (allRatingsData || []) as Array<{ rating: string }>
 
-      // Calculate average (ratings are now 1-5)
-      const ratingValues: number[] = allRatings.map((r) => r.rating)
+      // Map text ratings to numeric values for average calculation (low=1, med=2, high=3)
+      const ratingMap: Record<string, number> = { low: 1, med: 2, high: 3 }
+      const ratingValues: number[] = allRatings.map((r) => ratingMap[r.rating] || 0).filter((v) => v > 0)
 
       const average = ratingValues.length > 0
         ? ratingValues.reduce((a, b) => a + b, 0) / ratingValues.length
         : 0
 
-      // Count how many times this highlight has been marked as 1 (low)
-      const lowRatingsCount = (allRatings || []).filter((r) => r.rating === 1).length
+      // Count how many times this highlight has been marked as 'low'
+      const lowRatingsCount = allRatings.filter((r) => r.rating === 'low').length
 
-      // If marked as 1 (low) twice or more, archive it
+      // If marked as 'low' twice or more, archive it
       const shouldArchive = lowRatingsCount >= 2
 
       // Update highlight with new average rating and archived status
@@ -690,6 +735,7 @@ export default function DailyPage() {
     setEditHtmlContent(highlight.html_content || highlight.text)
     setEditSource(highlight.source || '')
     setEditAuthor(highlight.author || '')
+    setEditCategories(highlight.categories?.map((c: any) => c.id) || [])
   }
 
   const handleCancelEdit = () => {
@@ -698,6 +744,34 @@ export default function DailyPage() {
     setEditHtmlContent('')
     setEditSource('')
     setEditAuthor('')
+    setEditCategories([])
+    setShowCategoryInput(false)
+    setNewCategoryName('')
+  }
+
+  const handleCreateCategory = async () => {
+    if (!newCategoryName.trim()) return
+    try {
+      const { data: { user }, error: userError } = await supabase.auth.getUser()
+      if (userError || !user) {
+        alert('You must be logged in to create categories')
+        return
+      }
+      const { data: categoryData, error } = await (supabase
+        .from('categories') as any)
+        .insert([{ name: newCategoryName.trim(), user_id: user.id }])
+        .select()
+        .single()
+      if (error) throw error
+      const data = categoryData as { id: string; name: string; color?: string; created_at: string }
+      setCategories([...categories, data])
+      setEditCategories([...editCategories, data.id])
+      setNewCategoryName('')
+      setShowCategoryInput(false)
+    } catch (error) {
+      console.error('Error creating category:', error)
+      alert('Failed to create category. It may already exist.')
+    }
   }
 
   const handleSaveEdit = async (highlightId: string) => {
@@ -764,6 +838,22 @@ export default function DailyPage() {
         .eq('id', highlightId)
 
       if (updateError) throw updateError
+
+      // Update categories
+      // First, remove existing categories
+      await (supabase
+        .from('highlight_categories') as any)
+        .delete()
+        .eq('highlight_id', highlightId)
+
+      // Then add new ones
+      if (editCategories.length > 0) {
+        const categoryLinks = editCategories.map((catId) => ({
+          highlight_id: highlightId,
+          category_id: catId,
+        }))
+        await (supabase.from('highlight_categories') as any).insert(categoryLinks)
+      }
 
       // Add to Notion sync queue (if configured and not skipped)
       if (!skipNotionSync) {
@@ -1065,6 +1155,76 @@ export default function DailyPage() {
                                 />
                               </div>
                             </div>
+                            <div>
+                              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                                Categories
+                              </label>
+                              <div className="flex flex-wrap gap-2">
+                                {categories.map((cat) => (
+                                  <button
+                                    key={cat.id}
+                                    type="button"
+                                    onClick={() => {
+                                      if (editCategories.includes(cat.id)) {
+                                        setEditCategories(editCategories.filter((id) => id !== cat.id))
+                                      } else {
+                                        setEditCategories([...editCategories, cat.id])
+                                      }
+                                    }}
+                                    className={`px-3 py-1 rounded-full text-sm transition ${
+                                      editCategories.includes(cat.id)
+                                        ? 'bg-blue-600 text-white'
+                                        : 'bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-600'
+                                    }`}
+                                  >
+                                    {cat.name}
+                                  </button>
+                                ))}
+                                {!showCategoryInput ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => setShowCategoryInput(true)}
+                                    className="px-3 py-1 rounded-full text-sm bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition border border-dashed border-gray-300 dark:border-gray-600"
+                                  >
+                                    + Category
+                                  </button>
+                                ) : (
+                                  <div className="flex gap-2 items-center">
+                                    <input
+                                      type="text"
+                                      value={newCategoryName}
+                                      onChange={(e) => setNewCategoryName(e.target.value)}
+                                      onKeyPress={(e) => {
+                                        if (e.key === 'Enter') {
+                                          e.preventDefault()
+                                          handleCreateCategory()
+                                        }
+                                      }}
+                                      className="px-3 py-1 border border-gray-300 dark:border-gray-600 rounded-full text-sm dark:bg-gray-700 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                      placeholder="New category"
+                                      autoFocus
+                                    />
+                                    <button
+                                      type="button"
+                                      onClick={handleCreateCategory}
+                                      className="px-3 py-1 bg-blue-600 text-white rounded-full text-sm hover:bg-blue-700 transition"
+                                    >
+                                      Add
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setShowCategoryInput(false)
+                                        setNewCategoryName('')
+                                      }}
+                                      className="px-3 py-1 bg-gray-200 dark:bg-gray-700 rounded-full text-sm hover:bg-gray-300 dark:hover:bg-gray-600 transition"
+                                    >
+                                      ✕
+                                    </button>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
                             <div className="flex items-center gap-4">
                               <label className="flex items-center gap-2 cursor-pointer">
                                 <input
@@ -1142,41 +1302,33 @@ export default function DailyPage() {
                         )}
                         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 pt-4 border-t border-gray-200 dark:border-gray-700">
                           <div className="flex flex-col sm:flex-row sm:items-center gap-2">
-                            <span className="text-xs sm:text-sm font-medium text-gray-700 dark:text-gray-300 whitespace-nowrap">Rate (1-5):</span>
+                            <span className="text-xs sm:text-sm font-medium text-gray-700 dark:text-gray-300 whitespace-nowrap">Rate:</span>
                             <div className="flex gap-1.5 sm:gap-2 items-center flex-wrap">
-                              {[1, 2, 3, 4, 5].map((ratingValue) => {
+                              {(['low', 'med', 'high'] as const).map((ratingValue) => {
                                 const isActive = summaryHighlight.rating === ratingValue
-                                const getColorClasses = (val: number) => {
-                                  if (val === 1) {
+                                const getColorClasses = (val: string) => {
+                                  if (val === 'low') {
                                     return isActive
                                       ? 'bg-red-500 text-white shadow-red-500/50'
                                       : 'bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300 hover:bg-red-200 dark:hover:bg-red-900/50 border-2 border-red-300 dark:border-red-700'
-                                  } else if (val === 2) {
-                                    return isActive
-                                      ? 'bg-orange-500 text-white shadow-orange-500/50'
-                                      : 'bg-orange-100 dark:bg-orange-900/30 text-orange-700 dark:text-orange-300 hover:bg-orange-200 dark:hover:bg-orange-900/50 border-2 border-orange-300 dark:border-orange-700'
-                                  } else if (val === 3) {
+                                  } else if (val === 'med') {
                                     return isActive
                                       ? 'bg-yellow-500 text-white shadow-yellow-500/50'
                                       : 'bg-yellow-100 dark:bg-yellow-900/30 text-yellow-700 dark:text-yellow-300 hover:bg-yellow-200 dark:hover:bg-yellow-900/50 border-2 border-yellow-300 dark:border-yellow-700'
-                                  } else if (val === 4) {
-                                    return isActive
-                                      ? 'bg-lime-500 text-white shadow-lime-500/50'
-                                      : 'bg-lime-100 dark:bg-lime-900/30 text-lime-700 dark:text-lime-300 hover:bg-lime-200 dark:hover:bg-lime-900/50 border-2 border-lime-300 dark:border-lime-700'
                                   } else {
                                     return isActive
                                       ? 'bg-green-500 text-white shadow-green-500/50'
                                       : 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300 hover:bg-green-200 dark:hover:bg-green-900/50 border-2 border-green-300 dark:border-green-700'
                                   }
                                 }
+                                const label = ratingValue === 'low' ? 'Low' : ratingValue === 'med' ? 'Med' : 'High'
                                 return (
                                   <button
                                     key={ratingValue}
-                                    onClick={() => handleRatingChange(summaryHighlight.id, highlight.id, ratingValue as 1 | 2 | 3 | 4 | 5)}
-                                    className={`px-2.5 sm:px-4 py-1.5 sm:py-2 text-sm sm:text-base font-semibold rounded-lg transition-all transform hover:scale-105 active:scale-95 shadow-md ${getColorClasses(ratingValue)}`}
-                                    title={ratingValue === 1 ? 'Low' : ratingValue === 3 ? 'Med' : ratingValue === 5 ? 'High' : ''}
+                                    onClick={() => handleRatingChange(summaryHighlight.id, highlight.id, ratingValue)}
+                                    className={`px-3 sm:px-5 py-1.5 sm:py-2 text-sm sm:text-base font-semibold rounded-lg transition-all transform hover:scale-105 active:scale-95 shadow-md ${getColorClasses(ratingValue)}`}
                                   >
-                                    {ratingValue}
+                                    {label}
                                   </button>
                                 )
                               })}
@@ -1193,7 +1345,7 @@ export default function DailyPage() {
                           <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:ml-auto">
                             {highlight.average_rating !== undefined && highlight.average_rating > 0 && (
                               <div className="text-xs text-gray-400 dark:text-gray-500 whitespace-nowrap">
-                                Avg: {highlight.average_rating.toFixed(1)}/5 ({highlight.rating_count} ratings)
+                                Avg: {highlight.average_rating.toFixed(1)}/3 ({highlight.rating_count} ratings)
                               </div>
                             )}
                             {editingId !== highlight.id && (

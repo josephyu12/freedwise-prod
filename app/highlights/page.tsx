@@ -1207,7 +1207,7 @@ export default function HighlightsPage() {
                           <span> • Last: {new Date(highlight.last_resurfaced).toLocaleDateString()}</span>
                         )}
                         {highlight.average_rating !== undefined && highlight.average_rating > 0 && (
-                          <span> • Avg Rating: {highlight.average_rating.toFixed(1)}/5</span>
+                          <span> • Avg Rating: {highlight.average_rating.toFixed(1)}/3</span>
                         )}
                       </div>
                       {highlight.months_reviewed && highlight.months_reviewed.length > 0 && (

@@ -25,6 +25,8 @@ export default function SearchPage() {
   const [editAuthor, setEditAuthor] = useState('')
   const [categories, setCategories] = useState<Category[]>([])
   const [editCategories, setEditCategories] = useState<string[]>([])
+  const [newCategoryName, setNewCategoryName] = useState('')
+  const [showCategoryInput, setShowCategoryInput] = useState(false)
   const [skipNotionSync, setSkipNotionSync] = useState(false)
   const [updatingNotion, setUpdatingNotion] = useState(false)
   const [pinnedHighlightIds, setPinnedHighlightIds] = useState<Set<string>>(new Set())
@@ -213,6 +215,33 @@ export default function SearchPage() {
     setEditAuthor('')
     setEditCategories([])
     setSkipNotionSync(false)
+    setShowCategoryInput(false)
+    setNewCategoryName('')
+  }
+
+  const handleCreateCategory = async () => {
+    if (!newCategoryName.trim()) return
+    try {
+      const { data: { user }, error: userError } = await supabase.auth.getUser()
+      if (userError || !user) {
+        alert('You must be logged in to create categories')
+        return
+      }
+      const { data: categoryData, error } = await (supabase
+        .from('categories') as any)
+        .insert([{ name: newCategoryName.trim(), user_id: user.id }])
+        .select()
+        .single()
+      if (error) throw error
+      const data = categoryData as { id: string; name: string; color?: string; created_at: string }
+      setCategories([...categories, data])
+      setEditCategories([...editCategories, data.id])
+      setNewCategoryName('')
+      setShowCategoryInput(false)
+    } catch (error) {
+      console.error('Error creating category:', error)
+      alert('Failed to create category. It may already exist.')
+    }
   }
 
   const handleSaveEdit = async () => {
@@ -622,6 +651,49 @@ export default function SearchPage() {
                                 {cat.name}
                               </button>
                             ))}
+                            {!showCategoryInput ? (
+                              <button
+                                type="button"
+                                onClick={() => setShowCategoryInput(true)}
+                                className="px-3 py-1 rounded-full text-sm bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition border border-dashed border-gray-300 dark:border-gray-600"
+                              >
+                                + Category
+                              </button>
+                            ) : (
+                              <div className="flex gap-2 items-center">
+                                <input
+                                  type="text"
+                                  value={newCategoryName}
+                                  onChange={(e) => setNewCategoryName(e.target.value)}
+                                  onKeyPress={(e) => {
+                                    if (e.key === 'Enter') {
+                                      e.preventDefault()
+                                      handleCreateCategory()
+                                    }
+                                  }}
+                                  className="px-3 py-1 border border-gray-300 dark:border-gray-600 rounded-full text-sm dark:bg-gray-700 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                  placeholder="New category"
+                                  autoFocus
+                                />
+                                <button
+                                  type="button"
+                                  onClick={handleCreateCategory}
+                                  className="px-3 py-1 bg-blue-600 text-white rounded-full text-sm hover:bg-blue-700 transition"
+                                >
+                                  Add
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setShowCategoryInput(false)
+                                    setNewCategoryName('')
+                                  }}
+                                  className="px-3 py-1 bg-gray-200 dark:bg-gray-700 rounded-full text-sm hover:bg-gray-300 dark:hover:bg-gray-600 transition"
+                                >
+                                  ✕
+                                </button>
+                              </div>
+                            )}
                           </div>
                         </div>
                         <div className="flex items-center gap-4">
@@ -687,7 +759,7 @@ export default function SearchPage() {
                             )}
                             {(highlight as any).assigned_date && (highlight.author || highlight.source || (highlight.average_rating !== undefined && highlight.average_rating > 0) || (highlight.months_reviewed && highlight.months_reviewed.length > 0)) && <span> • </span>}
                             {highlight.average_rating !== undefined && highlight.average_rating > 0 && (
-                              <span>Avg Rating: {highlight.average_rating.toFixed(1)}/5</span>
+                              <span>Avg Rating: {highlight.average_rating.toFixed(1)}/3</span>
                             )}
                             {highlight.average_rating !== undefined && highlight.average_rating > 0 && (highlight.author || highlight.source || (highlight.months_reviewed && highlight.months_reviewed.length > 0)) && <span> • </span>}
                             {highlight.months_reviewed && highlight.months_reviewed.length > 0 && (
@@ -832,6 +904,49 @@ export default function SearchPage() {
                                 {cat.name}
                               </button>
                             ))}
+                            {!showCategoryInput ? (
+                              <button
+                                type="button"
+                                onClick={() => setShowCategoryInput(true)}
+                                className="px-3 py-1 rounded-full text-sm bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition border border-dashed border-gray-300 dark:border-gray-600"
+                              >
+                                + Category
+                              </button>
+                            ) : (
+                              <div className="flex gap-2 items-center">
+                                <input
+                                  type="text"
+                                  value={newCategoryName}
+                                  onChange={(e) => setNewCategoryName(e.target.value)}
+                                  onKeyPress={(e) => {
+                                    if (e.key === 'Enter') {
+                                      e.preventDefault()
+                                      handleCreateCategory()
+                                    }
+                                  }}
+                                  className="px-3 py-1 border border-gray-300 dark:border-gray-600 rounded-full text-sm dark:bg-gray-700 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                  placeholder="New category"
+                                  autoFocus
+                                />
+                                <button
+                                  type="button"
+                                  onClick={handleCreateCategory}
+                                  className="px-3 py-1 bg-blue-600 text-white rounded-full text-sm hover:bg-blue-700 transition"
+                                >
+                                  Add
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setShowCategoryInput(false)
+                                    setNewCategoryName('')
+                                  }}
+                                  className="px-3 py-1 bg-gray-200 dark:bg-gray-700 rounded-full text-sm hover:bg-gray-300 dark:hover:bg-gray-600 transition"
+                                >
+                                  ✕
+                                </button>
+                              </div>
+                            )}
                           </div>
                         </div>
                         <div className="flex items-center gap-4">
@@ -897,7 +1012,7 @@ export default function SearchPage() {
                             )}
                             {(highlight as any).assigned_date && (highlight.author || highlight.source || (highlight.average_rating !== undefined && highlight.average_rating > 0) || (highlight.months_reviewed && highlight.months_reviewed.length > 0)) && <span> • </span>}
                             {highlight.average_rating !== undefined && highlight.average_rating > 0 && (
-                              <span>Avg Rating: {highlight.average_rating.toFixed(1)}/5</span>
+                              <span>Avg Rating: {highlight.average_rating.toFixed(1)}/3</span>
                             )}
                             {highlight.average_rating !== undefined && highlight.average_rating > 0 && (highlight.author || highlight.source || (highlight.months_reviewed && highlight.months_reviewed.length > 0)) && <span> • </span>}
                             {highlight.months_reviewed && highlight.months_reviewed.length > 0 && (

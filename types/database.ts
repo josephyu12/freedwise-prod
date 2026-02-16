@@ -41,7 +41,7 @@ export interface DailySummaryHighlight {
   id: string
   daily_summary_id: string
   highlight_id: string
-  rating?: 1 | 2 | 3 | 4 | 5 | null
+  rating?: 'low' | 'med' | 'high' | null
   highlight?: Highlight
 }
 
