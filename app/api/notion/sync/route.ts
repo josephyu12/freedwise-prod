@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { Client } from '@notionhq/client'
-import { htmlToNotionBlocks, htmlToBlockText, normalizeForBlockCompare, getBlockText, findMatchingHighlightBlocks, buildNormalizedSearchStrings, flattenBlocksWithChildren, flattenBlocksForSync, BLOCK_BOUNDARY, buildNormalizedBlockGroups } from '@/lib/notionBlocks'
+import { htmlToNotionBlocks, htmlToBlockText, normalizeForBlockCompare, getBlockText, findMatchingHighlightBlocks, buildNormalizedSearchStrings, flattenBlocksWithChildren, BLOCK_BOUNDARY, buildNormalizedBlockGroups } from '@/lib/notionBlocks'
 
 // Process a single queue item. Claim with status=processing first to avoid duplicate processing when multiple sync requests run.
 async function processQueueItem(supabase: any, queueItem: any, notionSettings: { notion_api_key: string; notion_page_id: string; enabled: boolean }) {
@@ -82,10 +82,6 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
           newContentHtml = currentHighlight.html_content ?? newContentHtml
         }
       }
-      // Convert new content to Notion blocks; flatten so nested list items align with Notion's flat list
-      const newBlocks = htmlToNotionBlocks(newContentHtml || newContentText || '')
-      const flatNewBlocks = flattenBlocksForSync(newBlocks)
-
       // Fetch all blocks from Notion page (top-level only first)
       let allBlocks: any[] = []
       let cursor = undefined
@@ -97,6 +93,9 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
         allBlocks.push(...response.results)
         cursor = response.next_cursor || undefined
       } while (cursor)
+
+      // Save top-level blocks before flattening (needed for position tracking during delete-and-recreate)
+      const topLevelBlocks = [...allBlocks]
 
       // Include nested/indented children so sub-bullets are in the list and can match
       allBlocks = await flattenBlocksWithChildren(notion, allBlocks)
@@ -127,176 +126,43 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
         if (latestHighlight?.text != null || latestHighlight?.html_content != null) {
           newContentText = latestHighlight.text ?? newContentText
           newContentHtml = latestHighlight.html_content ?? newContentHtml
-          // Only rebuild flatNewBlocks from HTML — using plain text would collapse lists into one paragraph and lose nested bullets
-          const hasHtml = newContentHtml && newContentHtml.trim()
-          if (hasHtml) {
-            const latestBlocks = htmlToNotionBlocks(newContentHtml!)
-            flatNewBlocks.length = 0
-            flatNewBlocks.push(...flattenBlocksForSync(latestBlocks))
-          }
         }
       }
 
-      const minLen = Math.min(matchingBlocks.length, flatNewBlocks.length)
-      const willAppend = exactMatch && flatNewBlocks.length > minLen
-      ;(debugPayload as any).flatNewBlocksLength = flatNewBlocks.length
+      // Build hierarchical new blocks (NOT flattened — preserves nested bullet structure)
+      const newBlocks = htmlToNotionBlocks(newContentHtml || newContentText || '')
+
+      ;(debugPayload as any).newBlocksLength = newBlocks.length
       ;(debugPayload as any).matchingBlocksLength = matchingBlocks.length
-      ;(debugPayload as any).willAppend = willAppend
       ;(debugPayload as any).usedHtml = !!(newContentHtml && newContentHtml.trim())
       console.warn('[notion/sync] update: Highlight found. Full debug:', JSON.stringify(debugPayload, null, 2))
 
-      // Update the matching blocks with new content
-      // For list items, update all matching items in place to preserve grouping
-      const isListUpdate = matchingBlocks.length > 0 && 
-        (matchingBlocks[0].type === 'bulleted_list_item' || matchingBlocks[0].type === 'numbered_list_item')
-      
-      if (isListUpdate && flatNewBlocks.length > 0 && 
-          (flatNewBlocks[0].type === 'bulleted_list_item' || flatNewBlocks[0].type === 'numbered_list_item')) {
-        // Update list items in place - update each matching block with corresponding new block
-        const minLength = Math.min(matchingBlocks.length, flatNewBlocks.length)
-        
-        // Update matching blocks in place
-        for (let i = 0; i < minLength; i++) {
-          try {
-            if (matchingBlocks[i].type === flatNewBlocks[i].type) {
-              // Same type, update in place (this preserves the block and updates formatting)
-              const blockType = matchingBlocks[i].type
-              const blockData = flatNewBlocks[i][blockType]
-              
-              // Ensure rich_text exists and is an array
-              if (blockData && blockData.rich_text && Array.isArray(blockData.rich_text)) {
-        await notion.blocks.update({
-                  block_id: matchingBlocks[i].id,
-                  [blockType]: blockData,
-        })
-      } else {
-                console.warn(`Block ${i} (${blockType}) missing rich_text array, skipping update`)
-              }
-            } else {
-              // Type changed, delete and recreate
-              await notion.blocks.delete({ block_id: matchingBlocks[i].id })
-              // Insert after the previous block (or after the last updated block)
-              const insertAfterId = i > 0 ? matchingBlocks[i - 1].id : null
-              if (insertAfterId) {
-                // Notion doesn't support inserting after a specific block directly
-                // So we'll append and then reorder if needed, or just append to page
-          await notion.blocks.children.append({
-            block_id: notionSettings.notion_page_id,
-                  children: [flatNewBlocks[i]],
-                })
-              } else {
-                await notion.blocks.children.append({
-                  block_id: notionSettings.notion_page_id,
-                  children: [flatNewBlocks[i]],
-                })
-              }
-            }
-          } catch (error: any) {
-            console.error(`Failed to update list item ${i}:`, error.message || error, error.response?.data || '')
-            throw error
-          }
-        }
-        
-        // Delete extra old blocks so Notion matches new content. Only skip deleting list items when new content ends with a list item (incomplete payload); otherwise delete so user can remove bullets.
-        const newEndsWithList = flatNewBlocks.length > 0 && (flatNewBlocks[flatNewBlocks.length - 1].type === 'bulleted_list_item' || flatNewBlocks[flatNewBlocks.length - 1].type === 'numbered_list_item')
-        for (let i = minLength; i < matchingBlocks.length; i++) {
-          const block = matchingBlocks[i]
-          if ((block.type === 'bulleted_list_item' || block.type === 'numbered_list_item') && newEndsWithList) continue
-          try {
-            await notion.blocks.delete({ block_id: block.id })
-          } catch (error: any) {
-            console.warn(`Failed to delete extra old block ${i}:`, error?.message || error)
-            throw error
-          }
-        }
-        
-        // Only append extra new blocks when match was exact. If last matching block is a list item, append as its children (nested bullet); else append to page after it.
-        if (exactMatch && flatNewBlocks.length > minLength) {
-          const lastMatching = matchingBlocks[matchingBlocks.length - 1]
-          const lastMatchingId = lastMatching.id
-          const extraBlocks = flatNewBlocks.slice(minLength)
-          const isLastList = lastMatching.type === 'bulleted_list_item' || lastMatching.type === 'numbered_list_item'
-          if (isLastList) {
-            await notion.blocks.children.append({
-              block_id: lastMatchingId,
-              children: extraBlocks,
-            })
-          } else {
-            await notion.blocks.children.append({
-              block_id: notionSettings.notion_page_id,
-              children: extraBlocks,
-              after: lastMatchingId,
-            })
-          }
-        }
-      } else {
-        // Non-list update: Update ALL matching blocks in place to preserve structure
-        const minLength = Math.min(matchingBlocks.length, flatNewBlocks.length)
-        
-        // Update matching blocks in place
-        for (let i = 0; i < minLength; i++) {
-          try {
-            if (matchingBlocks[i].type === flatNewBlocks[i].type) {
-              // Same type, update in place (this preserves the block and updates formatting)
-              const blockType = matchingBlocks[i].type
-              const blockData = flatNewBlocks[i][blockType]
-              
-              // Ensure rich_text exists and is an array
-              if (blockData && blockData.rich_text && Array.isArray(blockData.rich_text)) {
-                await notion.blocks.update({
-                  block_id: matchingBlocks[i].id,
-                  [blockType]: blockData,
-                })
-              } else {
-                console.warn(`[SYNC UPDATE] Block ${i} (${blockType}) missing rich_text array, skipping update`)
-              }
-            } else {
-              // Type changed, delete and recreate
-              await notion.blocks.delete({ block_id: matchingBlocks[i].id })
-              await notion.blocks.children.append({
-                block_id: notionSettings.notion_page_id,
-                children: [flatNewBlocks[i]],
-              })
-            }
-          } catch (error: any) {
-            console.error(`Failed to update block ${i} (${matchingBlocks[i]?.type}):`, error.message || error, error.response?.data || '')
-            throw error
-          }
-        }
-        
-        // Delete extra old blocks. Only skip deleting list items when new content ends with a list item (incomplete payload); otherwise delete so user can remove bullets.
-        const newEndsWithListElse = flatNewBlocks.length > 0 && (flatNewBlocks[flatNewBlocks.length - 1].type === 'bulleted_list_item' || flatNewBlocks[flatNewBlocks.length - 1].type === 'numbered_list_item')
-        for (let i = minLength; i < matchingBlocks.length; i++) {
-          const block = matchingBlocks[i]
-          if ((block.type === 'bulleted_list_item' || block.type === 'numbered_list_item') && newEndsWithListElse) continue
-          try {
-            await notion.blocks.delete({ block_id: block.id })
-          } catch (error: any) {
-            console.warn(`Failed to delete extra old block ${i}:`, error?.message || error)
-            throw error
-          }
-        }
-        
-        // Only append extra new blocks when match was exact. If last matching block is a list item, append as its children; else append to page after it.
-        if (exactMatch && flatNewBlocks.length > minLength) {
-          const lastMatching = matchingBlocks[matchingBlocks.length - 1]
-          const lastMatchingId = lastMatching.id
-          const extraBlocks = flatNewBlocks.slice(minLength)
-          const isLastList = lastMatching.type === 'bulleted_list_item' || lastMatching.type === 'numbered_list_item'
-          if (isLastList) {
-            await notion.blocks.children.append({
-              block_id: lastMatchingId,
-              children: extraBlocks,
-            })
-          } else {
-            await notion.blocks.children.append({
-              block_id: notionSettings.notion_page_id,
-              children: extraBlocks,
-              after: lastMatchingId,
-            })
-          }
+      // Delete-and-recreate: delete all matching top-level blocks (children cascade),
+      // then insert new hierarchical blocks at the same position. This correctly handles
+      // nested bullets, added/removed blocks, and type changes without index misalignment.
+      const matchingIds = new Set(matchingBlocks.map((b: any) => b.id))
+      const topLevelMatchingBlocks = topLevelBlocks.filter((b: any) => matchingIds.has(b.id))
+
+      // Find the block before the match group for insertion position
+      const firstTopLevelMatchIndex = topLevelBlocks.findIndex((b: any) => matchingIds.has(b.id))
+      const afterBlockId = firstTopLevelMatchIndex > 0 ? topLevelBlocks[firstTopLevelMatchIndex - 1].id : null
+
+      // Delete top-level matching blocks (Notion cascades to children automatically)
+      for (const block of topLevelMatchingBlocks) {
+        try {
+          await notion.blocks.delete({ block_id: block.id })
+        } catch (error: any) {
+          console.error(`Failed to delete block ${block.id} (${block.type}):`, error.message || error)
+          throw error
         }
       }
+
+      // Insert new hierarchical blocks at the correct position
+      await notion.blocks.children.append({
+        block_id: notionSettings.notion_page_id,
+        children: newBlocks,
+        ...(afterBlockId ? { after: afterBlockId } : {}),
+      })
     } else if (queueItem.operation_type === 'delete') {
       // For delete, use the text/html_content stored in the queue item to find the block
       // Fetch all blocks from Notion page
@@ -520,15 +386,14 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
     const newRetryCount = queueItem.retry_count + 1
     const shouldRetry = newRetryCount < queueItem.max_retries
     
-    // Calculate next retry time with exponential backoff
-    // 1st retry: 5 minutes, 2nd: 15 min, 3rd: 45 min, 4th: 2 hours, 5th: 6 hours
-    // After 5 retries, continue with longer delays: 12h, 24h, 48h, etc.
-    const backoffMinutes = newRetryCount <= 5 
-      ? [5, 15, 45, 120, 360][newRetryCount - 1] || 360
-      : Math.min(24 * 60 * Math.pow(2, newRetryCount - 6), 7 * 24 * 60) // Cap at 7 days
-    
-    const nextRetryAt = new Date()
-    nextRetryAt.setMinutes(nextRetryAt.getMinutes() + backoffMinutes)
+    // Calculate next retry time with exponential backoff for ALL retries (prevents rate limiting)
+    // 1st: 5s, 2nd: 15s, 3rd: 45s, 4th: 2min, 5th: 5min
+    // After 5 retries: 15min, 30min, 1h, 2h, etc. (cap at 7 days)
+    const backoffSeconds = newRetryCount <= 5
+      ? [5, 15, 45, 120, 300][newRetryCount - 1] || 300
+      : Math.min(900 * Math.pow(2, newRetryCount - 6), 7 * 24 * 3600) // Cap at 7 days
+
+    const nextRetryAt = new Date(Date.now() + backoffSeconds * 1000)
 
     await (supabase
       .from('notion_sync_queue') as any)
@@ -537,7 +402,7 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
         retry_count: newRetryCount,
         error_message: error.message || 'Unknown error',
         last_retry_at: new Date().toISOString(),
-        next_retry_at: shouldRetry ? null : nextRetryAt.toISOString(), // Only set next_retry_at for failed items
+        next_retry_at: nextRetryAt.toISOString(),
         processed_at: new Date().toISOString(),
       })
       .eq('id', queueItem.id)
@@ -591,7 +456,7 @@ export async function POST(request: NextRequest) {
       .from('notion_sync_queue') as any)
       .select('*')
       .eq('user_id', user.id)
-      .or(`and(status.eq.pending,retry_count.lt.5),and(status.eq.failed,retry_count.lt.20,or(next_retry_at.is.null,next_retry_at.lte.${now})),and(status.eq.processing,updated_at.lt.${staleCutoff})`)
+      .or(`and(status.eq.pending,retry_count.eq.0),and(status.eq.pending,retry_count.gt.0,retry_count.lt.5,or(next_retry_at.is.null,next_retry_at.lte.${now})),and(status.eq.failed,retry_count.lt.20,or(next_retry_at.is.null,next_retry_at.lte.${now})),and(status.eq.processing,updated_at.lt.${staleCutoff})`)
       .order('created_at', { ascending: true })
       .limit(10)
 

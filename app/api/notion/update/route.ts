@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { Client } from '@notionhq/client'
 import { createClient } from '@/lib/supabase/server'
-import { htmlToNotionBlocks, htmlToBlockText, normalizeForBlockCompare, getBlockText, findMatchingHighlightBlocks, buildNormalizedSearchStrings, flattenBlocksWithChildren, flattenBlocksForSync, BLOCK_BOUNDARY, buildNormalizedBlockGroups } from '@/lib/notionBlocks'
+import { htmlToNotionBlocks, htmlToBlockText, normalizeForBlockCompare, getBlockText, findMatchingHighlightBlocks, buildNormalizedSearchStrings, flattenBlocksWithChildren, BLOCK_BOUNDARY, buildNormalizedBlockGroups } from '@/lib/notionBlocks'
 
 export async function POST(request: NextRequest) {
   try {
@@ -59,6 +59,9 @@ export async function POST(request: NextRequest) {
       cursor = response.next_cursor || undefined
     } while (cursor)
 
+    // Save top-level blocks before flattening (needed for position tracking during delete-and-recreate)
+    const topLevelBlocks = [...blocks]
+
     // Include nested/indented children so sub-bullets are in the list and can match
     blocks = await flattenBlocksWithChildren(notion, blocks)
 
@@ -98,84 +101,37 @@ export async function POST(request: NextRequest) {
     }
     console.warn('[notion/update] Highlight found. Full debug:', JSON.stringify(debugPayload, null, 2))
 
-    // Convert new HTML content to Notion blocks; flatten so nested list items align with Notion's flat list
+    // Convert new HTML content to hierarchical Notion blocks (NOT flattened — preserves nested bullet structure)
     const newBlocks = htmlToNotionBlocks(htmlContent || text)
-    const flatNewBlocks = flattenBlocksForSync(newBlocks)
 
-    if (flatNewBlocks.length === 0) {
+    if (newBlocks.length === 0) {
       return NextResponse.json(
         { error: 'Failed to convert content to Notion format' },
         { status: 400 }
       )
     }
 
-    // Update ALL matching blocks in place to preserve structure and formatting
+    // Delete-and-recreate: delete all matching top-level blocks (children cascade),
+    // then insert new hierarchical blocks at the same position.
     try {
-      const minLength = Math.min(matchingBlocks.length, flatNewBlocks.length)
-      
-      // Update matching blocks in place
-      for (let i = 0; i < minLength; i++) {
-        try {
-          if (matchingBlocks[i].type === flatNewBlocks[i].type) {
-            // Same type, update in place (this preserves the block and updates formatting)
-            const blockType = matchingBlocks[i].type
-            const blockData = flatNewBlocks[i][blockType]
-            
-            // Ensure rich_text exists and is an array
-            if (blockData && blockData.rich_text && Array.isArray(blockData.rich_text)) {
-              await notion.blocks.update({
-                block_id: matchingBlocks[i].id,
-                [blockType]: blockData,
-              })
-            } else {
-              console.warn(`[UPDATE DIRECT] Block ${i} (${blockType}) missing rich_text array, skipping update`)
-            }
-          } else {
-            // Type changed, delete and recreate
-            await notion.blocks.delete({ block_id: matchingBlocks[i].id })
-            await notion.blocks.children.append({
-              block_id: notionPageId,
-              children: [flatNewBlocks[i]],
-            })
-          }
-        } catch (error: any) {
-          console.error(`Failed to update block ${i} (${matchingBlocks[i]?.type}):`, error.message || error, error.response?.data || '')
-          // Continue with other blocks even if one fails
-        }
+      const matchingIds = new Set(matchingBlocks.map((b: any) => b.id))
+      const topLevelMatchingBlocks = topLevelBlocks.filter((b: any) => matchingIds.has(b.id))
+
+      // Find the block before the match group for insertion position
+      const firstTopLevelMatchIndex = topLevelBlocks.findIndex((b: any) => matchingIds.has(b.id))
+      const afterBlockId = firstTopLevelMatchIndex > 0 ? topLevelBlocks[firstTopLevelMatchIndex - 1].id : null
+
+      // Delete top-level matching blocks (Notion cascades to children automatically)
+      for (const block of topLevelMatchingBlocks) {
+        await notion.blocks.delete({ block_id: block.id })
       }
-      
-      // Delete extra old blocks so Notion matches new content (DB → Notion)
-      for (let i = minLength; i < matchingBlocks.length; i++) {
-        try {
-          await notion.blocks.delete({ block_id: matchingBlocks[i].id })
-        } catch (error) {
-          console.warn(`Failed to delete extra old block ${i}:`, error)
-        }
-      }
-      
-      // Only append extra new blocks when we had an exact match. If last matching block is a list item, append as its children (nested bullet); else append to page after it.
-      if (exactMatch && flatNewBlocks.length > minLength) {
-        const lastMatching = matchingBlocks[matchingBlocks.length - 1]
-        const lastMatchingId = lastMatching.id
-        const extraBlocks = flatNewBlocks.slice(minLength)
-        const isLastList = lastMatching.type === 'bulleted_list_item' || lastMatching.type === 'numbered_list_item'
-        try {
-          if (isLastList) {
-            await notion.blocks.children.append({
-              block_id: lastMatchingId,
-              children: extraBlocks,
-            })
-          } else {
-            await notion.blocks.children.append({
-              block_id: notionPageId,
-              children: extraBlocks,
-              after: lastMatchingId,
-            })
-          }
-        } catch (error: any) {
-          console.warn('Failed to append new blocks after highlight:', error?.message || error)
-        }
-      }
+
+      // Insert new hierarchical blocks at the correct position
+      await notion.blocks.children.append({
+        block_id: notionPageId,
+        children: newBlocks,
+        ...(afterBlockId ? { after: afterBlockId } : {}),
+      })
 
       return NextResponse.json({
         message: 'Highlight updated in Notion successfully',
@@ -184,9 +140,9 @@ export async function POST(request: NextRequest) {
     } catch (updateError: any) {
       console.error('Error updating Notion block:', updateError)
       return NextResponse.json(
-        { 
+        {
           error: `Failed to update Notion: ${updateError.message || 'Unknown error'}`,
-          updated: false 
+          updated: false
         },
         { status: 500 }
       )
