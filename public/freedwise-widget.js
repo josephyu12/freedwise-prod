@@ -260,7 +260,6 @@ async function createWidget() {
   body.font = Font.regularSystemFont(17)
   body.textColor = isDark ? COLORS.textDark : COLORS.text
   body.lineLimit = 12
-  body.centerAlignText()
 
   // Source / author
   if (h.source || h.author) {
@@ -271,7 +270,6 @@ async function createWidget() {
     meta.font = Font.italicSystemFont(13)
     meta.textColor = isDark ? COLORS.textMutedDark : COLORS.textMuted
     meta.lineLimit = 1
-    meta.centerAlignText()
   }
 
   widget.addSpacer()
