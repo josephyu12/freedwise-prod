@@ -90,19 +90,58 @@ async function fetchWidgetData(token) {
 
 function stripHtml(html) {
   if (!html) return ''
-  return html
+
+  let text = html
+
+  // Track nesting level for bullets
+  let nestLevel = 0
+
+  // Replace nested lists with indented bullets
+  // This is a simplified approach - handles up to 2 levels
+  text = text.replace(/<ul[^>]*>|<ol[^>]*>/gi, () => {
+    nestLevel++
+    return ''
+  })
+  text = text.replace(/<\/ul>|<\/ol>/gi, () => {
+    nestLevel = Math.max(0, nestLevel - 1)
+    return '\n'
+  })
+
+  // Convert list items to bullets based on nesting
+  text = text.replace(/<li[^>]*>/gi, () => {
+    if (nestLevel > 1) return '\n  ◦ ' // Nested bullet with indent
+    return '\n• ' // Top-level bullet
+  })
+  text = text.replace(/<\/li>/gi, '')
+
+  // Handle other block elements
+  text = text
     .replace(/<br\s*\/?>/gi, '\n')
     .replace(/<\/p>/gi, '\n')
-    .replace(/<\/li>/gi, '\n')
-    .replace(/<[^>]*>/g, '')
+    .replace(/<p[^>]*>/gi, '\n')
+    .replace(/<div[^>]*>/gi, '\n')
+    .replace(/<\/div>/gi, '')
+
+  // Remove remaining HTML tags
+  text = text.replace(/<[^>]*>/g, '')
+
+  // Decode HTML entities
+  text = text
     .replace(/&amp;/g, '&')
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
     .replace(/&quot;/g, '"')
     .replace(/&#39;/g, "'")
-    .replace(/&middot;/g, '\u00B7')
+    .replace(/&middot;/g, '·')
+    .replace(/&bull;/g, '•')
+
+  // Clean up whitespace
+  text = text
     .replace(/\n{3,}/g, '\n\n')
+    .replace(/^\n+/, '') // Remove leading newlines
     .trim()
+
+  return text
 }
 
 function truncate(text, maxLen) {
