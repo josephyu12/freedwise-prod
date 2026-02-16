@@ -184,23 +184,20 @@ export function htmlToNotionRichText(html: string): any[] {
 }
 
 function parseListItem(liHtml: string): { text: string; nestedLists: Array<{ type: 'ul' | 'ol'; content: string }> } {
+  // Use depth-tracking (not regex) to find the DIRECT child <ul>/<ol> inside this <li>.
+  // A non-greedy regex like /<ul>(.*?)<\/ul>/s fails with 3+ nesting levels because
+  // it matches from the outer <ul> to the first inner </ul>, producing broken HTML.
   const nestedLists: Array<{ type: 'ul' | 'ol'; content: string }> = []
+  const allMatches: Array<{ start: number; end: number; type: 'ul' | 'ol'; content: string }> = []
+
+  for (const tag of ['ul', 'ol'] as const) {
+    for (const m of findTopLevelLists(liHtml, tag)) {
+      allMatches.push({ start: m.index, end: m.index + m.fullMatch.length, type: tag, content: m.content })
+    }
+  }
+  allMatches.sort((a, b) => a.start - b.start)
+
   let text = liHtml
-  const nestedUlRegex = /<ul[^>]*>(.*?)<\/ul>/gis
-  const nestedOlRegex = /<ol[^>]*>(.*?)<\/ol>/gis
-  const ulMatches: Array<{ start: number; end: number; content: string }> = []
-  let match
-  while ((match = nestedUlRegex.exec(liHtml)) !== null) {
-    ulMatches.push({ start: match.index, end: match.index + match[0].length, content: match[1] })
-  }
-  const olMatches: Array<{ start: number; end: number; content: string }> = []
-  while ((match = nestedOlRegex.exec(liHtml)) !== null) {
-    olMatches.push({ start: match.index, end: match.index + match[0].length, content: match[1] })
-  }
-  const allMatches = [
-    ...ulMatches.map((m) => ({ ...m, type: 'ul' as const })),
-    ...olMatches.map((m) => ({ ...m, type: 'ol' as const })),
-  ].sort((a, b) => a.start - b.start)
   let offset = 0
   for (const m of allMatches) {
     nestedLists.push({ type: m.type, content: m.content })
