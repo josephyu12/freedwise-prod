@@ -399,7 +399,7 @@ export default function RichTextEditor({ value, htmlValue, onChange, placeholder
         onFocus={() => setIsFocused(true)}
         onBlur={() => setIsFocused(false)}
         className="min-h-[160px] px-5 py-3 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-200 focus:outline-none rich-text-editor text-base leading-relaxed"
-        style={{ whiteSpace: 'pre-wrap', fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" }}
+        style={{ whiteSpace: 'pre-wrap' }}
         data-placeholder={placeholder}
         suppressContentEditableWarning
       />
