@@ -2,12 +2,14 @@
 
 import { useEffect, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
+import Link from 'next/link'
 
-// This page is loaded inside Scriptable's WebView to obtain auth tokens.
-// It displays the session JSON so the widget script can read it.
+// Open this page in Safari (where you're already logged in) to get your
+// widget token. Copy it and paste it into the Scriptable widget config.
 export default function WidgetAuthPage() {
   const [status, setStatus] = useState<'loading' | 'authenticated' | 'unauthenticated'>('loading')
-  const [sessionJson, setSessionJson] = useState('')
+  const [refreshToken, setRefreshToken] = useState('')
+  const [copied, setCopied] = useState(false)
   const supabase = createClient()
 
   useEffect(() => {
@@ -15,11 +17,7 @@ export default function WidgetAuthPage() {
       const { data: { session } } = await supabase.auth.getSession()
       if (session) {
         setStatus('authenticated')
-        // Expose tokens in a hidden element for WebView to read
-        setSessionJson(JSON.stringify({
-          access_token: session.access_token,
-          refresh_token: session.refresh_token,
-        }))
+        setRefreshToken(session.refresh_token || '')
       } else {
         setStatus('unauthenticated')
       }
@@ -27,57 +25,101 @@ export default function WidgetAuthPage() {
 
     getSession()
 
-    // Listen for auth state changes (user logs in via this page)
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       if (session) {
         setStatus('authenticated')
-        setSessionJson(JSON.stringify({
-          access_token: session.access_token,
-          refresh_token: session.refresh_token,
-        }))
+        setRefreshToken(session.refresh_token || '')
       }
     })
 
     return () => subscription.unsubscribe()
   }, [supabase])
 
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(refreshToken)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    } catch {
+      // Fallback for older browsers
+      const textarea = document.createElement('textarea')
+      textarea.value = refreshToken
+      document.body.appendChild(textarea)
+      textarea.select()
+      document.execCommand('copy')
+      document.body.removeChild(textarea)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    }
+  }
+
   if (status === 'loading') {
     return (
-      <div style={{ padding: 20, fontFamily: 'system-ui' }}>
-        <p>Loading...</p>
-      </div>
+      <main className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 to-indigo-100 dark:from-gray-900 dark:to-gray-800">
+        <div className="text-xl text-gray-600 dark:text-gray-300">Loading...</div>
+      </main>
     )
   }
 
   if (status === 'unauthenticated') {
     return (
-      <div style={{ padding: 20, fontFamily: 'system-ui' }}>
-        <h2 style={{ marginBottom: 16 }}>Widget Setup</h2>
-        <p style={{ marginBottom: 12 }}>You need to log in first.</p>
-        <a
-          href="/login"
-          style={{
-            display: 'inline-block',
-            padding: '12px 24px',
-            background: '#3b82f6',
-            color: 'white',
-            borderRadius: 8,
-            textDecoration: 'none',
-            fontWeight: 600,
-          }}
-        >
-          Log In
-        </a>
-      </div>
+      <main className="min-h-screen flex flex-col items-center justify-center bg-gradient-to-br from-blue-50 to-indigo-100 dark:from-gray-900 dark:to-gray-800 px-6">
+        <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-xl p-8 max-w-md w-full text-center">
+          <h1 className="text-2xl font-bold text-gray-900 dark:text-white mb-4">Widget Setup</h1>
+          <p className="text-gray-600 dark:text-gray-300 mb-6">
+            Log in first, then come back to this page to get your widget token.
+          </p>
+          <Link
+            href="/login"
+            className="inline-block px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition font-medium"
+          >
+            Log In
+          </Link>
+        </div>
+      </main>
     )
   }
 
   return (
-    <div style={{ padding: 20, fontFamily: 'system-ui' }}>
-      <h2 style={{ marginBottom: 8 }}>Widget Connected</h2>
-      <p style={{ color: '#22c55e', fontWeight: 600 }}>AUTHENTICATED</p>
-      {/* Hidden element that Scriptable WebView reads via JavaScript */}
-      <div id="widget-session" style={{ display: 'none' }}>{sessionJson}</div>
-    </div>
+    <main className="min-h-screen flex flex-col items-center justify-center bg-gradient-to-br from-blue-50 to-indigo-100 dark:from-gray-900 dark:to-gray-800 px-6">
+      <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-xl p-8 max-w-md w-full">
+        <h1 className="text-2xl font-bold text-gray-900 dark:text-white mb-2">Widget Setup</h1>
+        <p className="text-sm text-gray-600 dark:text-gray-400 mb-6">
+          Copy this token and paste it into your Scriptable widget script as the <code className="bg-gray-100 dark:bg-gray-700 px-1 rounded text-xs">REFRESH_TOKEN</code> value.
+        </p>
+
+        <div className="relative">
+          <div className="bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg p-4 pr-20 font-mono text-xs break-all text-gray-700 dark:text-gray-300 max-h-24 overflow-y-auto">
+            {refreshToken}
+          </div>
+          <button
+            onClick={handleCopy}
+            className="absolute top-3 right-3 px-3 py-1.5 bg-blue-600 text-white text-xs font-medium rounded-lg hover:bg-blue-700 transition"
+          >
+            {copied ? 'Copied!' : 'Copy'}
+          </button>
+        </div>
+
+        <div className="mt-6 p-4 bg-blue-50 dark:bg-blue-900/20 rounded-lg">
+          <h3 className="text-sm font-semibold text-blue-800 dark:text-blue-300 mb-2">Setup Steps</h3>
+          <ol className="text-xs text-blue-700 dark:text-blue-400 space-y-1 list-decimal list-inside">
+            <li>Install Scriptable from the App Store</li>
+            <li>Create a new script, paste the widget code</li>
+            <li>Replace <code className="bg-blue-100 dark:bg-blue-900/50 px-1 rounded">REFRESH_TOKEN</code> with the token above</li>
+            <li>Add a Medium Scriptable widget to your home screen</li>
+            <li>Long-press widget &gt; Edit Widget &gt; choose script</li>
+          </ol>
+        </div>
+
+        <div className="mt-4 text-center">
+          <Link
+            href="/"
+            className="text-sm text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition"
+          >
+            Back to Home
+          </Link>
+        </div>
+      </div>
+    </main>
   )
 }
