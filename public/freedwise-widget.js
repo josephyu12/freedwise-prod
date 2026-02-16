@@ -3,10 +3,10 @@
 // Setup:
 // 1. Install "Scriptable" from the App Store
 // 2. Create a new script and paste this entire file
-// 3. Run the script once IN THE APP (not as widget) — it will open a
-//    login page. Sign in, then it stores your credentials securely.
-// 4. Add a Medium Scriptable widget to your home screen
-// 5. Long-press the widget > Edit Widget > choose this script
+// 3. Open freedwise.vercel.app/widget-auth in Safari to get your token
+// 4. Paste the token below as REFRESH_TOKEN
+// 5. Add a Medium Scriptable widget to your home screen
+// 6. Long-press the widget > Edit Widget > choose this script
 //
 // The widget shows your next unrated highlight with Low/Med/High buttons.
 // Tapping a button opens the Freedwise review page and auto-rates it.
@@ -14,11 +14,10 @@
 
 // ============ CONFIGURATION ============
 const APP_URL = 'https://freedwise.vercel.app'
+const SUPABASE_URL = 'https://kiguewhexyxthomovykj.supabase.co'
+const SUPABASE_ANON_KEY = 'sb_publishable_6Z509EtXh5_b8aDroCGRYQ_vAx1U2Yw'
+const REFRESH_TOKEN = '' // <-- Paste your token from /widget-auth here
 // =======================================
-
-const KEYCHAIN_KEY = 'freedwise_refresh_token'
-const SUPABASE_URL = 'https://kiguewhexyxthomovykj.supabase.co' // Set this too
-const SUPABASE_ANON_KEY = 'sb_publishable_6Z509EtXh5_b8aDroCGRYQ_vAx1U2Yw' // Set this too
 
 const COLORS = {
   bg: new Color('#f0f4ff'),
@@ -41,26 +40,16 @@ const COLORS = {
   progressDark: new Color('#374151'),
 }
 
-// ─── Auth helpers ───────────────────────────────────────────
+// ─── Auth ───────────────────────────────────────────────────
 
-async function authenticate() {
-  // Try to use stored refresh token first
-  if (Keychain.contains(KEYCHAIN_KEY)) {
-    const refreshToken = Keychain.get(KEYCHAIN_KEY)
-    const tokens = await refreshAccessToken(refreshToken)
-    if (tokens) return tokens.access_token
-  }
+async function getAccessToken() {
+  // Use stored refresh token if we have one (from a previous refresh)
+  const storedToken = Keychain.contains('freedwise_rt')
+    ? Keychain.get('freedwise_rt')
+    : REFRESH_TOKEN
 
-  // No stored token or refresh failed — need interactive login
-  if (config.runsInWidget) {
-    // Can't do interactive login from widget
-    return null
-  }
+  if (!storedToken) return null
 
-  return await interactiveLogin()
-}
-
-async function refreshAccessToken(refreshToken) {
   try {
     const req = new Request(`${SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`)
     req.method = 'POST'
@@ -68,55 +57,24 @@ async function refreshAccessToken(refreshToken) {
       'Content-Type': 'application/json',
       'apikey': SUPABASE_ANON_KEY,
     }
-    req.body = JSON.stringify({ refresh_token: refreshToken })
+    req.body = JSON.stringify({ refresh_token: storedToken })
     const res = await req.loadJSON()
 
     if (res.access_token && res.refresh_token) {
-      // Store the new refresh token
-      Keychain.set(KEYCHAIN_KEY, res.refresh_token)
-      return { access_token: res.access_token, refresh_token: res.refresh_token }
+      // Store the new refresh token for next time
+      Keychain.set('freedwise_rt', res.refresh_token)
+      return res.access_token
     }
     return null
   } catch (e) {
     return null
   }
-}
-
-async function interactiveLogin() {
-  const wv = new WebView()
-  await wv.loadURL(`${APP_URL}/widget-auth`)
-
-  // Let the user interact (log in if needed)
-  await wv.present()
-
-  // After the WebView is dismissed, try to read session tokens
-  try {
-    const result = await wv.evaluateJavaScript(`
-      (function() {
-        var el = document.getElementById('widget-session');
-        return el ? el.textContent : null;
-      })()
-    `)
-
-    if (result) {
-      const tokens = JSON.parse(result)
-      if (tokens.refresh_token) {
-        Keychain.set(KEYCHAIN_KEY, tokens.refresh_token)
-        return tokens.access_token
-      }
-    }
-  } catch (e) {
-    // ignore
-  }
-
-  return null
 }
 
 // ─── API call ───────────────────────────────────────────────
 
 async function fetchNextHighlight(accessToken) {
-  const url = `${APP_URL}/api/review/next`
-  const req = new Request(url)
+  const req = new Request(`${APP_URL}/api/review/next`)
   req.headers = {
     'Accept': 'application/json',
     'Authorization': `Bearer ${accessToken}`,
@@ -161,24 +119,32 @@ async function createWidget() {
   widget.backgroundColor = isDark ? COLORS.bgDark : COLORS.bg
   widget.setPadding(12, 14, 12, 14)
 
-  const accessToken = await authenticate()
+  if (!REFRESH_TOKEN && !Keychain.contains('freedwise_rt')) {
+    const msg = widget.addText('Paste your token in the script.\nGet it at /widget-auth')
+    msg.font = Font.mediumSystemFont(13)
+    msg.textColor = isDark ? COLORS.textDark : COLORS.text
+    widget.url = `${APP_URL}/widget-auth`
+    return widget
+  }
+
+  const accessToken = await getAccessToken()
 
   if (!accessToken) {
-    const msg = widget.addText('Run script in Scriptable to sign in')
-    msg.font = Font.mediumSystemFont(14)
+    // Token expired — user needs to get a new one
+    if (Keychain.contains('freedwise_rt')) {
+      Keychain.remove('freedwise_rt')
+    }
+    const msg = widget.addText('Token expired.\nGet a new one at /widget-auth')
+    msg.font = Font.mediumSystemFont(13)
     msg.textColor = isDark ? COLORS.textDark : COLORS.text
-    widget.url = `${APP_URL}/review`
+    widget.url = `${APP_URL}/widget-auth`
     return widget
   }
 
   const data = await fetchNextHighlight(accessToken)
 
   if (!data || data.error) {
-    // Token might have expired — clear it so next run re-authenticates
-    if (Keychain.contains(KEYCHAIN_KEY)) {
-      Keychain.remove(KEYCHAIN_KEY)
-    }
-    const msg = widget.addText('Run script in Scriptable to sign in')
+    const msg = widget.addText('Could not load highlights')
     msg.font = Font.mediumSystemFont(14)
     msg.textColor = isDark ? COLORS.textDark : COLORS.text
     widget.url = `${APP_URL}/review`
@@ -323,7 +289,6 @@ const widget = await createWidget()
 if (config.runsInWidget) {
   Script.setWidget(widget)
 } else {
-  // Preview in Scriptable app
   widget.presentMedium()
 }
 
