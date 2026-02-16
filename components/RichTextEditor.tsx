@@ -129,8 +129,14 @@ export default function RichTextEditor({ value, htmlValue, onChange, placeholder
 
   const handlePaste = (e: React.ClipboardEvent) => {
     e.preventDefault()
-    const text = e.clipboardData.getData('text/plain')
-    document.execCommand('insertText', false, text)
+    const html = e.clipboardData.getData('text/html')
+    if (html) {
+      // Paste with formatting preserved (bold, italic, underline, strikethrough, etc.)
+      document.execCommand('insertHTML', false, html)
+    } else {
+      const text = e.clipboardData.getData('text/plain')
+      document.execCommand('insertText', false, text)
+    }
     handleInput()
   }
 
@@ -338,6 +344,14 @@ export default function RichTextEditor({ value, htmlValue, onChange, placeholder
           title="Underline"
         >
           U
+        </button>
+        <button
+          type="button"
+          onClick={() => execCommand('strikeThrough')}
+          className="px-3 py-1 text-sm line-through bg-white dark:bg-gray-600 rounded hover:bg-gray-100 dark:hover:bg-gray-500 transition"
+          title="Strikethrough"
+        >
+          S
         </button>
         <div className="w-px bg-gray-300 dark:bg-gray-600 mx-1" />
         <button
