@@ -1,3 +1,5 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -17,12 +19,259 @@
 body {
   color: var(--foreground);
   background: var(--background);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 @layer utilities {
   .text-balance {
     text-wrap: balance;
+  }
+}
+
+/* ===== Typeform-Inspired Elegant Input Styles ===== */
+
+/* Underline-style input — clean, minimal, for prominent inputs like search */
+.input-elegant {
+  width: 100%;
+  padding: 0.75rem 0.25rem;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-size: 1.125rem;
+  line-height: 1.75;
+  color: var(--foreground);
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid #d1d5db;
+  border-radius: 0;
+  outline: none;
+  transition: border-color 0.3s ease, box-shadow 0.3s ease;
+}
+
+.input-elegant::placeholder {
+  color: #9ca3af;
+  font-weight: 300;
+  transition: color 0.3s ease;
+}
+
+.input-elegant:hover {
+  border-bottom-color: #9ca3af;
+}
+
+.input-elegant:focus {
+  border-bottom-color: #6366f1;
+  box-shadow: 0 2px 0 0 #6366f1;
+}
+
+.input-elegant:focus::placeholder {
+  color: #c7d2fe;
+}
+
+@media (prefers-color-scheme: dark) {
+  .input-elegant {
+    color: #ededed;
+    border-bottom-color: #4b5563;
+  }
+
+  .input-elegant::placeholder {
+    color: #6b7280;
+  }
+
+  .input-elegant:hover {
+    border-bottom-color: #6b7280;
+  }
+
+  .input-elegant:focus {
+    border-bottom-color: #818cf8;
+    box-shadow: 0 2px 0 0 #818cf8;
+  }
+
+  .input-elegant:focus::placeholder {
+    color: #4338ca;
+  }
+}
+
+/* Boxed-style input — rounded, with subtle glow, for form fields */
+.input-boxed-elegant {
+  width: 100%;
+  padding: 0.625rem 1rem;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-size: 0.9375rem;
+  line-height: 1.5;
+  color: var(--foreground);
+  background: #ffffff;
+  border: 1.5px solid #e5e7eb;
+  border-radius: 0.75rem;
+  outline: none;
+  transition: border-color 0.25s ease, box-shadow 0.25s ease, background-color 0.25s ease;
+}
+
+.input-boxed-elegant::placeholder {
+  color: #9ca3af;
+  font-weight: 300;
+}
+
+.input-boxed-elegant:hover {
+  border-color: #c7d2fe;
+  background-color: #fafafe;
+}
+
+.input-boxed-elegant:focus {
+  border-color: #818cf8;
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.12);
+  background-color: #ffffff;
+}
+
+@media (prefers-color-scheme: dark) {
+  .input-boxed-elegant {
+    color: #ededed;
+    background: #1f2937;
+    border-color: #374151;
+  }
+
+  .input-boxed-elegant::placeholder {
+    color: #6b7280;
+  }
+
+  .input-boxed-elegant:hover {
+    border-color: #4f46e5;
+    background-color: #1e2536;
+  }
+
+  .input-boxed-elegant:focus {
+    border-color: #818cf8;
+    box-shadow: 0 0 0 3px rgba(129, 140, 248, 0.15);
+    background-color: #1f2937;
+  }
+}
+
+/* Small inline input — for category names and compact fields */
+.input-inline-elegant {
+  padding: 0.375rem 0.75rem;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-size: 0.875rem;
+  line-height: 1.5;
+  color: var(--foreground);
+  background: transparent;
+  border: 1.5px solid #d1d5db;
+  border-radius: 9999px;
+  outline: none;
+  transition: border-color 0.25s ease, box-shadow 0.25s ease, background-color 0.25s ease;
+}
+
+.input-inline-elegant::placeholder {
+  color: #9ca3af;
+  font-weight: 300;
+}
+
+.input-inline-elegant:focus {
+  border-color: #818cf8;
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1);
+  background-color: rgba(99, 102, 241, 0.03);
+}
+
+@media (prefers-color-scheme: dark) {
+  .input-inline-elegant {
+    color: #ededed;
+    border-color: #4b5563;
+  }
+
+  .input-inline-elegant::placeholder {
+    color: #6b7280;
+  }
+
+  .input-inline-elegant:focus {
+    border-color: #818cf8;
+    box-shadow: 0 0 0 3px rgba(129, 140, 248, 0.12);
+    background-color: rgba(129, 140, 248, 0.05);
+  }
+}
+
+/* Rich text editor elegant container */
+.rich-text-elegant {
+  border: 1.5px solid #e5e7eb;
+  border-radius: 0.75rem;
+  overflow: hidden;
+  transition: border-color 0.3s ease, box-shadow 0.3s ease;
+}
+
+.rich-text-elegant:hover {
+  border-color: #c7d2fe;
+}
+
+.rich-text-elegant:focus-within {
+  border-color: #818cf8;
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.12);
+}
+
+@media (prefers-color-scheme: dark) {
+  .rich-text-elegant {
+    border-color: #374151;
+  }
+
+  .rich-text-elegant:hover {
+    border-color: #4f46e5;
+  }
+
+  .rich-text-elegant:focus-within {
+    border-color: #818cf8;
+    box-shadow: 0 0 0 3px rgba(129, 140, 248, 0.15);
+  }
+}
+
+/* Select/dropdown elegant style */
+select.input-boxed-elegant {
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3E%3Cpath stroke='%236b7280' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M6 8l4 4 4-4'/%3E%3C/svg%3E");
+  background-position: right 0.5rem center;
+  background-repeat: no-repeat;
+  background-size: 1.5em 1.5em;
+  padding-right: 2.5rem;
+}
+
+/* Checkbox elegant style */
+.checkbox-elegant {
+  appearance: none;
+  width: 1.125rem;
+  height: 1.125rem;
+  border: 1.5px solid #d1d5db;
+  border-radius: 0.25rem;
+  background: #ffffff;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  position: relative;
+}
+
+.checkbox-elegant:checked {
+  background: #6366f1;
+  border-color: #6366f1;
+}
+
+.checkbox-elegant:checked::after {
+  content: '';
+  position: absolute;
+  left: 5px;
+  top: 2px;
+  width: 5px;
+  height: 9px;
+  border: solid white;
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+
+.checkbox-elegant:focus {
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.12);
+}
+
+@media (prefers-color-scheme: dark) {
+  .checkbox-elegant {
+    background: #1f2937;
+    border-color: #4b5563;
+  }
+
+  .checkbox-elegant:checked {
+    background: #818cf8;
+    border-color: #818cf8;
   }
 }
 

@@ -318,13 +318,15 @@ export default function RichTextEditor({ value, htmlValue, onChange, placeholder
     }
   }
 
+  const toolbarBtnClass = "px-3 py-1.5 text-sm rounded-lg transition-all duration-200 hover:scale-105 active:scale-95 bg-white/80 dark:bg-gray-600/80 hover:bg-indigo-50 dark:hover:bg-indigo-900/30 hover:text-indigo-600 dark:hover:text-indigo-300 text-gray-700 dark:text-gray-300"
+
   return (
-    <div className="border border-gray-300 dark:border-gray-600 rounded-lg overflow-hidden focus-within:ring-2 focus-within:ring-blue-500 focus-within:border-transparent">
-      <div className="flex gap-1 p-2 bg-gray-50 dark:bg-gray-700 border-b border-gray-300 dark:border-gray-600">
+    <div className="rich-text-elegant">
+      <div className="flex gap-1 p-2.5 bg-gray-50/80 dark:bg-gray-700/50 border-b border-gray-200 dark:border-gray-600/50 backdrop-blur-sm">
         <button
           type="button"
           onClick={() => execCommand('bold')}
-          className="px-3 py-1 text-sm font-bold bg-white dark:bg-gray-600 rounded hover:bg-gray-100 dark:hover:bg-gray-500 transition"
+          className={`${toolbarBtnClass} font-bold`}
           title="Bold"
         >
           B
@@ -332,7 +334,7 @@ export default function RichTextEditor({ value, htmlValue, onChange, placeholder
         <button
           type="button"
           onClick={() => execCommand('italic')}
-          className="px-3 py-1 text-sm italic bg-white dark:bg-gray-600 rounded hover:bg-gray-100 dark:hover:bg-gray-500 transition"
+          className={`${toolbarBtnClass} italic`}
           title="Italic"
         >
           I
@@ -340,7 +342,7 @@ export default function RichTextEditor({ value, htmlValue, onChange, placeholder
         <button
           type="button"
           onClick={() => execCommand('underline')}
-          className="px-3 py-1 text-sm underline bg-white dark:bg-gray-600 rounded hover:bg-gray-100 dark:hover:bg-gray-500 transition"
+          className={`${toolbarBtnClass} underline`}
           title="Underline"
         >
           U
@@ -348,16 +350,16 @@ export default function RichTextEditor({ value, htmlValue, onChange, placeholder
         <button
           type="button"
           onClick={() => execCommand('strikeThrough')}
-          className="px-3 py-1 text-sm line-through bg-white dark:bg-gray-600 rounded hover:bg-gray-100 dark:hover:bg-gray-500 transition"
+          className={`${toolbarBtnClass} line-through`}
           title="Strikethrough"
         >
           S
         </button>
-        <div className="w-px bg-gray-300 dark:bg-gray-600 mx-1" />
+        <div className="w-px bg-gray-200 dark:bg-gray-600/50 mx-1.5 self-stretch" />
         <button
           type="button"
           onClick={() => execCommand('insertUnorderedList')}
-          className="px-3 py-1 text-sm bg-white dark:bg-gray-600 rounded hover:bg-gray-100 dark:hover:bg-gray-500 transition"
+          className={toolbarBtnClass}
           title="Bullet List"
         >
           •
@@ -365,16 +367,16 @@ export default function RichTextEditor({ value, htmlValue, onChange, placeholder
         <button
           type="button"
           onClick={() => execCommand('insertOrderedList')}
-          className="px-3 py-1 text-sm bg-white dark:bg-gray-600 rounded hover:bg-gray-100 dark:hover:bg-gray-500 transition"
+          className={toolbarBtnClass}
           title="Numbered List"
         >
           1.
         </button>
-        <div className="w-px bg-gray-300 dark:bg-gray-600 mx-1" />
+        <div className="w-px bg-gray-200 dark:bg-gray-600/50 mx-1.5 self-stretch" />
         <button
           type="button"
           onClick={indentList}
-          className="px-3 py-1 text-sm bg-white dark:bg-gray-600 rounded hover:bg-gray-100 dark:hover:bg-gray-500 transition"
+          className={toolbarBtnClass}
           title="Indent (Tab)"
         >
           →
@@ -382,7 +384,7 @@ export default function RichTextEditor({ value, htmlValue, onChange, placeholder
         <button
           type="button"
           onClick={outdentList}
-          className="px-3 py-1 text-sm bg-white dark:bg-gray-600 rounded hover:bg-gray-100 dark:hover:bg-gray-500 transition"
+          className={toolbarBtnClass}
           title="Outdent (Shift+Tab)"
         >
           ←
@@ -396,8 +398,8 @@ export default function RichTextEditor({ value, htmlValue, onChange, placeholder
         onKeyDown={handleKeyDown}
         onFocus={() => setIsFocused(true)}
         onBlur={() => setIsFocused(false)}
-        className="min-h-[120px] px-4 py-2 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-200 focus:outline-none rich-text-editor"
-        style={{ whiteSpace: 'pre-wrap' }}
+        className="min-h-[160px] px-5 py-3 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-200 focus:outline-none rich-text-editor text-base leading-relaxed"
+        style={{ whiteSpace: 'pre-wrap', fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" }}
         data-placeholder={placeholder}
         suppressContentEditableWarning
       />

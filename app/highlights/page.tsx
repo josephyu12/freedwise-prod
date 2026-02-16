@@ -975,7 +975,7 @@ export default function HighlightsPage() {
                             handleCreateCategory()
                           }
                         }}
-                        className="px-3 py-1.5 border border-gray-300 dark:border-gray-600 rounded-full text-sm dark:bg-gray-700 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                        className="input-inline-elegant"
                         placeholder="New category"
                         autoFocus
                       />
@@ -1253,7 +1253,7 @@ export default function HighlightsPage() {
                                   // Update in database (no Notion sync - archive status not supported by Notion)
                                   await (supabase
                                     .from('highlights') as any)
-                                    .update({ archived: false })
+                                    .update({ archived: false, unarchived_at: new Date().toISOString() })
                                     .eq('id', highlight.id)
                                   
                                   await loadHighlights()

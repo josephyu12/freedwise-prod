@@ -307,7 +307,7 @@ export default function ImportPage() {
                   type={showApiKey ? 'text' : 'password'}
                   value={notionApiKey}
                   onChange={(e) => setNotionApiKey(e.target.value)}
-                  className="flex-1 px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent dark:bg-gray-700 dark:text-white"
+                  className="flex-1 input-boxed-elegant"
                   placeholder="secret_..."
                 />
                 <button
@@ -328,7 +328,7 @@ export default function ImportPage() {
                 type="text"
                 value={pageId}
                 onChange={(e) => setPageId(e.target.value)}
-                className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent dark:bg-gray-700 dark:text-white"
+                className="input-boxed-elegant"
                 placeholder="32-character page ID from Notion URL"
               />
             </div>
@@ -360,7 +360,7 @@ export default function ImportPage() {
                   type="text"
                   value={source}
                   onChange={(e) => setSource(e.target.value)}
-                  className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent dark:bg-gray-700 dark:text-white"
+                  className="input-boxed-elegant"
                   placeholder="Book, article, etc."
                 />
               </div>
@@ -372,7 +372,7 @@ export default function ImportPage() {
                   type="text"
                   value={author}
                   onChange={(e) => setAuthor(e.target.value)}
-                  className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent dark:bg-gray-700 dark:text-white"
+                  className="input-boxed-elegant"
                   placeholder="Author name"
                 />
               </div>

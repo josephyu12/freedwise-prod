@@ -520,7 +520,7 @@ export default function SearchPage() {
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
                   placeholder="Search highlights..."
-                  className="w-full px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent dark:bg-gray-700 dark:text-white text-lg"
+                  className="input-elegant text-xl"
                   autoFocus
                 />
               </div>
@@ -609,7 +609,7 @@ export default function SearchPage() {
                               type="text"
                               value={editSource}
                               onChange={(e) => setEditSource(e.target.value)}
-                              className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent dark:bg-gray-700 dark:text-white"
+                              className="input-boxed-elegant"
                               placeholder="Book, article, etc."
                             />
                           </div>
@@ -621,7 +621,7 @@ export default function SearchPage() {
                               type="text"
                               value={editAuthor}
                               onChange={(e) => setEditAuthor(e.target.value)}
-                              className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent dark:bg-gray-700 dark:text-white"
+                              className="input-boxed-elegant"
                               placeholder="Author name"
                             />
                           </div>
@@ -671,7 +671,7 @@ export default function SearchPage() {
                                       handleCreateCategory()
                                     }
                                   }}
-                                  className="px-3 py-1 border border-gray-300 dark:border-gray-600 rounded-full text-sm dark:bg-gray-700 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                  className="input-inline-elegant"
                                   placeholder="New category"
                                   autoFocus
                                 />
@@ -796,6 +796,58 @@ export default function SearchPage() {
                           >
                             Edit
                           </button>
+                          {highlight.archived ? (
+                            <button
+                              onClick={async (e) => {
+                                e.stopPropagation()
+                                try {
+                                  await (supabase
+                                    .from('highlights') as any)
+                                    .update({ archived: false, unarchived_at: new Date().toISOString() })
+                                    .eq('id', highlight.id)
+                                  
+                                  // Refresh search
+                                  if (query.trim()) {
+                                    await performSearch(query, searchType)
+                                  }
+                                } catch (error) {
+                                  console.error('Error unarchiving highlight:', error)
+                                  alert('Failed to unarchive highlight. Please try again.')
+                                }
+                              }}
+                              className="px-3 py-1 text-sm bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300 rounded hover:bg-blue-200 dark:hover:bg-blue-800 transition"
+                            >
+                              Unarchive
+                            </button>
+                          ) : (
+                            <button
+                              onClick={async (e) => {
+                                e.stopPropagation()
+                                if (!confirm('Are you sure you want to archive this highlight?')) return
+                                try {
+                                  await (supabase
+                                    .from('highlights') as any)
+                                    .update({ archived: true })
+                                    .eq('id', highlight.id)
+                                  
+                                  // Remove from results
+                                  setResults(results.filter((h) => h.id !== highlight.id))
+                                  setSimilarResults(similarResults.filter((h) => h.id !== highlight.id))
+                                  
+                                  // Refresh search if query exists
+                                  if (query.trim()) {
+                                    await performSearch(query, searchType)
+                                  }
+                                } catch (error) {
+                                  console.error('Error archiving highlight:', error)
+                                  alert('Failed to archive highlight. Please try again.')
+                                }
+                              }}
+                              className="px-3 py-1 text-sm bg-orange-100 dark:bg-orange-900 text-orange-700 dark:text-orange-300 rounded hover:bg-orange-200 dark:hover:bg-orange-800 transition"
+                            >
+                              Archive
+                            </button>
+                          )}
                           <button
                             onClick={(e) => handleDelete(highlight.id, e)}
                             className="px-3 py-1 text-sm bg-red-100 dark:bg-red-900 text-red-700 dark:text-red-300 rounded hover:bg-red-200 dark:hover:bg-red-800 transition"
@@ -862,7 +914,7 @@ export default function SearchPage() {
                               type="text"
                               value={editSource}
                               onChange={(e) => setEditSource(e.target.value)}
-                              className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent dark:bg-gray-700 dark:text-white"
+                              className="input-boxed-elegant"
                               placeholder="Book, article, etc."
                             />
                           </div>
@@ -874,7 +926,7 @@ export default function SearchPage() {
                               type="text"
                               value={editAuthor}
                               onChange={(e) => setEditAuthor(e.target.value)}
-                              className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent dark:bg-gray-700 dark:text-white"
+                              className="input-boxed-elegant"
                               placeholder="Author name"
                             />
                           </div>
@@ -924,7 +976,7 @@ export default function SearchPage() {
                                       handleCreateCategory()
                                     }
                                   }}
-                                  className="px-3 py-1 border border-gray-300 dark:border-gray-600 rounded-full text-sm dark:bg-gray-700 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                  className="input-inline-elegant"
                                   placeholder="New category"
                                   autoFocus
                                 />
@@ -1031,34 +1083,55 @@ export default function SearchPage() {
                           >
                             Edit
                           </button>
-                          <button
-                            onClick={async (e) => {
-                              e.stopPropagation()
-                              if (!confirm('Are you sure you want to archive this highlight?')) return
-                              try {
-                                // Update in database (no Notion sync - archive status not supported by Notion)
-                                await (supabase
-                                  .from('highlights') as any)
-                                  .update({ archived: true })
-                                  .eq('id', highlight.id)
-                                
-                                // Remove from results
-                                setResults(results.filter((h) => h.id !== highlight.id))
-                                setSimilarResults(similarResults.filter((h) => h.id !== highlight.id))
-                                
-                                // Refresh search if query exists
-                                if (query.trim()) {
-                                  await performSearch(query, searchType)
+                          {highlight.archived ? (
+                            <button
+                              onClick={async (e) => {
+                                e.stopPropagation()
+                                try {
+                                  await (supabase
+                                    .from('highlights') as any)
+                                    .update({ archived: false, unarchived_at: new Date().toISOString() })
+                                    .eq('id', highlight.id)
+                                  
+                                  if (query.trim()) {
+                                    await performSearch(query, searchType)
+                                  }
+                                } catch (error) {
+                                  console.error('Error unarchiving highlight:', error)
+                                  alert('Failed to unarchive highlight. Please try again.')
                                 }
-                              } catch (error) {
-                                console.error('Error archiving highlight:', error)
-                                alert('Failed to archive highlight. Please try again.')
-                              }
-                            }}
-                            className="px-3 py-1 text-sm bg-orange-100 dark:bg-orange-900 text-orange-700 dark:text-orange-300 rounded hover:bg-orange-200 dark:hover:bg-orange-800 transition"
-                          >
-                            Archive
-                          </button>
+                              }}
+                              className="px-3 py-1 text-sm bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300 rounded hover:bg-blue-200 dark:hover:bg-blue-800 transition"
+                            >
+                              Unarchive
+                            </button>
+                          ) : (
+                            <button
+                              onClick={async (e) => {
+                                e.stopPropagation()
+                                if (!confirm('Are you sure you want to archive this highlight?')) return
+                                try {
+                                  await (supabase
+                                    .from('highlights') as any)
+                                    .update({ archived: true })
+                                    .eq('id', highlight.id)
+                                  
+                                  setResults(results.filter((h) => h.id !== highlight.id))
+                                  setSimilarResults(similarResults.filter((h) => h.id !== highlight.id))
+                                  
+                                  if (query.trim()) {
+                                    await performSearch(query, searchType)
+                                  }
+                                } catch (error) {
+                                  console.error('Error archiving highlight:', error)
+                                  alert('Failed to archive highlight. Please try again.')
+                                }
+                              }}
+                              className="px-3 py-1 text-sm bg-orange-100 dark:bg-orange-900 text-orange-700 dark:text-orange-300 rounded hover:bg-orange-200 dark:hover:bg-orange-800 transition"
+                            >
+                              Archive
+                            </button>
+                          )}
                           <button
                             onClick={(e) => handleDelete(highlight.id, e)}
                             className="px-3 py-1 text-sm bg-red-100 dark:bg-red-900 text-red-700 dark:text-red-300 rounded hover:bg-red-200 dark:hover:bg-red-800 transition"

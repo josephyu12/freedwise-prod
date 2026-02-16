@@ -657,7 +657,7 @@ export default function DailyPage() {
           )
       }
 
-      // Recalculate average rating for the highlight
+      // Recalculate average rating for the highlight (uses ALL ratings for average)
       const { data: allRatingsData, error: ratingsError } = await supabase
         .from('daily_summary_highlights')
         .select('rating')
@@ -676,10 +676,32 @@ export default function DailyPage() {
         ? ratingValues.reduce((a, b) => a + b, 0) / ratingValues.length
         : 0
 
-      // Count how many times this highlight has been marked as 'low'
-      const lowRatingsCount = allRatings.filter((r) => r.rating === 'low').length
+      // Check if this highlight was previously unarchived manually
+      const { data: highlightData } = await (supabase
+        .from('highlights') as any)
+        .select('unarchived_at')
+        .eq('id', highlightId)
+        .single()
 
-      // If marked as 'low' twice or more, archive it
+      // Count low ratings — if the highlight was manually unarchived, only count
+      // low ratings from daily summaries dated AFTER the unarchive timestamp
+      let lowRatingsCount = 0
+      if (highlightData?.unarchived_at) {
+        // Only count low ratings from summaries after the unarchive date
+        const { data: recentLowRatings } = await supabase
+          .from('daily_summary_highlights')
+          .select('rating, daily_summary:daily_summaries!inner(date)')
+          .eq('highlight_id', highlightId)
+          .eq('rating', 'low')
+          .gt('daily_summary.date', highlightData.unarchived_at.split('T')[0])
+
+        lowRatingsCount = (recentLowRatings || []).length
+      } else {
+        // No unarchive history — count all low ratings
+        lowRatingsCount = allRatings.filter((r) => r.rating === 'low').length
+      }
+
+      // If marked as 'low' twice or more (since last unarchive), archive it
       const shouldArchive = lowRatingsCount >= 2
 
       // Update highlight with new average rating and archived status
@@ -688,7 +710,7 @@ export default function DailyPage() {
         .update({
           average_rating: average,
           rating_count: ratingValues.length,
-          archived: shouldArchive,
+          ...(shouldArchive ? { archived: true } : {}),
         })
         .eq('id', highlightId)
 
@@ -1138,7 +1160,7 @@ export default function DailyPage() {
                                   type="text"
                                   value={editSource}
                                   onChange={(e) => setEditSource(e.target.value)}
-                                  className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent dark:bg-gray-700 dark:text-white"
+                                  className="input-boxed-elegant"
                                   placeholder="Book, article, etc."
                                 />
                               </div>
@@ -1150,7 +1172,7 @@ export default function DailyPage() {
                                   type="text"
                                   value={editAuthor}
                                   onChange={(e) => setEditAuthor(e.target.value)}
-                                  className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent dark:bg-gray-700 dark:text-white"
+                                  className="input-boxed-elegant"
                                   placeholder="Author name"
                                 />
                               </div>
@@ -1200,7 +1222,7 @@ export default function DailyPage() {
                                           handleCreateCategory()
                                         }
                                       }}
-                                      className="px-3 py-1 border border-gray-300 dark:border-gray-600 rounded-full text-sm dark:bg-gray-700 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                      className="input-inline-elegant"
                                       placeholder="New category"
                                       autoFocus
                                     />

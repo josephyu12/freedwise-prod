@@ -305,7 +305,7 @@ export default function SettingsPage() {
                   id="enabled"
                   checked={settings.enabled}
                   onChange={(e) => setSettings({ ...settings, enabled: e.target.checked })}
-                  className="w-5 h-5 text-blue-600 rounded focus:ring-blue-500"
+                  className="checkbox-elegant"
                 />
                 <label htmlFor="enabled" className="text-gray-700 dark:text-gray-300 font-medium">
                   Enable Notion sync
@@ -323,7 +323,7 @@ export default function SettingsPage() {
                         type={showApiKey ? 'text' : 'password'}
                         value={settings.notion_api_key}
                         onChange={(e) => setSettings({ ...settings, notion_api_key: e.target.value })}
-                        className="flex-1 px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent dark:bg-gray-700 dark:text-white"
+                        className="flex-1 input-boxed-elegant"
                         placeholder="secret_..."
                         required={settings.enabled}
                       />
@@ -356,7 +356,7 @@ export default function SettingsPage() {
                       type="text"
                       value={settings.notion_page_id}
                       onChange={(e) => setSettings({ ...settings, notion_page_id: e.target.value })}
-                      className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent dark:bg-gray-700 dark:text-white"
+                      className="input-boxed-elegant"
                       placeholder="32-character page ID from Notion URL"
                       required={settings.enabled}
                     />

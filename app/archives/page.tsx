@@ -98,7 +98,7 @@ export default function ArchivesPage() {
       // Update in database (no Notion sync - archive status not supported by Notion)
       await (supabase
         .from('highlights') as any)
-        .update({ archived: false })
+        .update({ archived: false, unarchived_at: new Date().toISOString() })
         .eq('id', id)
 
       await loadHighlights()
