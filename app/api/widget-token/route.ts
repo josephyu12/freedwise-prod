@@ -2,15 +2,17 @@ import { createClient } from '@/lib/supabase/server'
 import { NextResponse } from 'next/server'
 import crypto from 'crypto'
 
-// Signs a user ID with HMAC to create a long-lived widget token
-// Token format: userId.signature
+// Signs a user ID with HMAC to create a widget token with 90-day expiry
+// Token format: userId.expiryTimestamp.signature
 function createWidgetToken(userId: string): string {
   const secret = process.env.SUPABASE_SERVICE_ROLE_KEY!
+  const expiryTimestamp = Date.now() + (90 * 24 * 60 * 60 * 1000) // 90 days
+  const payload = `${userId}.${expiryTimestamp}`
   const signature = crypto
     .createHmac('sha256', secret)
-    .update(userId)
+    .update(payload)
     .digest('hex')
-  return `${userId}.${signature}`
+  return `${payload}.${signature}`
 }
 
 // GET: Generate a widget token for the authenticated user

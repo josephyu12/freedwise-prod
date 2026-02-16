@@ -5,17 +5,24 @@ import { Database } from '@/types/database'
 import crypto from 'crypto'
 
 // Verify the HMAC-signed widget token and extract the user ID
+// Token format: userId.expiryTimestamp.signature
 function verifyWidgetToken(token: string): string | null {
-  const dotIndex = token.lastIndexOf('.')
-  if (dotIndex === -1) return null
+  const parts = token.split('.')
+  if (parts.length !== 3) return null
 
-  const userId = token.substring(0, dotIndex)
-  const signature = token.substring(dotIndex + 1)
+  const [userId, expiryStr, signature] = parts
+  const expiryTimestamp = parseInt(expiryStr, 10)
 
+  // Check if expired
+  if (isNaN(expiryTimestamp) || Date.now() > expiryTimestamp) {
+    return null
+  }
+
+  const payload = `${userId}.${expiryStr}`
   const secret = process.env.SUPABASE_SERVICE_ROLE_KEY!
   const expected = crypto
     .createHmac('sha256', secret)
-    .update(userId)
+    .update(payload)
     .digest('hex')
 
   // Timing-safe comparison

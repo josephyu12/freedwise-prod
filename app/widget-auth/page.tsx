@@ -101,8 +101,11 @@ export default function WidgetAuthPage() {
     <main className="min-h-screen flex flex-col items-center justify-center bg-gradient-to-br from-blue-50 to-indigo-100 dark:from-gray-900 dark:to-gray-800 px-6">
       <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-xl p-8 max-w-md w-full">
         <h1 className="text-2xl font-bold text-gray-900 dark:text-white mb-2">Widget Setup</h1>
-        <p className="text-sm text-gray-600 dark:text-gray-400 mb-6">
+        <p className="text-sm text-gray-600 dark:text-gray-400 mb-2">
           Copy this token and paste it into your Scriptable widget script as the <code className="bg-gray-100 dark:bg-gray-700 px-1 rounded text-xs">WIDGET_TOKEN</code> value.
+        </p>
+        <p className="text-xs text-gray-500 dark:text-gray-500 mb-4">
+          Token expires in 90 days. Regenerate anytime by returning to this page.
         </p>
 
         <div className="relative">
@@ -123,9 +126,10 @@ export default function WidgetAuthPage() {
           <ol className="text-xs text-blue-700 dark:text-blue-400 space-y-1 list-decimal list-inside">
             <li>Install Scriptable from the App Store</li>
             <li>Create a new script, paste the widget code</li>
-            <li>Replace <code className="bg-blue-100 dark:bg-blue-900/50 px-1 rounded">WIDGET_TOKEN</code> with the token above</li>
-            <li>Add a Medium Scriptable widget to your home screen</li>
-            <li>Long-press widget &gt; Edit Widget &gt; choose script</li>
+            <li>Paste token above as <code className="bg-blue-100 dark:bg-blue-900/50 px-1 rounded">WIDGET_TOKEN</code></li>
+            <li>Run script once (tap Play button)</li>
+            <li><strong>Clear token from script</strong> (stored securely in Keychain)</li>
+            <li>Add Medium Scriptable widget to home screen</li>
           </ol>
         </div>
 

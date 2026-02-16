@@ -4,18 +4,21 @@
 // 1. Install "Scriptable" from the App Store
 // 2. Create a new script and paste this entire file
 // 3. Open freedwise.vercel.app/widget-auth in Safari to get your token
-// 4. Paste the token below as WIDGET_TOKEN
-// 5. Add a Medium Scriptable widget to your home screen
-// 6. Long-press the widget > Edit Widget > choose this script
+// 4. Paste the token below as WIDGET_TOKEN (temporarily)
+// 5. Run the script ONCE by tapping the Play button (not as widget)
+// 6. After seeing "Token stored securely", CLEAR the token from line 18 below
+// 7. Add a Large Scriptable widget to your home screen
+// 8. Long-press the widget > Edit Widget > choose this script
 //
 // The widget shows your next unrated highlight with Low/Med/High buttons.
-// Tapping a button opens the Freedwise review page and auto-rates it.
-// The widget refreshes every ~15 minutes (iOS-controlled).
+// To revoke access, go to Settings in the Freedwise app.
 
 // ============ CONFIGURATION ============
 const APP_URL = 'https://freedwise.vercel.app'
-const WIDGET_TOKEN = '' // <-- Paste your token from /widget-auth here
+const WIDGET_TOKEN = '' // <-- Paste token here temporarily, then CLEAR after first run
 // =======================================
+
+const KEYCHAIN_KEY = 'freedwise_widget_token'
 
 const COLORS = {
   bg: new Color('#f0f4ff'),
@@ -38,12 +41,33 @@ const COLORS = {
   progressDark: new Color('#374151'),
 }
 
+// ─── Token Management ───────────────────────────────────────
+
+function getToken() {
+  // First check Keychain
+  if (Keychain.contains(KEYCHAIN_KEY)) {
+    return Keychain.get(KEYCHAIN_KEY)
+  }
+
+  // If token is pasted in script, move it to Keychain
+  if (WIDGET_TOKEN && WIDGET_TOKEN.length > 10) {
+    Keychain.set(KEYCHAIN_KEY, WIDGET_TOKEN)
+    return WIDGET_TOKEN
+  }
+
+  return null
+}
+
+function clearToken() {
+  if (Keychain.contains(KEYCHAIN_KEY)) {
+    Keychain.remove(KEYCHAIN_KEY)
+  }
+}
+
 // ─── API call ───────────────────────────────────────────────
 
-async function fetchWidgetData() {
-  if (!WIDGET_TOKEN) return { _debug: 'No token set' }
-
-  const url = `${APP_URL}/api/review/widget?token=${encodeURIComponent(WIDGET_TOKEN)}`
+async function fetchWidgetData(token) {
+  const url = `${APP_URL}/api/review/widget?token=${encodeURIComponent(token)}`
 
   try {
     const req = new Request(url)
@@ -51,6 +75,8 @@ async function fetchWidgetData() {
     const res = await req.loadJSON()
 
     if (res.tokenExpired) {
+      // Token was revoked - clear from Keychain
+      clearToken()
       return { tokenExpired: true }
     }
 
@@ -81,7 +107,13 @@ function stripHtml(html) {
 
 function truncate(text, maxLen) {
   if (text.length <= maxLen) return text
-  return text.substring(0, maxLen - 1) + '\u2026'
+  // Find last complete word within limit
+  const truncated = text.substring(0, maxLen - 1)
+  const lastSpace = truncated.lastIndexOf(' ')
+  if (lastSpace > maxLen * 0.7) {
+    return truncated.substring(0, lastSpace) + '…'
+  }
+  return truncated + '…'
 }
 
 // ─── Widget ─────────────────────────────────────────────────
@@ -90,47 +122,88 @@ async function createWidget() {
   const widget = new ListWidget()
   const isDark = Device.isUsingDarkAppearance()
   widget.backgroundColor = isDark ? COLORS.bgDark : COLORS.bg
-  widget.setPadding(12, 14, 12, 14)
+  widget.setPadding(20, 20, 20, 20)
 
-  if (!WIDGET_TOKEN) {
-    const msg = widget.addText('Paste your token in the script.\nGet it at /widget-auth')
-    msg.font = Font.mediumSystemFont(13)
-    msg.textColor = isDark ? COLORS.textDark : COLORS.text
+  const token = getToken()
+
+  // Show setup instructions if no token
+  if (!token) {
+    widget.addSpacer()
+    const title = widget.addText('Widget Setup')
+    title.font = Font.boldSystemFont(16)
+    title.textColor = isDark ? COLORS.textDark : COLORS.text
+    title.centerAlignText()
+    widget.addSpacer(12)
+
+    const msg = widget.addText('1. Get token from /widget-auth\n2. Paste in script as WIDGET_TOKEN\n3. Run script once (tap Play)\n4. Clear token from script')
+    msg.font = Font.systemFont(13)
+    msg.textColor = isDark ? COLORS.textMutedDark : COLORS.textMuted
+    msg.centerAlignText()
+    widget.addSpacer()
     widget.url = `${APP_URL}/widget-auth`
     return widget
   }
 
-  const data = await fetchWidgetData()
+  // If running manually (not as widget) and token is still in script, show reminder
+  if (!config.runsInWidget && WIDGET_TOKEN && WIDGET_TOKEN.length > 10) {
+    widget.addSpacer()
+    const title = widget.addText('✓ Token Stored Securely')
+    title.font = Font.boldSystemFont(18)
+    title.textColor = COLORS.blue
+    title.centerAlignText()
+    widget.addSpacer(12)
+
+    const msg = widget.addText('Now CLEAR the WIDGET_TOKEN from line 18 in your script.\n\nThe token is stored in Keychain and no longer needs to be in the script.')
+    msg.font = Font.systemFont(14)
+    msg.textColor = isDark ? COLORS.textDark : COLORS.text
+    msg.centerAlignText()
+    widget.addSpacer()
+    return widget
+  }
+
+  const data = await fetchWidgetData(token)
 
   // Debug: show raw response info
   if (data && data._debug) {
+    widget.addSpacer()
     const msg = widget.addText(`Debug: ${data._debug}`)
-    msg.font = Font.mediumSystemFont(11)
+    msg.font = Font.mediumSystemFont(13)
     msg.textColor = isDark ? COLORS.textDark : COLORS.text
+    msg.centerAlignText()
+    widget.addSpacer()
     widget.url = `${APP_URL}/review`
     return widget
   }
 
   if (!data) {
-    const msg = widget.addText('Could not load highlights (null response)')
-    msg.font = Font.mediumSystemFont(14)
+    widget.addSpacer()
+    const msg = widget.addText('Could not load highlights')
+    msg.font = Font.mediumSystemFont(16)
     msg.textColor = isDark ? COLORS.textDark : COLORS.text
+    msg.centerAlignText()
+    widget.addSpacer()
     widget.url = `${APP_URL}/review`
     return widget
   }
 
   if (data.tokenExpired) {
-    const msg = widget.addText('Invalid token.\nGet a new one at /widget-auth')
-    msg.font = Font.mediumSystemFont(13)
+    widget.addSpacer()
+    const msg = widget.addText('Token revoked.\nGet a new one at /widget-auth')
+    msg.font = Font.mediumSystemFont(15)
     msg.textColor = isDark ? COLORS.textDark : COLORS.text
+    msg.centerAlignText()
+    widget.addSpacer()
     widget.url = `${APP_URL}/widget-auth`
     return widget
   }
 
   if (data.error) {
+    widget.addSpacer()
     const msg = widget.addText('Could not load highlights')
-    msg.font = Font.mediumSystemFont(14)
+    msg.font = Font.mediumSystemFont(16)
     msg.textColor = isDark ? COLORS.textDark : COLORS.text
+    msg.centerAlignText()
+    widget.addSpacer()
     widget.url = `${APP_URL}/review`
     return widget
   }
@@ -138,20 +211,25 @@ async function createWidget() {
   // All done state
   if (data.allDone || !data.highlight) {
     const header = widget.addText('Freedwise')
-    header.font = Font.boldSystemFont(13)
+    header.font = Font.boldSystemFont(15)
     header.textColor = COLORS.blue
+    header.centerAlignText()
+
+    widget.addSpacer()
+
+    const done = widget.addText('All done for today! 🎉')
+    done.font = Font.mediumSystemFont(20)
+    done.textColor = isDark ? COLORS.textDark : COLORS.text
+    done.centerAlignText()
 
     widget.addSpacer(8)
 
-    const done = widget.addText('All done for today! \uD83C\uDF89')
-    done.font = Font.mediumSystemFont(16)
-    done.textColor = isDark ? COLORS.textDark : COLORS.text
-
-    widget.addSpacer(4)
-
     const stats = widget.addText(`${data.reviewed}/${data.total} reviewed`)
-    stats.font = Font.regularSystemFont(12)
+    stats.font = Font.regularSystemFont(15)
     stats.textColor = isDark ? COLORS.textMutedDark : COLORS.textMuted
+    stats.centerAlignText()
+
+    widget.addSpacer()
 
     widget.url = `${APP_URL}/review`
     return widget
@@ -166,50 +244,43 @@ async function createWidget() {
   headerStack.centerAlignContent()
 
   const title = headerStack.addText('Freedwise')
-  title.font = Font.boldSystemFont(13)
+  title.font = Font.boldSystemFont(15)
   title.textColor = COLORS.blue
 
   headerStack.addSpacer()
 
   const progress = headerStack.addText(`${data.reviewed}/${data.total}`)
-  progress.font = Font.mediumSystemFont(11)
+  progress.font = Font.mediumSystemFont(13)
   progress.textColor = isDark ? COLORS.textMutedDark : COLORS.textMuted
 
-  widget.addSpacer(6)
+  widget.addSpacer(12)
 
-  // Progress bar
-  const barStack = widget.addStack()
-  barStack.layoutHorizontally()
-  barStack.size = new Size(0, 3)
-  barStack.cornerRadius = 2
-  barStack.backgroundColor = isDark ? COLORS.progressDark : COLORS.progress
-
-  widget.addSpacer(8)
-
-  // Highlight text
-  const displayText = truncate(highlightText, 180)
-  const body = widget.addText(displayText)
-  body.font = Font.regularSystemFont(14)
+  // Highlight text - allow more lines, better wrapping
+  const body = widget.addText(highlightText)
+  body.font = Font.regularSystemFont(17)
   body.textColor = isDark ? COLORS.textDark : COLORS.text
-  body.lineLimit = 6
+  body.lineLimit = 12
+  body.centerAlignText()
 
   // Source / author
   if (h.source || h.author) {
-    widget.addSpacer(4)
+    widget.addSpacer(8)
     const meta = widget.addText(
-      [h.author, h.source].filter(Boolean).join(' \u00B7 ')
+      [h.author, h.source].filter(Boolean).join(' · ')
     )
-    meta.font = Font.italicSystemFont(11)
+    meta.font = Font.italicSystemFont(13)
     meta.textColor = isDark ? COLORS.textMutedDark : COLORS.textMuted
     meta.lineLimit = 1
+    meta.centerAlignText()
   }
 
   widget.addSpacer()
 
-  // Rating buttons row
+  // Rating buttons row - centered
   const btnStack = widget.addStack()
   btnStack.layoutHorizontally()
-  btnStack.spacing = 8
+  btnStack.spacing = 12
+  btnStack.centerAlignContent()
 
   const rateUrl = (rating) =>
     `${APP_URL}/review?rate=${rating}&id=${h.summaryHighlightId}`
@@ -218,15 +289,14 @@ async function createWidget() {
   const lowBtn = btnStack.addStack()
   lowBtn.layoutHorizontally()
   lowBtn.centerAlignContent()
-  lowBtn.setPadding(8, 0, 8, 0)
-  lowBtn.cornerRadius = 10
+  lowBtn.setPadding(12, 24, 12, 24)
+  lowBtn.cornerRadius = 12
   lowBtn.backgroundColor = COLORS.red
   lowBtn.borderColor = COLORS.redBorder
-  lowBtn.borderWidth = 1
-  lowBtn.size = new Size(0, 36)
+  lowBtn.borderWidth = 2
   lowBtn.url = rateUrl('low')
-  const lowLabel = lowBtn.addText('  Low  ')
-  lowLabel.font = Font.semiboldSystemFont(14)
+  const lowLabel = lowBtn.addText('Low')
+  lowLabel.font = Font.semiboldSystemFont(16)
   lowLabel.textColor = COLORS.redText
   lowLabel.centerAlignText()
 
@@ -234,15 +304,14 @@ async function createWidget() {
   const medBtn = btnStack.addStack()
   medBtn.layoutHorizontally()
   medBtn.centerAlignContent()
-  medBtn.setPadding(8, 0, 8, 0)
-  medBtn.cornerRadius = 10
+  medBtn.setPadding(12, 24, 12, 24)
+  medBtn.cornerRadius = 12
   medBtn.backgroundColor = COLORS.yellow
   medBtn.borderColor = COLORS.yellowBorder
-  medBtn.borderWidth = 1
-  medBtn.size = new Size(0, 36)
+  medBtn.borderWidth = 2
   medBtn.url = rateUrl('med')
-  const medLabel = medBtn.addText('  Med  ')
-  medLabel.font = Font.semiboldSystemFont(14)
+  const medLabel = medBtn.addText('Med')
+  medLabel.font = Font.semiboldSystemFont(16)
   medLabel.textColor = COLORS.yellowText
   medLabel.centerAlignText()
 
@@ -250,15 +319,14 @@ async function createWidget() {
   const highBtn = btnStack.addStack()
   highBtn.layoutHorizontally()
   highBtn.centerAlignContent()
-  highBtn.setPadding(8, 0, 8, 0)
-  highBtn.cornerRadius = 10
+  highBtn.setPadding(12, 24, 12, 24)
+  highBtn.cornerRadius = 12
   highBtn.backgroundColor = COLORS.green
   highBtn.borderColor = COLORS.greenBorder
-  highBtn.borderWidth = 1
-  highBtn.size = new Size(0, 36)
+  highBtn.borderWidth = 2
   highBtn.url = rateUrl('high')
-  const highLabel = highBtn.addText('  High  ')
-  highLabel.font = Font.semiboldSystemFont(14)
+  const highLabel = highBtn.addText('High')
+  highLabel.font = Font.semiboldSystemFont(16)
   highLabel.textColor = COLORS.greenText
   highLabel.centerAlignText()
 
@@ -273,7 +341,7 @@ const widget = await createWidget()
 if (config.runsInWidget) {
   Script.setWidget(widget)
 } else {
-  widget.presentMedium()
+  widget.presentLarge()
 }
 
 Script.complete()
