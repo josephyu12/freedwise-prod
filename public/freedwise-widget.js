@@ -3,8 +3,9 @@
 // Setup:
 // 1. Install "Scriptable" from the App Store
 // 2. Create a new script and paste this entire file
-// 3. Set APP_URL below to your Freedwise deployment URL
-// 4. Add a Medium or Large Scriptable widget to your home screen
+// 3. Run the script once IN THE APP (not as widget) — it will open a
+//    login page. Sign in, then it stores your credentials securely.
+// 4. Add a Medium Scriptable widget to your home screen
 // 5. Long-press the widget > Edit Widget > choose this script
 //
 // The widget shows your next unrated highlight with Low/Med/High buttons.
@@ -15,11 +16,13 @@
 const APP_URL = 'https://freedwise.vercel.app'
 // =======================================
 
+const KEYCHAIN_KEY = 'freedwise_refresh_token'
+const SUPABASE_URL = 'https://kiguewhexyxthomovykj.supabase.co' // Set this too
+const SUPABASE_ANON_KEY = 'sb_publishable_6Z509EtXh5_b8aDroCGRYQ_vAx1U2Yw' // Set this too
+
 const COLORS = {
   bg: new Color('#f0f4ff'),
   bgDark: new Color('#1a1a2e'),
-  card: new Color('#ffffff'),
-  cardDark: new Color('#2d2d44'),
   text: new Color('#1f2937'),
   textDark: new Color('#e5e7eb'),
   textMuted: new Color('#6b7280'),
@@ -38,22 +41,95 @@ const COLORS = {
   progressDark: new Color('#374151'),
 }
 
-async function fetchNextHighlight() {
-  const url = `${APP_URL}/api/review/next`
-  const req = new Request(url)
+// ─── Auth helpers ───────────────────────────────────────────
 
-  // Use the same cookies as Safari so we're authenticated
-  req.headers = {
-    'Accept': 'application/json',
+async function authenticate() {
+  // Try to use stored refresh token first
+  if (Keychain.contains(KEYCHAIN_KEY)) {
+    const refreshToken = Keychain.get(KEYCHAIN_KEY)
+    const tokens = await refreshAccessToken(refreshToken)
+    if (tokens) return tokens.access_token
   }
 
+  // No stored token or refresh failed — need interactive login
+  if (config.runsInWidget) {
+    // Can't do interactive login from widget
+    return null
+  }
+
+  return await interactiveLogin()
+}
+
+async function refreshAccessToken(refreshToken) {
   try {
+    const req = new Request(`${SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`)
+    req.method = 'POST'
+    req.headers = {
+      'Content-Type': 'application/json',
+      'apikey': SUPABASE_ANON_KEY,
+    }
+    req.body = JSON.stringify({ refresh_token: refreshToken })
     const res = await req.loadJSON()
-    return res
+
+    if (res.access_token && res.refresh_token) {
+      // Store the new refresh token
+      Keychain.set(KEYCHAIN_KEY, res.refresh_token)
+      return { access_token: res.access_token, refresh_token: res.refresh_token }
+    }
+    return null
   } catch (e) {
     return null
   }
 }
+
+async function interactiveLogin() {
+  const wv = new WebView()
+  await wv.loadURL(`${APP_URL}/widget-auth`)
+
+  // Let the user interact (log in if needed)
+  await wv.present()
+
+  // After the WebView is dismissed, try to read session tokens
+  try {
+    const result = await wv.evaluateJavaScript(`
+      (function() {
+        var el = document.getElementById('widget-session');
+        return el ? el.textContent : null;
+      })()
+    `)
+
+    if (result) {
+      const tokens = JSON.parse(result)
+      if (tokens.refresh_token) {
+        Keychain.set(KEYCHAIN_KEY, tokens.refresh_token)
+        return tokens.access_token
+      }
+    }
+  } catch (e) {
+    // ignore
+  }
+
+  return null
+}
+
+// ─── API call ───────────────────────────────────────────────
+
+async function fetchNextHighlight(accessToken) {
+  const url = `${APP_URL}/api/review/next`
+  const req = new Request(url)
+  req.headers = {
+    'Accept': 'application/json',
+    'Authorization': `Bearer ${accessToken}`,
+  }
+
+  try {
+    return await req.loadJSON()
+  } catch (e) {
+    return null
+  }
+}
+
+// ─── Helpers ────────────────────────────────────────────────
 
 function stripHtml(html) {
   if (!html) return ''
@@ -77,17 +153,32 @@ function truncate(text, maxLen) {
   return text.substring(0, maxLen - 1) + '\u2026'
 }
 
-async function createWidget() {
-  const data = await fetchNextHighlight()
-  const widget = new ListWidget()
+// ─── Widget ─────────────────────────────────────────────────
 
+async function createWidget() {
+  const widget = new ListWidget()
   const isDark = Device.isUsingDarkAppearance()
   widget.backgroundColor = isDark ? COLORS.bgDark : COLORS.bg
   widget.setPadding(12, 14, 12, 14)
 
-  // Error / no data state
+  const accessToken = await authenticate()
+
+  if (!accessToken) {
+    const msg = widget.addText('Run script in Scriptable to sign in')
+    msg.font = Font.mediumSystemFont(14)
+    msg.textColor = isDark ? COLORS.textDark : COLORS.text
+    widget.url = `${APP_URL}/review`
+    return widget
+  }
+
+  const data = await fetchNextHighlight(accessToken)
+
   if (!data || data.error) {
-    const msg = widget.addText('Open Freedwise to sign in')
+    // Token might have expired — clear it so next run re-authenticates
+    if (Keychain.contains(KEYCHAIN_KEY)) {
+      Keychain.remove(KEYCHAIN_KEY)
+    }
+    const msg = widget.addText('Run script in Scriptable to sign in')
     msg.font = Font.mediumSystemFont(14)
     msg.textColor = isDark ? COLORS.textDark : COLORS.text
     widget.url = `${APP_URL}/review`

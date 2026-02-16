@@ -110,6 +110,13 @@ function ReviewPageContent() {
           : null,
       }))
 
+      // Sort by text length (shortest first) for faster reviewing
+      processed.sort((a, b) => {
+        const aLen = a.highlight?.text?.length || 0
+        const bLen = b.highlight?.text?.length || 0
+        return aLen - bLen
+      })
+
       setHighlights(processed)
 
       // Start at the first unrated highlight
@@ -449,7 +456,8 @@ function ReviewPageContent() {
               )}
 
               <div
-                className="highlight-content text-lg leading-relaxed prose dark:prose-invert max-w-none mb-4"
+                className="highlight-content text-lg leading-relaxed prose dark:prose-invert max-w-none mb-4 overflow-hidden"
+                style={{ maxHeight: '12em', WebkitMaskImage: (current.highlight.text?.length || 0) > 300 ? 'linear-gradient(to bottom, black 70%, transparent 100%)' : undefined }}
                 dangerouslySetInnerHTML={{
                   __html: current.highlight.html_content || current.highlight.text,
                 }}

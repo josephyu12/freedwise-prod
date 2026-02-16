@@ -1,16 +1,43 @@
 import { createClient } from '@/lib/supabase/server'
-import { NextResponse } from 'next/server'
+import { createServerClient } from '@supabase/ssr'
+import { NextRequest, NextResponse } from 'next/server'
 import { format } from 'date-fns'
+import { Database } from '@/types/database'
 
 // GET: Get the next unrated highlight for today's daily summary
-// Used by the Scriptable widget to display a highlight
-export async function GET() {
+// Supports cookie auth (browser) and Bearer token auth (widget)
+export async function GET(request: NextRequest) {
   try {
-    const supabase = await createClient()
-    const { data: { user }, error: userError } = await supabase.auth.getUser()
+    let supabase
+    let user
 
-    if (userError || !user) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    // Check for Bearer token auth (from Scriptable widget)
+    const authHeader = request.headers.get('authorization')
+    if (authHeader?.startsWith('Bearer ')) {
+      const token = authHeader.slice(7)
+      // Create a Supabase client and verify the token
+      supabase = createServerClient<Database>(
+        process.env.NEXT_PUBLIC_SUPABASE_URL!,
+        process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ||
+        process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+        {
+          cookies: { getAll: () => [], setAll: () => {} },
+          global: { headers: { Authorization: `Bearer ${token}` } },
+        }
+      )
+      const { data, error } = await supabase.auth.getUser(token)
+      if (error || !data.user) {
+        return NextResponse.json({ error: 'Invalid token' }, { status: 401 })
+      }
+      user = data.user
+    } else {
+      // Cookie-based auth (browser)
+      supabase = await createClient()
+      const { data, error } = await supabase.auth.getUser()
+      if (error || !data.user) {
+        return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+      }
+      user = data.user
     }
 
     const today = format(new Date(), 'yyyy-MM-dd')
@@ -42,8 +69,8 @@ export async function GET() {
     const total = (allHighlights || []).length
     const reviewed = (allHighlights || []).filter((h: any) => h.rating !== null).length
 
-    // Get first unrated highlight with full details
-    const { data: nextHighlight, error: nextError } = await supabase
+    // Get all unrated highlights, then pick the shortest one
+    const { data: unratedHighlights, error: nextError } = await supabase
       .from('daily_summary_highlights')
       .select(`
         id,
@@ -59,25 +86,28 @@ export async function GET() {
       .eq('daily_summary_id', summary.id)
       .is('rating', null)
       .order('id', { ascending: true })
-      .limit(1)
-      .maybeSingle()
 
     if (nextError) throw nextError
 
-    if (!nextHighlight) {
+    if (!unratedHighlights || unratedHighlights.length === 0) {
       return NextResponse.json({ highlight: null, total, reviewed, allDone: true })
     }
 
-    const nh = nextHighlight as any
+    // Pick the shortest highlight by text length
+    const shortest = (unratedHighlights as any[]).reduce((shortest, current) => {
+      const shortestLen = shortest.highlight?.text?.length || Infinity
+      const currentLen = current.highlight?.text?.length || Infinity
+      return currentLen < shortestLen ? current : shortest
+    })
 
     return NextResponse.json({
       highlight: {
-        summaryHighlightId: nh.id,
-        highlightId: nh.highlight_id,
-        text: nh.highlight?.text || '',
-        htmlContent: nh.highlight?.html_content || null,
-        source: nh.highlight?.source || null,
-        author: nh.highlight?.author || null,
+        summaryHighlightId: shortest.id,
+        highlightId: shortest.highlight_id,
+        text: shortest.highlight?.text || '',
+        htmlContent: shortest.highlight?.html_content || null,
+        source: shortest.highlight?.source || null,
+        author: shortest.highlight?.author || null,
       },
       total,
       reviewed,
