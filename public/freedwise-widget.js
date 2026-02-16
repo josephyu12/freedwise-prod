@@ -14,8 +14,6 @@
 
 // ============ CONFIGURATION ============
 const APP_URL = 'https://freedwise.vercel.app'
-const SUPABASE_URL = 'https://kiguewhexyxthomovykj.supabase.co'
-const SUPABASE_ANON_KEY = 'sb_publishable_6Z509EtXh5_b8aDroCGRYQ_vAx1U2Yw'
 const REFRESH_TOKEN = '' // <-- Paste your token from /widget-auth here
 // =======================================
 
@@ -40,48 +38,36 @@ const COLORS = {
   progressDark: new Color('#374151'),
 }
 
-// ─── Auth ───────────────────────────────────────────────────
+// ─── API call ───────────────────────────────────────────────
 
-async function getAccessToken() {
-  // Use stored refresh token if we have one (from a previous refresh)
-  const storedToken = Keychain.contains('freedwise_rt')
+async function fetchWidgetData() {
+  const token = Keychain.contains('freedwise_rt')
     ? Keychain.get('freedwise_rt')
     : REFRESH_TOKEN
 
-  if (!storedToken) return null
+  if (!token) return null
 
   try {
-    const req = new Request(`${SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`)
-    req.method = 'POST'
-    req.headers = {
-      'Content-Type': 'application/json',
-      'apikey': SUPABASE_ANON_KEY,
-    }
-    req.body = JSON.stringify({ refresh_token: storedToken })
+    const req = new Request(
+      `${APP_URL}/api/review/widget?token=${encodeURIComponent(token)}`
+    )
+    req.headers = { 'Accept': 'application/json' }
     const res = await req.loadJSON()
 
-    if (res.access_token && res.refresh_token) {
-      // Store the new refresh token for next time
-      Keychain.set('freedwise_rt', res.refresh_token)
-      return res.access_token
+    if (res.tokenExpired) {
+      // Clear stored token so user knows to get a new one
+      if (Keychain.contains('freedwise_rt')) {
+        Keychain.remove('freedwise_rt')
+      }
+      return { tokenExpired: true }
     }
-    return null
-  } catch (e) {
-    return null
-  }
-}
 
-// ─── API call ───────────────────────────────────────────────
+    // Store the new refresh token for next time
+    if (res.newRefreshToken) {
+      Keychain.set('freedwise_rt', res.newRefreshToken)
+    }
 
-async function fetchNextHighlight(accessToken) {
-  const req = new Request(`${APP_URL}/api/review/next`)
-  req.headers = {
-    'Accept': 'application/json',
-    'Authorization': `Bearer ${accessToken}`,
-  }
-
-  try {
-    return await req.loadJSON()
+    return res
   } catch (e) {
     return null
   }
@@ -127,13 +113,17 @@ async function createWidget() {
     return widget
   }
 
-  const accessToken = await getAccessToken()
+  const data = await fetchWidgetData()
 
-  if (!accessToken) {
-    // Token expired — user needs to get a new one
-    if (Keychain.contains('freedwise_rt')) {
-      Keychain.remove('freedwise_rt')
-    }
+  if (!data) {
+    const msg = widget.addText('Could not load highlights')
+    msg.font = Font.mediumSystemFont(14)
+    msg.textColor = isDark ? COLORS.textDark : COLORS.text
+    widget.url = `${APP_URL}/review`
+    return widget
+  }
+
+  if (data.tokenExpired) {
     const msg = widget.addText('Token expired.\nGet a new one at /widget-auth')
     msg.font = Font.mediumSystemFont(13)
     msg.textColor = isDark ? COLORS.textDark : COLORS.text
@@ -141,9 +131,7 @@ async function createWidget() {
     return widget
   }
 
-  const data = await fetchNextHighlight(accessToken)
-
-  if (!data || data.error) {
+  if (data.error) {
     const msg = widget.addText('Could not load highlights')
     msg.font = Font.mediumSystemFont(14)
     msg.textColor = isDark ? COLORS.textDark : COLORS.text
