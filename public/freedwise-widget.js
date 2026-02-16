@@ -101,18 +101,18 @@ function stripHtml(html) {
     if (tag === 'ul' || tag === 'ol') {
       if (isClosing === '/') {
         nestLevel = Math.max(0, nestLevel - 1)
-        return '\n'
+        return ''
       } else {
         nestLevel++
         return ''
       }
     } else if (tag === 'li') {
       if (isClosing === '/') {
-        return ''
+        return '\n'
       } else {
-        // Add bullet based on current nesting level
-        if (nestLevel > 1) return '\n  ◦ ' // Nested bullet with indent
-        return '\n• ' // Top-level bullet
+        // Add bullet based on current nesting level (no leading newline)
+        if (nestLevel > 1) return '  ◦ ' // Nested bullet with indent
+        return '• ' // Top-level bullet
       }
     }
     return ''
