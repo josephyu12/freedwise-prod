@@ -47,12 +47,13 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ enqueued: false, message: 'Notion integration not configured' })
     }
 
-    // Deduplicate: skip if there is already a pending/processing item for this highlight + operation
-    // (For delete, highlightId is typically the id before delete; we still dedupe by highlight_id when provided)
+    // Deduplicate: if there is already a pending item for this highlight + operation,
+    // update it with the latest content so the newest edit wins. If the existing item
+    // is already processing (mid-flight), insert a new entry so the second edit isn't lost.
     if (operationType !== 'delete' && highlightId) {
       const { data: existing } = await (supabase
         .from('notion_sync_queue') as any)
-        .select('id')
+        .select('id, status')
         .eq('user_id', user.id)
         .eq('highlight_id', highlightId)
         .eq('operation_type', operationType)
@@ -61,7 +62,20 @@ export async function POST(request: NextRequest) {
         .maybeSingle()
 
       if (existing) {
-        return NextResponse.json({ enqueued: false, message: 'Already in queue', existing: true })
+        if (existing.status === 'pending') {
+          // Update the pending entry with the latest content
+          await (supabase
+            .from('notion_sync_queue') as any)
+            .update({
+              text: text ?? null,
+              html_content: htmlContent ?? null,
+              updated_at: new Date().toISOString(),
+            })
+            .eq('id', existing.id)
+          return NextResponse.json({ enqueued: true, message: 'Updated existing pending entry' })
+        }
+        // status === 'processing': let it fall through to insert a new entry
+        // so the second edit isn't lost after the first one completes
       }
     }
 
