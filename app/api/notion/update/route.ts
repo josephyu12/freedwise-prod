@@ -80,7 +80,8 @@ export async function POST(request: NextRequest) {
     const { matchingBlocks, foundMatch, exactMatch } = findMatchingHighlightBlocks(
       blocks,
       normalizedOriginalNoHtml,
-      normalizedOriginalPlainNoHtml
+      normalizedOriginalPlainNoHtml,
+      originalBlockText // BLOCK_BOUNDARY-separated text for per-block matching
     )
 
     if (!foundMatch || matchingBlocks.length === 0) {

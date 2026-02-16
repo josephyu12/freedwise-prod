@@ -103,7 +103,8 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
       const { matchingBlocks, foundMatch, exactMatch } = findMatchingHighlightBlocks(
         allBlocks,
         normalizedOriginalNoHtml,
-        normalizedOriginalPlainNoHtml
+        normalizedOriginalPlainNoHtml,
+        originalBlockText // BLOCK_BOUNDARY-separated text for per-block matching
       )
 
       if (!foundMatch || matchingBlocks.length === 0) {
@@ -135,6 +136,7 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
       ;(debugPayload as any).newBlocksLength = newBlocks.length
       ;(debugPayload as any).matchingBlocksLength = matchingBlocks.length
       ;(debugPayload as any).usedHtml = !!(newContentHtml && newContentHtml.trim())
+      ;(debugPayload as any).exactMatch = exactMatch
       console.warn('[notion/sync] update: Highlight found. Full debug:', JSON.stringify(debugPayload, null, 2))
 
       // Delete-and-recreate: delete all matching top-level blocks (children cascade),

@@ -747,72 +747,163 @@ export function getBlockText(block: any): string {
 }
 
 /**
- * Find the group of Notion blocks that exactly matches the normalized highlight text.
- * Same grouping rules and exact-match logic in both update and sync routes.
+ * Group Notion blocks into "highlight groups" separated by empty paragraphs
+ * or list↔non-list type transitions.
+ * Each group contains the raw blocks and the per-block normalized text.
+ */
+export function groupNotionBlocks(
+  blocks: any[]
+): Array<{ blocks: any[]; blockTexts: string[] }> {
+  const isListItem = (b: any) =>
+    b.type === 'bulleted_list_item' || b.type === 'numbered_list_item'
+  const isEmptyParagraph = (b: any) =>
+    b.type === 'paragraph' &&
+    (!b.paragraph?.rich_text || b.paragraph.rich_text.length === 0)
+
+  const groups: Array<{ blocks: any[]; blockTexts: string[] }> = []
+  let cur: any[] = []
+
+  const finalize = () => {
+    if (cur.length === 0) return
+    const texts = cur
+      .map((b) => normalizeForBlockCompare(getBlockText(b)))
+      .filter((t) => t.length > 0)
+    if (texts.length > 0) groups.push({ blocks: [...cur], blockTexts: texts })
+    cur = []
+  }
+
+  for (const block of blocks) {
+    const empty = isEmptyParagraph(block)
+    const list = isListItem(block)
+
+    let end = false
+    if (empty && cur.length > 0) {
+      end = true
+    } else if (cur.length > 0 && !empty) {
+      const last = cur[cur.length - 1]
+      const lastIsList = isListItem(last)
+      const lastIsParagraph = last.type === 'paragraph'
+      if (lastIsList && !list) end = true
+      else if (!lastIsList && list && !lastIsParagraph) end = true
+    }
+
+    if (end) {
+      finalize()
+      if (empty) continue
+    }
+
+    if (!empty || cur.length > 0) cur.push(block)
+  }
+  finalize()
+  return groups
+}
+
+/**
+ * Find the group of Notion blocks that matches the normalized highlight text.
+ *
+ * Uses two-pass matching:
+ *  1. Exact match: full combined text must be identical.
+ *  2. Block-by-block match: compare per-block texts from the start. Handles
+ *     content drift (Notion behind or ahead of the DB) by requiring the first
+ *     block to match and at least 50 % of blocks to align.
+ *
+ * The `rawBlockOrderText` parameter is the output of htmlToBlockText (blocks
+ * joined by BLOCK_BOUNDARY) BEFORE normalisation. Passing it enables per-block
+ * comparison.  When omitted, only the whole-string exact match is attempted.
  */
 export function findMatchingHighlightBlocks(
   blocks: any[],
   normalizedOriginalNoHtml: string,
-  normalizedOriginalPlainNoHtml: string
+  normalizedOriginalPlainNoHtml: string,
+  rawBlockOrderText?: string
 ): { matchingBlocks: any[]; foundMatch: boolean; exactMatch: boolean } {
-  const isListItem = (b: any) => b.type === 'bulleted_list_item' || b.type === 'numbered_list_item'
-  const isEmptyParagraph = (b: any) =>
-    b.type === 'paragraph' && (!b.paragraph?.rich_text || b.paragraph.rich_text.length === 0)
+  const groups = groupNotionBlocks(blocks)
 
-  const matchingBlocks: any[] = []
-  let currentHighlightBlocks: any[] = []
-  let foundMatch = false
-  let exactMatch = false
-
-  for (let i = 0; i < blocks.length; i++) {
-    const block = blocks[i]
-    const isEmpty = isEmptyParagraph(block)
-    const isList = isListItem(block)
-    let shouldEndGroup = false
-
-    if (isEmpty && currentHighlightBlocks.length > 0) {
-      shouldEndGroup = true
-    } else if (currentHighlightBlocks.length > 0 && !isEmpty) {
-      const lastBlock = currentHighlightBlocks[currentHighlightBlocks.length - 1]
-      const currentIsList = isListItem(lastBlock)
-      const currentIsParagraph = lastBlock.type === 'paragraph'
-      if (currentIsList && !isList) shouldEndGroup = true
-      else if (!currentIsList && isList && !currentIsParagraph) shouldEndGroup = true
-    }
-
-    if (shouldEndGroup) {
-      const combinedText = currentHighlightBlocks.map(getBlockText).join(BLOCK_BOUNDARY)
-      const normalizedCombined = normalizeForBlockCompare(combinedText)
-      const isExact =
-        normalizedCombined === normalizedOriginalNoHtml || normalizedCombined === normalizedOriginalPlainNoHtml
-      if (isExact) {
-        matchingBlocks.push(...currentHighlightBlocks)
-        foundMatch = true
-        exactMatch = true
-        return { matchingBlocks, foundMatch, exactMatch }
-      }
-      currentHighlightBlocks = []
-      if (isEmpty) continue
-    }
-
-    if (!isEmpty || currentHighlightBlocks.length > 0) {
-      currentHighlightBlocks.push(block)
+  // ── Pass 1: exact match on full combined text ──
+  for (const group of groups) {
+    const combined = group.blockTexts.join(' ')
+    if (
+      combined === normalizedOriginalNoHtml ||
+      combined === normalizedOriginalPlainNoHtml
+    ) {
+      return { matchingBlocks: group.blocks, foundMatch: true, exactMatch: true }
     }
   }
 
-  if (currentHighlightBlocks.length > 0) {
-    const combinedText = currentHighlightBlocks.map(getBlockText).join(BLOCK_BOUNDARY)
-    const normalizedCombined = normalizeForBlockCompare(combinedText)
+  // ── Pass 2: block-by-block leading match ──
+  // Build per-block search texts from the BLOCK_BOUNDARY-separated raw text.
+  const searchBlockTexts: string[] = rawBlockOrderText
+    ? rawBlockOrderText
+        .split(BLOCK_BOUNDARY)
+        .map((t) => normalizeForBlockCompare(t))
+        .filter((t) => t.length > 0)
+    : []
+
+  if (searchBlockTexts.length === 0) {
+    return { matchingBlocks: [], foundMatch: false, exactMatch: false }
+  }
+
+  let bestMatch: {
+    group: (typeof groups)[0]
+    leading: number
+    exact: boolean
+  } | null = null
+
+  for (const group of groups) {
+    const gTexts = group.blockTexts
+    if (gTexts.length === 0) continue
+
+    // First block must match (anchor)
+    if (gTexts[0] !== searchBlockTexts[0]) continue
+
+    // Count consecutive matching blocks from the start
+    const limit = Math.min(gTexts.length, searchBlockTexts.length)
+    let leading = 0
+    for (let i = 0; i < limit; i++) {
+      if (gTexts[i] === searchBlockTexts[i]) leading++
+      else break
+    }
+    if (leading === 0) continue
+
     const isExact =
-      normalizedCombined === normalizedOriginalNoHtml || normalizedCombined === normalizedOriginalPlainNoHtml
-    if (isExact) {
-      matchingBlocks.push(...currentHighlightBlocks)
-      foundMatch = true
-      exactMatch = true
+      leading === gTexts.length && leading === searchBlockTexts.length
+
+    if (
+      !bestMatch ||
+      leading > bestMatch.leading ||
+      (leading === bestMatch.leading && isExact)
+    ) {
+      bestMatch = { group, leading, exact: isExact }
     }
   }
 
-  return { matchingBlocks, foundMatch, exactMatch }
+  if (bestMatch) {
+    if (bestMatch.exact) {
+      return {
+        matchingBlocks: bestMatch.group.blocks,
+        foundMatch: true,
+        exactMatch: true,
+      }
+    }
+    // Accept partial match if first block matched and ≥50 % of the shorter
+    // side's blocks aligned.
+    const shorter = Math.min(
+      bestMatch.group.blockTexts.length,
+      searchBlockTexts.length
+    )
+    if (bestMatch.leading >= Math.ceil(shorter * 0.5)) {
+      console.warn(
+        `[findMatchingHighlightBlocks] Block-level match: ${bestMatch.leading}/${bestMatch.group.blockTexts.length} Notion blocks matched ${searchBlockTexts.length} search blocks. Content drift from previously failed syncs.`
+      )
+      return {
+        matchingBlocks: bestMatch.group.blocks,
+        foundMatch: true,
+        exactMatch: false,
+      }
+    }
+  }
+
+  return { matchingBlocks: [], foundMatch: false, exactMatch: false }
 }
 
 /**
