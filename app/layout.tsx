@@ -23,6 +23,10 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
+      <head>
+        <link rel="manifest" href="/manifest.json" />
+        <meta name="theme-color" content="#3b82f6" />
+      </head>
       <body>
         <div className="fixed top-2 right-2 sm:top-4 sm:right-4 z-50">
           <AuthButton />

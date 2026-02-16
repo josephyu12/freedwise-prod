@@ -1186,7 +1186,7 @@ export default function HighlightsPage() {
                       </div>
                     </div>
                   )}
-                  <div className="flex justify-between items-center mt-4">
+                  <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center mt-4 gap-3">
                     <div className="text-xs text-gray-400 dark:text-gray-500">
                       <div>
                         {(highlight as any).assigned_date && (
@@ -1222,7 +1222,7 @@ export default function HighlightsPage() {
                         </div>
                       )}
                     </div>
-                    <div className="flex gap-2">
+                    <div className="flex flex-col sm:flex-row gap-2">
                       {editingId !== highlight.id && (
                         <>
                           <button

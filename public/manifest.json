@@ -1,0 +1,16 @@
+{
+  "name": "Freedwise",
+  "short_name": "Freedwise",
+  "description": "Resurface your highlights in daily summaries",
+  "start_url": "/review",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#3b82f6",
+  "icons": [
+    {
+      "src": "/apple-touch-icon.png",
+      "sizes": "180x180",
+      "type": "image/png"
+    }
+  ]
+}

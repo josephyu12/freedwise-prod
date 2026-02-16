@@ -242,7 +242,7 @@ export default function ArchivesPage() {
                       {highlight.source && <span>{highlight.source}</span>}
                     </p>
                   )}
-                  <div className="flex gap-2 mt-3">
+                  <div className="flex flex-col sm:flex-row gap-2 mt-3">
                     <button
                       onClick={() => handleUnarchive(highlight.id)}
                       className="px-3 py-1 text-sm bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300 rounded hover:bg-blue-200 dark:hover:bg-blue-800 transition"
