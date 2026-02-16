@@ -159,11 +159,29 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
       // Insert new hierarchical blocks at the correct position
       await appendBlocksDeep(notion, notionSettings.notion_page_id, newBlocks, afterBlockId)
     } else if (queueItem.operation_type === 'delete') {
-      // For delete, use the text/html_content stored in the queue item to find the block
-      // Fetch all blocks from Notion page
-      const allBlocks: any[] = []
+      // For delete, use the text/html_content stored in the queue item to find the block.
+      // Same approach as update: fetch top-level blocks, flatten to include nested children,
+      // then use the shared findMatchingHighlightBlocks matcher.
+
+      // Build search strings from the queue item
+      let deleteBlockText = ''
+      let deletePlainText = (queueItem.text || '').trim().toLowerCase()
+      if (queueItem.html_content) {
+        deleteBlockText = htmlToBlockText(queueItem.html_content).trim().toLowerCase()
+      }
+      if (!deleteBlockText && deletePlainText) {
+        deleteBlockText = deletePlainText
+      }
+
+      const { normalizedOriginalNoHtml, normalizedOriginalPlainNoHtml } = buildNormalizedSearchStrings(deleteBlockText, deletePlainText)
+
+      if (!normalizedOriginalNoHtml && !normalizedOriginalPlainNoHtml) {
+        throw new Error('Cannot delete highlight: no text content available to find in Notion')
+      }
+
+      // Fetch all top-level blocks from Notion page
+      let allBlocks: any[] = []
       let cursor = undefined
-      
       do {
         const response = await notion.blocks.children.list({
           block_id: notionSettings.notion_page_id,
@@ -173,177 +191,54 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
         cursor = response.next_cursor || undefined
       } while (cursor)
 
-      // Use shared htmlToBlockText so delete search text matches Notion block order (paragraph + list).
-      // Function to extract plain text from a block
-      const getBlockText = (block: any): string => {
-        // Handle different block types
-        if (block.type === 'bulleted_list_item' && block.bulleted_list_item?.rich_text) {
-          return block.bulleted_list_item.rich_text
-            .map((t: any) => t.plain_text || '')
-            .join('')
-            .trim()
-            .toLowerCase()
-        }
-        if (block.type === 'numbered_list_item' && block.numbered_list_item?.rich_text) {
-          return block.numbered_list_item.rich_text
-            .map((t: any) => t.plain_text || '')
-            .join('')
-            .trim()
-            .toLowerCase()
-        }
-        if (block[block.type]?.rich_text) {
-          return block[block.type].rich_text
-            .map((t: any) => t.plain_text || '')
-            .join('')
-            .trim()
-            .toLowerCase()
-        }
-        return ''
-      }
-      
-      // Function to normalize text for comparison (remove extra whitespace, normalize quotes, etc.)
-      const normalizeText = (text: string): string => {
-        return text
-          .replace(/\s+/g, ' ') // Normalize whitespace
-          .replace(/[""]/g, '"') // Normalize quotes
-          .replace(/['']/g, "'") // Normalize apostrophes
-          .trim()
-          .toLowerCase()
-      }
+      // Save top-level blocks before flattening (needed to identify which blocks to delete)
+      const topLevelBlocks = [...allBlocks]
 
-      // Strip HTML for comparison: replace tags with space so list items don't get glued together
-      const stripHtmlForCompare = (text: string): string => {
-        return text.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase()
-      }
-      
-      // Convert HTML content to block text format (same as what we extract from Notion)
-      const deleteTextFromHtml = queueItem.html_content ? htmlToBlockText(queueItem.html_content) : ''
-      const deleteTextFromPlain = queueItem.text || ''
-      
-      // Normalize the delete text for comparison
-      const normalizedDeleteText = normalizeText(deleteTextFromHtml || deleteTextFromPlain)
-      const normalizedDeletePlainText = normalizeText(deleteTextFromPlain)
+      // Include nested/indented children so sub-bullets are visible for matching
+      allBlocks = await flattenBlocksWithChildren(notion, allBlocks)
 
-      if (!normalizedDeleteText && !normalizedDeletePlainText) {
-        throw new Error('Cannot delete highlight: no text content available to find in Notion')
-      }
-
-      // Find matching blocks (blocks that contain the text to delete)
-      // Group blocks by empty line separators OR by block type transitions
-      // List items (bulleted/numbered) should be grouped together
-      const matchingBlocks: any[] = []
-      let currentHighlightBlocks: any[] = []
-      let foundMatch = false
-      let emptyLineBefore: any | null = null
-      let emptyLineAfter: any | null = null
-
-      // Helper to check if a block is an empty paragraph
-      const isEmptyParagraph = (block: any) =>
-        block.type === 'paragraph' &&
-        (!block.paragraph?.rich_text || block.paragraph.rich_text.length === 0)
-
-      for (let i = 0; i < allBlocks.length; i++) {
-        const block = allBlocks[i]
-        const isEmpty = isEmptyParagraph(block)
-
-        // Only split groups on empty paragraphs (the separator between highlights)
-        if (isEmpty && currentHighlightBlocks.length > 0) {
-          // Check if this group of blocks matches the highlight to delete
-          const combinedText = normalizeText(
-            currentHighlightBlocks
-              .map(getBlockText)
-              .join(' ')
-          )
-
-          // Match using normalized text (strip HTML, replace tags with space so list items compare correctly)
-          const normalizedCombined = stripHtmlForCompare(combinedText)
-          const normalizedDeleteNoHtml = stripHtmlForCompare(normalizedDeleteText)
-          const normalizedDeletePlainNoHtml = stripHtmlForCompare(normalizedDeletePlainText)
-
-          // Exact match only: group text must equal the highlight we're deleting
-          if (normalizedCombined === normalizedDeleteNoHtml || normalizedCombined === normalizedDeletePlainNoHtml) {
-            matchingBlocks.push(...currentHighlightBlocks)
-            // The empty line after is the current block (if it's empty)
-            if (isEmpty) {
-            emptyLineAfter = block
-            }
-            foundMatch = true
-            break
-          }
-
-          // Reset for next group - the empty line before the next group is this one (if it's empty)
-          if (isEmpty) {
-          emptyLineBefore = block
-          }
-          currentHighlightBlocks = []
-          
-          // If this was an empty paragraph, skip it and continue
-          if (isEmpty) {
-          continue
-          }
-        }
-
-        // Add block to current group (unless it's an empty paragraph at the start)
-        if (!isEmpty) {
-          // Before extending the group, check if the current group alone already matches
-          // (fixes delete for single-block highlights when followed by another block with no empty line)
-          if (currentHighlightBlocks.length > 0) {
-            const currentCombined = normalizeText(
-              currentHighlightBlocks.map(getBlockText).join(' ')
-            )
-            const normalizedCurrent = stripHtmlForCompare(currentCombined)
-            const normalizedDeleteNoHtml = stripHtmlForCompare(normalizedDeleteText)
-            const normalizedDeletePlainNoHtml = stripHtmlForCompare(normalizedDeletePlainText)
-            // Exact match only: current group text must equal the highlight we're deleting
-            if (normalizedCurrent === normalizedDeleteNoHtml || normalizedCurrent === normalizedDeletePlainNoHtml) {
-              matchingBlocks.push(...currentHighlightBlocks)
-              foundMatch = true
-              break
-            }
-          }
-          currentHighlightBlocks.push(block)
-          // Clear emptyLineBefore since we're in a group now
-          emptyLineBefore = null
-        } else if (isEmpty && currentHighlightBlocks.length === 0) {
-          // Empty line before the current group starts
-          emptyLineBefore = block
-        }
-      }
-
-      // Check the last group if we haven't found a match
-      if (!foundMatch && currentHighlightBlocks.length > 0) {
-        const combinedText = normalizeText(
-          currentHighlightBlocks
-            .map(getBlockText)
-            .join(' ')
-        )
-
-        // Match using normalized text (strip HTML, replace tags with space so list items compare correctly)
-        const normalizedCombined = stripHtmlForCompare(combinedText)
-        const normalizedDeleteNoHtml = stripHtmlForCompare(normalizedDeleteText)
-        const normalizedDeletePlainNoHtml = stripHtmlForCompare(normalizedDeletePlainText)
-
-        // Exact match only: group text must equal the highlight we're deleting
-        if (normalizedCombined === normalizedDeleteNoHtml || normalizedCombined === normalizedDeletePlainNoHtml) {
-          matchingBlocks.push(...currentHighlightBlocks)
-          foundMatch = true
-        }
-      }
+      const { matchingBlocks, foundMatch } = findMatchingHighlightBlocks(
+        allBlocks,
+        normalizedOriginalNoHtml,
+        normalizedOriginalPlainNoHtml,
+        deleteBlockText // BLOCK_BOUNDARY-separated text for per-block matching
+      )
 
       if (!foundMatch || matchingBlocks.length === 0) {
+        const debugGroups = buildNormalizedBlockGroups(allBlocks).slice(-8)
+        console.warn('[notion/sync] delete: Highlight not found. Debug (last 8 groups):', JSON.stringify({
+          searchFromBlockOrder: normalizedOriginalNoHtml,
+          sampleNotionBlockGroups: debugGroups,
+        }, null, 2))
         throw new Error('Highlight not found in Notion page. It may have already been deleted.')
       }
 
-      // Delete all matching blocks; fail the queue item if any delete fails
-      for (const block of matchingBlocks) {
+      // Identify top-level blocks to delete (Notion cascades deletes to children automatically)
+      const matchingIds = new Set(matchingBlocks.map((b: any) => b.id))
+      const topLevelMatchingBlocks = topLevelBlocks.filter((b: any) => matchingIds.has(b.id))
+
+      // Delete top-level matching blocks
+      for (const block of topLevelMatchingBlocks) {
         await notion.blocks.delete({ block_id: block.id })
       }
 
-      // Delete the empty line separator (prefer the one after, but use before if after doesn't exist)
-      const emptyLineToDelete = emptyLineAfter || emptyLineBefore
-      if (emptyLineToDelete && emptyLineToDelete.type === 'paragraph' && 
-          (!emptyLineToDelete.paragraph?.rich_text || emptyLineToDelete.paragraph.rich_text.length === 0)) {
-        await notion.blocks.delete({ block_id: emptyLineToDelete.id })
+      // Delete the empty paragraph separator after the highlight (if present)
+      if (topLevelMatchingBlocks.length > 0) {
+        const lastMatchIdx = topLevelBlocks.findIndex((b: any) => b.id === topLevelMatchingBlocks[topLevelMatchingBlocks.length - 1].id)
+        const firstMatchIdx = topLevelBlocks.findIndex((b: any) => b.id === topLevelMatchingBlocks[0].id)
+
+        const isEmptyParagraph = (b: any) =>
+          b?.type === 'paragraph' &&
+          (!b.paragraph?.rich_text || b.paragraph.rich_text.length === 0)
+
+        // Prefer deleting the separator after; fall back to the one before
+        const blockAfter = lastMatchIdx >= 0 && lastMatchIdx + 1 < topLevelBlocks.length ? topLevelBlocks[lastMatchIdx + 1] : null
+        const blockBefore = firstMatchIdx > 0 ? topLevelBlocks[firstMatchIdx - 1] : null
+        const emptyLineToDelete = isEmptyParagraph(blockAfter) ? blockAfter : isEmptyParagraph(blockBefore) ? blockBefore : null
+
+        if (emptyLineToDelete) {
+          await notion.blocks.delete({ block_id: emptyLineToDelete.id })
+        }
       }
     }
 
