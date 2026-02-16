@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { Client } from '@notionhq/client'
-import { htmlToNotionBlocks, htmlToBlockText, normalizeForBlockCompare, getBlockText, findMatchingHighlightBlocks, buildNormalizedSearchStrings, flattenBlocksWithChildren, BLOCK_BOUNDARY, buildNormalizedBlockGroups } from '@/lib/notionBlocks'
+import { htmlToNotionBlocks, htmlToBlockText, normalizeForBlockCompare, getBlockText, findMatchingHighlightBlocks, buildNormalizedSearchStrings, flattenBlocksWithChildren, BLOCK_BOUNDARY, buildNormalizedBlockGroups, appendBlocksDeep } from '@/lib/notionBlocks'
 
 // Process a single queue item. Claim with status=processing first to avoid duplicate processing when multiple sync requests run.
 async function processQueueItem(supabase: any, queueItem: any, notionSettings: { notion_api_key: string; notion_page_id: string; enabled: boolean }) {
@@ -28,10 +28,7 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
         paragraph: { rich_text: [] },
       })
 
-      await notion.blocks.children.append({
-        block_id: notionSettings.notion_page_id,
-        children: blocks,
-      })
+      await appendBlocksDeep(notion, notionSettings.notion_page_id, blocks)
     } else if (queueItem.operation_type === 'update') {
       // For update, use the ORIGINAL text stored in the queue item to find the block.
       // Convert original_html_content to block-order text (same format as Notion: parts joined by space)
@@ -160,11 +157,7 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
       }
 
       // Insert new hierarchical blocks at the correct position
-      await notion.blocks.children.append({
-        block_id: notionSettings.notion_page_id,
-        children: newBlocks,
-        ...(afterBlockId ? { after: afterBlockId } : {}),
-      })
+      await appendBlocksDeep(notion, notionSettings.notion_page_id, newBlocks, afterBlockId)
     } else if (queueItem.operation_type === 'delete') {
       // For delete, use the text/html_content stored in the queue item to find the block
       // Fetch all blocks from Notion page
@@ -244,10 +237,6 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
       let emptyLineBefore: any | null = null
       let emptyLineAfter: any | null = null
 
-      // Helper to check if a block is a list item
-      const isListItem = (block: any) => 
-        block.type === 'bulleted_list_item' || block.type === 'numbered_list_item'
-      
       // Helper to check if a block is an empty paragraph
       const isEmptyParagraph = (block: any) =>
         block.type === 'paragraph' &&
@@ -256,24 +245,9 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
       for (let i = 0; i < allBlocks.length; i++) {
         const block = allBlocks[i]
         const isEmpty = isEmptyParagraph(block)
-        const isList = isListItem(block)
-        
-        // Determine if we should end the current group
-        let shouldEndGroup = false
 
+        // Only split groups on empty paragraphs (the separator between highlights)
         if (isEmpty && currentHighlightBlocks.length > 0) {
-          // Empty paragraph ends the group
-          shouldEndGroup = true
-        } else if (currentHighlightBlocks.length > 0) {
-          // Check for type transition: list to non-list or vice versa
-          const currentIsList = isListItem(currentHighlightBlocks[0])
-          if (currentIsList !== isList) {
-            // Transition from list to non-list (or vice versa) ends the group
-            shouldEndGroup = true
-          }
-        }
-        
-        if (shouldEndGroup) {
           // Check if this group of blocks matches the highlight to delete
           const combinedText = normalizeText(
             currentHighlightBlocks

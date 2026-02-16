@@ -559,6 +559,85 @@ export function htmlToNotionBlocks(html: string): any[] {
 }
 
 /**
+ * The Notion API only allows 2 levels of `children` nesting per append call.
+ * This function appends blocks that may have arbitrary nesting depth by splitting
+ * into multiple API calls:
+ *   1. First call appends blocks truncated to 2 levels of children.
+ *   2. Follow-up calls append deeper children to the blocks created in step 1.
+ *
+ * `notionClient` must be an initialised @notionhq/client Client instance.
+ */
+export async function appendBlocksDeep(
+  notionClient: any,
+  parentBlockId: string,
+  blocks: any[],
+  afterBlockId?: string | null
+): Promise<void> {
+  // Notion allows children nesting 2 levels deep in a single append call.
+  // E.g. top-level → children (depth 1) → children (depth 2). Depth 3+ is rejected.
+  const MAX_API_DEPTH = 2
+
+  // Collect blocks at depth > MAX_API_DEPTH that need follow-up appends.
+  // Each entry: { placeholderIndex, childBlocks } keyed by the path through the tree.
+  type DeferredAppend = { parentPath: number[]; children: any[] }
+  const deferred: DeferredAppend[] = []
+
+  function truncateTree(block: any, depth: number, path: number[]): any {
+    const typeKey = block.type
+    const data = block[typeKey]
+    if (!data?.children || data.children.length === 0) return block
+
+    if (depth >= MAX_API_DEPTH) {
+      // At max depth: strip children and defer them for a follow-up call
+      deferred.push({ parentPath: [...path], children: data.children })
+      const copy = { ...block, [typeKey]: { ...data } }
+      delete copy[typeKey].children
+      return copy
+    }
+
+    // Recurse into children, incrementing depth
+    const truncatedChildren = data.children.map((child: any, i: number) =>
+      truncateTree(child, depth + 1, [...path, i])
+    )
+    return { ...block, [typeKey]: { ...data, children: truncatedChildren } }
+  }
+
+  const truncatedBlocks = blocks.map((b, i) => truncateTree(b, 0, [i]))
+
+  // First append: up to 2 levels of nesting
+  const response = await notionClient.blocks.children.append({
+    block_id: parentBlockId,
+    children: truncatedBlocks,
+    ...(afterBlockId ? { after: afterBlockId } : {}),
+  })
+
+  // The API returns the created blocks with their IDs.
+  // We need to map deferred children to the correct created block IDs.
+  if (deferred.length === 0) return
+
+  const createdBlocks = response.results as any[]
+
+  // Resolve each deferred append by walking the created block tree
+  for (const { parentPath, children } of deferred) {
+    // parentPath[0] is the index into the top-level created blocks
+    let targetBlock = createdBlocks[parentPath[0]]
+    for (let i = 1; i < parentPath.length; i++) {
+      const typeKey = targetBlock.type
+      const childBlocks = targetBlock[typeKey]?.children || []
+      targetBlock = childBlocks[parentPath[i]]
+    }
+
+    if (!targetBlock?.id) {
+      console.warn('[appendBlocksDeep] Could not resolve parent block for deferred children, skipping')
+      continue
+    }
+
+    // Recursively append — these children may themselves be deeply nested
+    await appendBlocksDeep(notionClient, targetBlock.id, children)
+  }
+}
+
+/**
  * Extract plain text from HTML in the same block order as htmlToNotionBlocks produces.
  * One segment per block (paragraph, list item, etc.) so search string matches Notion.
  */
@@ -744,15 +823,14 @@ export function getBlockText(block: any): string {
 }
 
 /**
- * Group Notion blocks into "highlight groups" separated by empty paragraphs
- * or list↔non-list type transitions.
- * Each group contains the raw blocks and the per-block normalized text.
+ * Group Notion blocks into "highlight groups" separated by empty paragraphs.
+ * Highlights are always separated by an empty paragraph when created, so this
+ * is the only reliable delimiter. Mixed content (bullets + paragraphs) within
+ * a single highlight stays in one group.
  */
 export function groupNotionBlocks(
   blocks: any[]
 ): Array<{ blocks: any[]; blockTexts: string[] }> {
-  const isListItem = (b: any) =>
-    b.type === 'bulleted_list_item' || b.type === 'numbered_list_item'
   const isEmptyParagraph = (b: any) =>
     b.type === 'paragraph' &&
     (!b.paragraph?.rich_text || b.paragraph.rich_text.length === 0)
@@ -770,26 +848,11 @@ export function groupNotionBlocks(
   }
 
   for (const block of blocks) {
-    const empty = isEmptyParagraph(block)
-    const list = isListItem(block)
-
-    let end = false
-    if (empty && cur.length > 0) {
-      end = true
-    } else if (cur.length > 0 && !empty) {
-      const last = cur[cur.length - 1]
-      const lastIsList = isListItem(last)
-      const lastIsParagraph = last.type === 'paragraph'
-      if (lastIsList && !list) end = true
-      else if (!lastIsList && list && !lastIsParagraph) end = true
-    }
-
-    if (end) {
+    if (isEmptyParagraph(block)) {
       finalize()
-      if (empty) continue
+      continue
     }
-
-    if (!empty || cur.length > 0) cur.push(block)
+    cur.push(block)
   }
   finalize()
   return groups
@@ -908,7 +971,6 @@ export function findMatchingHighlightBlocks(
  * Useful for debug logs (e.g. "last 8 groups").
  */
 export function buildNormalizedBlockGroups(blocks: any[]): string[] {
-  const isListItem = (b: any) => b.type === 'bulleted_list_item' || b.type === 'numbered_list_item'
   const isEmptyParagraph = (b: any) =>
     b.type === 'paragraph' && (!b.paragraph?.rich_text || b.paragraph.rich_text.length === 0)
 
@@ -921,28 +983,12 @@ export function buildNormalizedBlockGroups(blocks: any[]): string[] {
     current = []
   }
 
-  for (let i = 0; i < blocks.length; i++) {
-    const b = blocks[i]
-    const empty = isEmptyParagraph(b)
-    const list = isListItem(b)
-    let shouldEnd = false
-
-    if (empty && current.length > 0) {
-      shouldEnd = true
-    } else if (current.length > 0 && !empty) {
-      const last = current[current.length - 1]
-      const lastIsList = isListItem(last)
-      const lastIsParagraph = last.type === 'paragraph'
-      if (lastIsList && !list) shouldEnd = true
-      else if (!lastIsList && list && !lastIsParagraph) shouldEnd = true
-    }
-
-    if (shouldEnd) {
+  for (const b of blocks) {
+    if (isEmptyParagraph(b)) {
       push()
-      if (empty) continue
+      continue
     }
-
-    if (!empty || current.length > 0) current.push(b)
+    current.push(b)
   }
   push()
 

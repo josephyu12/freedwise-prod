@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { Client } from '@notionhq/client'
 import { createClient } from '@/lib/supabase/server'
-import { htmlToNotionBlocks, htmlToBlockText, normalizeForBlockCompare, getBlockText, findMatchingHighlightBlocks, buildNormalizedSearchStrings, flattenBlocksWithChildren, BLOCK_BOUNDARY, buildNormalizedBlockGroups } from '@/lib/notionBlocks'
+import { htmlToNotionBlocks, htmlToBlockText, normalizeForBlockCompare, getBlockText, findMatchingHighlightBlocks, buildNormalizedSearchStrings, flattenBlocksWithChildren, BLOCK_BOUNDARY, buildNormalizedBlockGroups, appendBlocksDeep } from '@/lib/notionBlocks'
 
 export async function POST(request: NextRequest) {
   try {
@@ -128,11 +128,7 @@ export async function POST(request: NextRequest) {
       }
 
       // Insert new hierarchical blocks at the correct position
-      await notion.blocks.children.append({
-        block_id: notionPageId,
-        children: newBlocks,
-        ...(afterBlockId ? { after: afterBlockId } : {}),
-      })
+      await appendBlocksDeep(notion, notionPageId, newBlocks, afterBlockId)
 
       return NextResponse.json({
         message: 'Highlight updated in Notion successfully',
