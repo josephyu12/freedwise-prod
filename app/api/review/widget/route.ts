@@ -1,54 +1,56 @@
-import { createServerClient } from '@supabase/ssr'
+import { createClient } from '@supabase/supabase-js'
 import { NextRequest, NextResponse } from 'next/server'
 import { format } from 'date-fns'
 import { Database } from '@/types/database'
+import crypto from 'crypto'
+
+// Verify the HMAC-signed widget token and extract the user ID
+function verifyWidgetToken(token: string): string | null {
+  const dotIndex = token.lastIndexOf('.')
+  if (dotIndex === -1) return null
+
+  const userId = token.substring(0, dotIndex)
+  const signature = token.substring(dotIndex + 1)
+
+  const secret = process.env.SUPABASE_SERVICE_ROLE_KEY!
+  const expected = crypto
+    .createHmac('sha256', secret)
+    .update(userId)
+    .digest('hex')
+
+  // Timing-safe comparison
+  if (signature.length !== expected.length) return null
+  const sigBuf = Buffer.from(signature, 'hex')
+  const expBuf = Buffer.from(expected, 'hex')
+  if (sigBuf.length !== expBuf.length) return null
+  if (!crypto.timingSafeEqual(sigBuf, expBuf)) return null
+
+  return userId
+}
 
 // GET: Single endpoint for the Scriptable widget
-// Accepts a refresh_token, exchanges it server-side, fetches the next highlight
+// Accepts a signed widget token, verifies it, fetches the next highlight
 export async function GET(request: NextRequest) {
   try {
-    const refreshToken = request.nextUrl.searchParams.get('token')
+    const token = request.nextUrl.searchParams.get('token')
 
-    if (!refreshToken) {
+    if (!token) {
       return NextResponse.json({ error: 'Missing token' }, { status: 400 })
     }
 
-    // Create a Supabase client with the service role key for auth operations,
-    // but we'll use the user's token for RLS queries
-    const supabaseAuth = createServerClient<Database>(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ||
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-      {
-        cookies: { getAll: () => [], setAll: () => {} },
-      }
-    )
+    const userId = verifyWidgetToken(token)
 
-    // Exchange refresh token for a new session
-    const { data: sessionData, error: sessionError } =
-      await supabaseAuth.auth.refreshSession({ refresh_token: refreshToken })
-
-    if (sessionError || !sessionData.session) {
+    if (!userId) {
       return NextResponse.json(
-        { error: 'Token expired', tokenExpired: true },
+        { error: 'Invalid token', tokenExpired: true },
         { status: 401 }
       )
     }
 
-    const session = sessionData.session
-    const user = session.user
-
-    // Now create a client authenticated as this user for RLS queries
-    const supabase = createServerClient<Database>(
+    // Use service role client — safe because we verified the user via HMAC
+    const supabase = createClient<Database>(
       process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ||
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-      {
-        cookies: { getAll: () => [], setAll: () => {} },
-        global: {
-          headers: { Authorization: `Bearer ${session.access_token}` },
-        },
-      }
+      process.env.SUPABASE_SERVICE_ROLE_KEY!
     )
 
     const today = format(new Date(), 'yyyy-MM-dd')
@@ -58,7 +60,7 @@ export async function GET(request: NextRequest) {
       .from('daily_summaries')
       .select('id')
       .eq('date', today)
-      .eq('user_id', user.id)
+      .eq('user_id', userId)
       .maybeSingle()
 
     if (summaryError) throw summaryError
@@ -68,7 +70,6 @@ export async function GET(request: NextRequest) {
         highlight: null,
         total: 0,
         reviewed: 0,
-        newRefreshToken: session.refresh_token,
       })
     }
 
@@ -115,7 +116,6 @@ export async function GET(request: NextRequest) {
         total,
         reviewed,
         allDone: true,
-        newRefreshToken: session.refresh_token,
       })
     }
 
@@ -140,7 +140,6 @@ export async function GET(request: NextRequest) {
       total,
       reviewed,
       allDone: false,
-      newRefreshToken: session.refresh_token,
     })
   } catch (error: any) {
     console.error('Widget API error:', error)

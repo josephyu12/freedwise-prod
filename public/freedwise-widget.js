@@ -4,7 +4,7 @@
 // 1. Install "Scriptable" from the App Store
 // 2. Create a new script and paste this entire file
 // 3. Open freedwise.vercel.app/widget-auth in Safari to get your token
-// 4. Paste the token below as REFRESH_TOKEN
+// 4. Paste the token below as WIDGET_TOKEN
 // 5. Add a Medium Scriptable widget to your home screen
 // 6. Long-press the widget > Edit Widget > choose this script
 //
@@ -14,7 +14,7 @@
 
 // ============ CONFIGURATION ============
 const APP_URL = 'https://freedwise.vercel.app'
-const REFRESH_TOKEN = '' // <-- Paste your token from /widget-auth here
+const WIDGET_TOKEN = '' // <-- Paste your token from /widget-auth here
 // =======================================
 
 const COLORS = {
@@ -41,30 +41,17 @@ const COLORS = {
 // ─── API call ───────────────────────────────────────────────
 
 async function fetchWidgetData() {
-  const token = Keychain.contains('freedwise_rt')
-    ? Keychain.get('freedwise_rt')
-    : REFRESH_TOKEN
-
-  if (!token) return null
+  if (!WIDGET_TOKEN) return null
 
   try {
     const req = new Request(
-      `${APP_URL}/api/review/widget?token=${encodeURIComponent(token)}`
+      `${APP_URL}/api/review/widget?token=${encodeURIComponent(WIDGET_TOKEN)}`
     )
     req.headers = { 'Accept': 'application/json' }
     const res = await req.loadJSON()
 
     if (res.tokenExpired) {
-      // Clear stored token so user knows to get a new one
-      if (Keychain.contains('freedwise_rt')) {
-        Keychain.remove('freedwise_rt')
-      }
       return { tokenExpired: true }
-    }
-
-    // Store the new refresh token for next time
-    if (res.newRefreshToken) {
-      Keychain.set('freedwise_rt', res.newRefreshToken)
     }
 
     return res
@@ -105,7 +92,7 @@ async function createWidget() {
   widget.backgroundColor = isDark ? COLORS.bgDark : COLORS.bg
   widget.setPadding(12, 14, 12, 14)
 
-  if (!REFRESH_TOKEN && !Keychain.contains('freedwise_rt')) {
+  if (!WIDGET_TOKEN) {
     const msg = widget.addText('Paste your token in the script.\nGet it at /widget-auth')
     msg.font = Font.mediumSystemFont(13)
     msg.textColor = isDark ? COLORS.textDark : COLORS.text
@@ -124,7 +111,7 @@ async function createWidget() {
   }
 
   if (data.tokenExpired) {
-    const msg = widget.addText('Token expired.\nGet a new one at /widget-auth')
+    const msg = widget.addText('Invalid token.\nGet a new one at /widget-auth')
     msg.font = Font.mediumSystemFont(13)
     msg.textColor = isDark ? COLORS.textDark : COLORS.text
     widget.url = `${APP_URL}/widget-auth`

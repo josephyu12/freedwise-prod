@@ -8,27 +8,44 @@ import Link from 'next/link'
 // widget token. Copy it and paste it into the Scriptable widget config.
 export default function WidgetAuthPage() {
   const [status, setStatus] = useState<'loading' | 'authenticated' | 'unauthenticated'>('loading')
-  const [refreshToken, setRefreshToken] = useState('')
+  const [widgetToken, setWidgetToken] = useState('')
   const [copied, setCopied] = useState(false)
   const supabase = createClient()
 
   useEffect(() => {
-    const getSession = async () => {
+    const init = async () => {
       const { data: { session } } = await supabase.auth.getSession()
       if (session) {
         setStatus('authenticated')
-        setRefreshToken(session.refresh_token || '')
+        // Fetch a signed widget token from the server
+        try {
+          const res = await fetch('/api/widget-token')
+          const data = await res.json()
+          if (data.token) {
+            setWidgetToken(data.token)
+          }
+        } catch {
+          // ignore
+        }
       } else {
         setStatus('unauthenticated')
       }
     }
 
-    getSession()
+    init()
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, session) => {
       if (session) {
         setStatus('authenticated')
-        setRefreshToken(session.refresh_token || '')
+        try {
+          const res = await fetch('/api/widget-token')
+          const data = await res.json()
+          if (data.token) {
+            setWidgetToken(data.token)
+          }
+        } catch {
+          // ignore
+        }
       }
     })
 
@@ -37,13 +54,13 @@ export default function WidgetAuthPage() {
 
   const handleCopy = async () => {
     try {
-      await navigator.clipboard.writeText(refreshToken)
+      await navigator.clipboard.writeText(widgetToken)
       setCopied(true)
       setTimeout(() => setCopied(false), 2000)
     } catch {
       // Fallback for older browsers
       const textarea = document.createElement('textarea')
-      textarea.value = refreshToken
+      textarea.value = widgetToken
       document.body.appendChild(textarea)
       textarea.select()
       document.execCommand('copy')
@@ -85,16 +102,17 @@ export default function WidgetAuthPage() {
       <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-xl p-8 max-w-md w-full">
         <h1 className="text-2xl font-bold text-gray-900 dark:text-white mb-2">Widget Setup</h1>
         <p className="text-sm text-gray-600 dark:text-gray-400 mb-6">
-          Copy this token and paste it into your Scriptable widget script as the <code className="bg-gray-100 dark:bg-gray-700 px-1 rounded text-xs">REFRESH_TOKEN</code> value.
+          Copy this token and paste it into your Scriptable widget script as the <code className="bg-gray-100 dark:bg-gray-700 px-1 rounded text-xs">WIDGET_TOKEN</code> value.
         </p>
 
         <div className="relative">
           <div className="bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg p-4 pr-20 font-mono text-xs break-all text-gray-700 dark:text-gray-300 max-h-24 overflow-y-auto">
-            {refreshToken}
+            {widgetToken || 'Generating token...'}
           </div>
           <button
             onClick={handleCopy}
-            className="absolute top-3 right-3 px-3 py-1.5 bg-blue-600 text-white text-xs font-medium rounded-lg hover:bg-blue-700 transition"
+            disabled={!widgetToken}
+            className="absolute top-3 right-3 px-3 py-1.5 bg-blue-600 text-white text-xs font-medium rounded-lg hover:bg-blue-700 transition disabled:opacity-50"
           >
             {copied ? 'Copied!' : 'Copy'}
           </button>
@@ -105,7 +123,7 @@ export default function WidgetAuthPage() {
           <ol className="text-xs text-blue-700 dark:text-blue-400 space-y-1 list-decimal list-inside">
             <li>Install Scriptable from the App Store</li>
             <li>Create a new script, paste the widget code</li>
-            <li>Replace <code className="bg-blue-100 dark:bg-blue-900/50 px-1 rounded">REFRESH_TOKEN</code> with the token above</li>
+            <li>Replace <code className="bg-blue-100 dark:bg-blue-900/50 px-1 rounded">WIDGET_TOKEN</code> with the token above</li>
             <li>Add a Medium Scriptable widget to your home screen</li>
             <li>Long-press widget &gt; Edit Widget &gt; choose script</li>
           </ol>
