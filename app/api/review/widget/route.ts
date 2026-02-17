@@ -40,6 +40,7 @@ function verifyWidgetToken(token: string): string | null {
 export async function GET(request: NextRequest) {
   try {
     const token = request.nextUrl.searchParams.get('token')
+    const dateParam = request.nextUrl.searchParams.get('date')
 
     if (!token) {
       return NextResponse.json({ error: 'Missing token' }, { status: 400 })
@@ -60,7 +61,8 @@ export async function GET(request: NextRequest) {
       process.env.SUPABASE_SERVICE_ROLE_KEY!
     )
 
-    const today = format(new Date(), 'yyyy-MM-dd')
+    // Use date from client (their local timezone) or fall back to server time
+    const today = dateParam || format(new Date(), 'yyyy-MM-dd')
 
     // Get today's daily summary
     const { data: summaryData, error: summaryError } = await supabase

@@ -67,7 +67,14 @@ function clearToken() {
 // ─── API call ───────────────────────────────────────────────
 
 async function fetchWidgetData(token) {
-  const url = `${APP_URL}/api/review/widget?token=${encodeURIComponent(token)}`
+  // Get today's date in local timezone
+  const now = new Date()
+  const year = now.getFullYear()
+  const month = String(now.getMonth() + 1).padStart(2, '0')
+  const day = String(now.getDate()).padStart(2, '0')
+  const today = `${year}-${month}-${day}`
+
+  const url = `${APP_URL}/api/review/widget?token=${encodeURIComponent(token)}&date=${today}`
 
   try {
     const req = new Request(url)
