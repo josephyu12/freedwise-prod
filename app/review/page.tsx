@@ -96,37 +96,35 @@ function ReviewPageContent() {
         return
       }
 
-      // Load categories
-      const { data: catData } = await supabase
-        .from('categories')
-        .select('id, name')
-        .eq('user_id', user.id)
-        .order('name')
-      setCategories(catData || [])
+      // Run independent queries in parallel
+      const [catResult, pinResult, summaryResult] = await Promise.all([
+        supabase
+          .from('categories')
+          .select('id, name')
+          .eq('user_id', user.id)
+          .order('name'),
+        (supabase.from('pinned_highlights') as any)
+          .select('highlight_id')
+          .eq('user_id', user.id),
+        supabase
+          .from('daily_summaries')
+          .select('id')
+          .eq('date', today)
+          .eq('user_id', user.id)
+          .maybeSingle(),
+      ])
 
-      // Load pinned highlight IDs
-      const { data: pinData } = await (supabase
-        .from('pinned_highlights') as any)
-        .select('highlight_id')
-        .eq('user_id', user.id)
-      setPinnedHighlightIds(new Set((pinData || []).map((p: any) => p.highlight_id)))
+      setCategories(catResult.data || [])
+      setPinnedHighlightIds(new Set((pinResult.data || []).map((p: any) => p.highlight_id)))
 
-      // Get today's daily summary
-      const { data: summaryData, error: summaryError } = await supabase
-        .from('daily_summaries')
-        .select('id')
-        .eq('date', today)
-        .eq('user_id', user.id)
-        .maybeSingle()
-
-      if (summaryError) throw summaryError
-      if (!summaryData) {
+      if (summaryResult.error) throw summaryResult.error
+      if (!summaryResult.data) {
         setHighlights([])
         setLoading(false)
         return
       }
 
-      const summary = summaryData as { id: string }
+      const summary = summaryResult.data as { id: string }
 
       // Get highlights for this summary
       const { data: summaryHighlights, error: highlightsError } = await supabase
@@ -477,8 +475,26 @@ function ReviewPageContent() {
         )
       }
 
+      // Update local state instead of reloading
+      const updatedCategories = categories.filter((c) => editCategories.includes(c.id))
+      setHighlights((prev) =>
+        prev.map((h) =>
+          h.highlight_id === highlightId && h.highlight
+            ? {
+                ...h,
+                highlight: {
+                  ...h.highlight,
+                  text: editText.trim(),
+                  html_content: editHtmlContent.trim() || null,
+                  source: editSource.trim() || null,
+                  author: editAuthor.trim() || null,
+                  categories: updatedCategories,
+                },
+              }
+            : h
+        )
+      )
       handleCancelEdit()
-      await loadHighlights()
     } catch (error) {
       console.error('Error saving edit:', error)
     } finally {
@@ -513,7 +529,13 @@ function ReviewPageContent() {
       await (supabase.from('highlights') as any)
         .update({ archived: true })
         .eq('id', highlightId)
-      await loadHighlights()
+      setHighlights((prev) =>
+        prev.map((h) =>
+          h.highlight_id === highlightId && h.highlight
+            ? { ...h, highlight: { ...h.highlight, archived: true } }
+            : h
+        )
+      )
     } catch (error) {
       console.error('Error archiving highlight:', error)
     }
@@ -524,7 +546,13 @@ function ReviewPageContent() {
       await (supabase.from('highlights') as any)
         .update({ archived: false, unarchived_at: new Date().toISOString() })
         .eq('id', highlightId)
-      await loadHighlights()
+      setHighlights((prev) =>
+        prev.map((h) =>
+          h.highlight_id === highlightId && h.highlight
+            ? { ...h, highlight: { ...h.highlight, archived: false } }
+            : h
+        )
+      )
     } catch (error) {
       console.error('Error unarchiving highlight:', error)
     }
@@ -541,8 +569,13 @@ function ReviewPageContent() {
       await addToSyncQueue(highlightId, 'delete', text, htmlContent)
 
       await (supabase.from('highlights') as any).delete().eq('id', highlightId)
-      await fetch('/api/daily/redistribute', { method: 'POST' })
-      await loadHighlights()
+      fetch('/api/daily/redistribute', { method: 'POST' }) // fire-and-forget
+
+      setHighlights((prev) => {
+        const updated = prev.filter((h) => h.highlight_id !== highlightId)
+        return updated
+      })
+      setCurrentIndex((prev) => Math.min(prev, highlights.length - 2))
     } catch (error) {
       console.error('Error deleting highlight:', error)
       alert('Failed to delete highlight. Please try again.')
