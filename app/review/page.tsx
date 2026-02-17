@@ -133,29 +133,49 @@ function ReviewPageContent() {
     loadHighlights()
   }, [loadHighlights])
 
-  // Handle auto-rating from URL params (widget tap)
+  // Handle auto-rating and actions from URL params (widget tap)
   useEffect(() => {
     if (autoRateProcessed.current || loading || highlights.length === 0) return
 
     const rateParam = searchParams.get('rate') as 'low' | 'med' | 'high' | null
+    const actionParam = searchParams.get('action') as 'archive' | 'delete' | 'pin' | null
     const idParam = searchParams.get('id')
 
-    if (rateParam && idParam && ['low', 'med', 'high'].includes(rateParam)) {
+    if (idParam) {
       autoRateProcessed.current = true
 
       // Find the highlight matching the id param
       const targetIndex = highlights.findIndex((h) => h.id === idParam)
-      if (targetIndex >= 0 && highlights[targetIndex].rating === null) {
+
+      if (targetIndex >= 0) {
         setCurrentIndex(targetIndex)
-        // Rate it after a brief delay so the UI shows the card first
-        setTimeout(() => {
-          handleRateByIndex(targetIndex, rateParam)
-          setAutoRated(true)
-          // Clean URL params
-          router.replace('/review', { scroll: false })
-        }, 300)
+
+        // Handle action parameter
+        if (actionParam === 'archive') {
+          setTimeout(async () => {
+            await handleArchive()
+            router.replace('/review', { scroll: false })
+          }, 300)
+        } else if (actionParam === 'delete') {
+          setTimeout(async () => {
+            await handleDelete()
+            router.replace('/review', { scroll: false })
+          }, 300)
+        } else if (actionParam === 'pin') {
+          setTimeout(async () => {
+            await handlePin()
+            router.replace('/review', { scroll: false })
+          }, 300)
+        } else if (rateParam && ['low', 'med', 'high'].includes(rateParam) && highlights[targetIndex].rating === null) {
+          // Handle rating
+          setTimeout(() => {
+            handleRateByIndex(targetIndex, rateParam)
+            setAutoRated(true)
+            router.replace('/review', { scroll: false })
+          }, 300)
+        }
       } else {
-        // ID not found or already rated, just clean up
+        // ID not found, just clean up
         router.replace('/review', { scroll: false })
       }
     }
@@ -353,6 +373,69 @@ function ReviewPageContent() {
     }
   }
 
+  const handleArchive = async () => {
+    if (!current || ratingInProgress) return
+    setRatingInProgress(true)
+    try {
+      await (supabase.from('highlights') as any)
+        .update({ archived: true })
+        .eq('id', current.highlight_id)
+      // Reload highlights after archiving
+      await loadHighlights()
+    } catch (error) {
+      console.error('Error archiving highlight:', error)
+    } finally {
+      setRatingInProgress(false)
+    }
+  }
+
+  const handleDelete = async () => {
+    if (!current || ratingInProgress) return
+    if (!confirm('Are you sure you want to delete this highlight? This cannot be undone.')) return
+    setRatingInProgress(true)
+    try {
+      await (supabase.from('highlights') as any)
+        .delete()
+        .eq('id', current.highlight_id)
+      // Reload highlights after deleting
+      await loadHighlights()
+    } catch (error) {
+      console.error('Error deleting highlight:', error)
+    } finally {
+      setRatingInProgress(false)
+    }
+  }
+
+  const handlePin = async () => {
+    if (!current || ratingInProgress) return
+    setRatingInProgress(true)
+    try {
+      // Check if already pinned
+      const { data: existingPin } = await supabase
+        .from('pinned_highlights')
+        .select('id')
+        .eq('highlight_id', current.highlight_id)
+        .maybeSingle()
+
+      if (existingPin) {
+        // Unpin
+        await (supabase.from('pinned_highlights') as any)
+          .delete()
+          .eq('highlight_id', current.highlight_id)
+      } else {
+        // Pin
+        await (supabase.from('pinned_highlights') as any)
+          .insert({ highlight_id: current.highlight_id })
+      }
+      // Reload to update UI
+      await loadHighlights()
+    } catch (error) {
+      console.error('Error toggling pin:', error)
+    } finally {
+      setRatingInProgress(false)
+    }
+  }
+
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 to-indigo-100 dark:from-gray-900 dark:to-gray-800">
@@ -523,6 +606,37 @@ function ReviewPageContent() {
                 </button>
               </div>
             )}
+
+            {/* Action buttons */}
+            <div className="flex gap-2 mt-3 justify-center">
+              <Link
+                href={`/highlights?edit=${current.highlight_id}`}
+                className="px-4 py-2 text-sm rounded-lg bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition"
+              >
+                Edit
+              </Link>
+              <button
+                onClick={handlePin}
+                disabled={ratingInProgress}
+                className="px-4 py-2 text-sm rounded-lg bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition disabled:opacity-50"
+              >
+                Pin
+              </button>
+              <button
+                onClick={handleArchive}
+                disabled={ratingInProgress}
+                className="px-4 py-2 text-sm rounded-lg bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition disabled:opacity-50"
+              >
+                Archive
+              </button>
+              <button
+                onClick={handleDelete}
+                disabled={ratingInProgress}
+                className="px-4 py-2 text-sm rounded-lg bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300 hover:bg-red-200 dark:hover:bg-red-900/50 transition disabled:opacity-50"
+              >
+                Delete
+              </button>
+            </div>
 
             {/* Navigation dots */}
             <div className="flex justify-center gap-1.5 mt-6 flex-wrap">

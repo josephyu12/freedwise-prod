@@ -332,6 +332,8 @@ async function createWidget() {
 
   const rateUrl = (rating) =>
     `${APP_URL}/review?rate=${rating}&id=${h.summaryHighlightId}`
+  const actionUrl = (action) =>
+    `${APP_URL}/review?action=${action}&id=${h.summaryHighlightId}`
 
   // Low button
   const lowBtn = btnStack.addStack()
@@ -377,6 +379,70 @@ async function createWidget() {
   highLabel.font = Font.semiboldSystemFont(16)
   highLabel.textColor = COLORS.greenText
   highLabel.centerAlignText()
+
+  widget.addSpacer(8)
+
+  // Action buttons row - smaller, centered
+  const actionStack = widget.addStack()
+  actionStack.layoutHorizontally()
+  actionStack.spacing = 8
+  actionStack.centerAlignContent()
+
+  // Edit button
+  const editBtn = actionStack.addStack()
+  editBtn.layoutHorizontally()
+  editBtn.centerAlignContent()
+  editBtn.setPadding(6, 12, 6, 12)
+  editBtn.cornerRadius = 8
+  editBtn.backgroundColor = new Color('#f3f4f6')
+  editBtn.borderColor = new Color('#d1d5db')
+  editBtn.borderWidth = 1
+  editBtn.url = `${APP_URL}/highlights?edit=${h.highlightId}`
+  const editLabel = editBtn.addText('Edit')
+  editLabel.font = Font.mediumSystemFont(12)
+  editLabel.textColor = new Color('#374151')
+
+  // Pin button
+  const pinBtn = actionStack.addStack()
+  pinBtn.layoutHorizontally()
+  pinBtn.centerAlignContent()
+  pinBtn.setPadding(6, 12, 6, 12)
+  pinBtn.cornerRadius = 8
+  pinBtn.backgroundColor = new Color('#f3f4f6')
+  pinBtn.borderColor = new Color('#d1d5db')
+  pinBtn.borderWidth = 1
+  pinBtn.url = actionUrl('pin')
+  const pinLabel = pinBtn.addText('Pin')
+  pinLabel.font = Font.mediumSystemFont(12)
+  pinLabel.textColor = new Color('#374151')
+
+  // Archive button
+  const archiveBtn = actionStack.addStack()
+  archiveBtn.layoutHorizontally()
+  archiveBtn.centerAlignContent()
+  archiveBtn.setPadding(6, 12, 6, 12)
+  archiveBtn.cornerRadius = 8
+  archiveBtn.backgroundColor = new Color('#f3f4f6')
+  archiveBtn.borderColor = new Color('#d1d5db')
+  archiveBtn.borderWidth = 1
+  archiveBtn.url = actionUrl('archive')
+  const archiveLabel = archiveBtn.addText('Archive')
+  archiveLabel.font = Font.mediumSystemFont(12)
+  archiveLabel.textColor = new Color('#374151')
+
+  // Delete button
+  const deleteBtn = actionStack.addStack()
+  deleteBtn.layoutHorizontally()
+  deleteBtn.centerAlignContent()
+  deleteBtn.setPadding(6, 12, 6, 12)
+  deleteBtn.cornerRadius = 8
+  deleteBtn.backgroundColor = new Color('#fee2e2')
+  deleteBtn.borderColor = new Color('#fca5a5')
+  deleteBtn.borderWidth = 1
+  deleteBtn.url = actionUrl('delete')
+  const deleteLabel = deleteBtn.addText('Delete')
+  deleteLabel.font = Font.mediumSystemFont(12)
+  deleteLabel.textColor = new Color('#b91c1c')
 
   // Fallback tap opens review page
   widget.url = `${APP_URL}/review`
