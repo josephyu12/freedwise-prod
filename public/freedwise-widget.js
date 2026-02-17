@@ -460,8 +460,8 @@ async function createWidget() {
 
   actionStack.addSpacer()
 
-  // Fallback tap opens review page
-  widget.url = `${APP_URL}/review`
+  // Fallback tap opens review page at this highlight
+  widget.url = `${APP_URL}/review?id=${h.summaryHighlightId}`
 
   return widget
 }
