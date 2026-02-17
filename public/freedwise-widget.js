@@ -327,13 +327,14 @@ async function createWidget() {
   // Rating buttons row - centered
   const btnStack = widget.addStack()
   btnStack.layoutHorizontally()
-  btnStack.spacing = 12
   btnStack.centerAlignContent()
 
   const rateUrl = (rating) =>
     `${APP_URL}/review?rate=${rating}&id=${h.summaryHighlightId}`
   const actionUrl = (action) =>
     `${APP_URL}/review?action=${action}&id=${h.summaryHighlightId}`
+
+  btnStack.addSpacer()
 
   // Low button
   const lowBtn = btnStack.addStack()
@@ -350,6 +351,8 @@ async function createWidget() {
   lowLabel.textColor = COLORS.redText
   lowLabel.centerAlignText()
 
+  btnStack.addSpacer(12)
+
   // Med button
   const medBtn = btnStack.addStack()
   medBtn.layoutHorizontally()
@@ -364,6 +367,8 @@ async function createWidget() {
   medLabel.font = Font.semiboldSystemFont(16)
   medLabel.textColor = COLORS.yellowText
   medLabel.centerAlignText()
+
+  btnStack.addSpacer(12)
 
   // High button
   const highBtn = btnStack.addStack()
@@ -380,13 +385,16 @@ async function createWidget() {
   highLabel.textColor = COLORS.greenText
   highLabel.centerAlignText()
 
+  btnStack.addSpacer()
+
   widget.addSpacer(8)
 
   // Action buttons row - smaller, centered
   const actionStack = widget.addStack()
   actionStack.layoutHorizontally()
-  actionStack.spacing = 8
   actionStack.centerAlignContent()
+
+  actionStack.addSpacer()
 
   // Edit button (blue)
   const editBtn = actionStack.addStack()
@@ -402,6 +410,8 @@ async function createWidget() {
   editLabel.font = Font.mediumSystemFont(12)
   editLabel.textColor = new Color('#1d4ed8')
 
+  actionStack.addSpacer(8)
+
   // Pin button (yellow)
   const pinBtn = actionStack.addStack()
   pinBtn.layoutHorizontally()
@@ -415,6 +425,8 @@ async function createWidget() {
   const pinLabel = pinBtn.addText('Pin')
   pinLabel.font = Font.mediumSystemFont(12)
   pinLabel.textColor = new Color('#a16207')
+
+  actionStack.addSpacer(8)
 
   // Archive button (orange)
   const archiveBtn = actionStack.addStack()
@@ -430,6 +442,8 @@ async function createWidget() {
   archiveLabel.font = Font.mediumSystemFont(12)
   archiveLabel.textColor = new Color('#c2410c')
 
+  actionStack.addSpacer(8)
+
   // Delete button
   const deleteBtn = actionStack.addStack()
   deleteBtn.layoutHorizontally()
@@ -443,6 +457,8 @@ async function createWidget() {
   const deleteLabel = deleteBtn.addText('Delete')
   deleteLabel.font = Font.mediumSystemFont(12)
   deleteLabel.textColor = new Color('#b91c1c')
+
+  actionStack.addSpacer()
 
   // Fallback tap opens review page
   widget.url = `${APP_URL}/review`
