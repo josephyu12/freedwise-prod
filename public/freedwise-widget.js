@@ -388,47 +388,47 @@ async function createWidget() {
   actionStack.spacing = 8
   actionStack.centerAlignContent()
 
-  // Edit button
+  // Edit button (blue)
   const editBtn = actionStack.addStack()
   editBtn.layoutHorizontally()
   editBtn.centerAlignContent()
   editBtn.setPadding(6, 12, 6, 12)
   editBtn.cornerRadius = 8
-  editBtn.backgroundColor = new Color('#f3f4f6')
-  editBtn.borderColor = new Color('#d1d5db')
+  editBtn.backgroundColor = new Color('#dbeafe')
+  editBtn.borderColor = new Color('#93c5fd')
   editBtn.borderWidth = 1
   editBtn.url = `${APP_URL}/highlights?edit=${h.highlightId}`
   const editLabel = editBtn.addText('Edit')
   editLabel.font = Font.mediumSystemFont(12)
-  editLabel.textColor = new Color('#374151')
+  editLabel.textColor = new Color('#1d4ed8')
 
-  // Pin button
+  // Pin button (yellow)
   const pinBtn = actionStack.addStack()
   pinBtn.layoutHorizontally()
   pinBtn.centerAlignContent()
   pinBtn.setPadding(6, 12, 6, 12)
   pinBtn.cornerRadius = 8
-  pinBtn.backgroundColor = new Color('#f3f4f6')
-  pinBtn.borderColor = new Color('#d1d5db')
+  pinBtn.backgroundColor = new Color('#fef9c3')
+  pinBtn.borderColor = new Color('#fde047')
   pinBtn.borderWidth = 1
   pinBtn.url = actionUrl('pin')
   const pinLabel = pinBtn.addText('Pin')
   pinLabel.font = Font.mediumSystemFont(12)
-  pinLabel.textColor = new Color('#374151')
+  pinLabel.textColor = new Color('#a16207')
 
-  // Archive button
+  // Archive button (orange)
   const archiveBtn = actionStack.addStack()
   archiveBtn.layoutHorizontally()
   archiveBtn.centerAlignContent()
   archiveBtn.setPadding(6, 12, 6, 12)
   archiveBtn.cornerRadius = 8
-  archiveBtn.backgroundColor = new Color('#f3f4f6')
-  archiveBtn.borderColor = new Color('#d1d5db')
+  archiveBtn.backgroundColor = new Color('#ffedd5')
+  archiveBtn.borderColor = new Color('#fdba74')
   archiveBtn.borderWidth = 1
   archiveBtn.url = actionUrl('archive')
   const archiveLabel = archiveBtn.addText('Archive')
   archiveLabel.font = Font.mediumSystemFont(12)
-  archiveLabel.textColor = new Color('#374151')
+  archiveLabel.textColor = new Color('#c2410c')
 
   // Delete button
   const deleteBtn = actionStack.addStack()
