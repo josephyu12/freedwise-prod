@@ -1,5 +1,9 @@
 // Freedwise Quick Review Widget for Scriptable (iOS)
 //
+
+// NOTE: The Scriptable method is fundamentally unable to support proper rich text formatting.
+// If you would like a true widget that is able to fully format text, make an iOS app
+
 // Setup:
 // 1. Install "Scriptable" from the App Store
 // 2. Create a new script and paste this entire file
