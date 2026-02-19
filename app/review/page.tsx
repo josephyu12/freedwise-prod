@@ -244,23 +244,31 @@ function ReviewPageContent() {
         prev.map((h) => (h.id === target.id ? { ...h, rating } : h))
       )
 
+      // Stage 1: save rating + fire-and-forget month tracking (parallel)
+      const [y, mo] = today.split('-').map(Number)
+      const monthYear = `${y}-${String(mo).padStart(2, '0')}`
       await (supabase.from('daily_summary_highlights') as any)
         .update({ rating })
         .eq('id', target.id)
-
-      const [y, mo] = today.split('-').map(Number)
-      const monthYear = `${y}-${String(mo).padStart(2, '0')}`
-      await (supabase.from('highlight_months_reviewed') as any)
+      // Non-critical: fire-and-forget
+      ;(supabase.from('highlight_months_reviewed') as any)
         .upsert(
           { highlight_id: target.highlight_id, month_year: monthYear },
           { onConflict: 'highlight_id,month_year' }
         )
 
-      const { data: allRatingsData } = await supabase
-        .from('daily_summary_highlights')
-        .select('rating')
-        .eq('highlight_id', target.highlight_id)
-        .not('rating', 'is', null)
+      // Stage 2: fetch all ratings + unarchived_at in parallel
+      const [{ data: allRatingsData }, { data: highlightData }] = await Promise.all([
+        supabase
+          .from('daily_summary_highlights')
+          .select('rating')
+          .eq('highlight_id', target.highlight_id)
+          .not('rating', 'is', null),
+        (supabase.from('highlights') as any)
+          .select('unarchived_at')
+          .eq('id', target.highlight_id)
+          .single(),
+      ])
 
       const allRatings = (allRatingsData || []) as Array<{ rating: string }>
       const ratingMap: Record<string, number> = { low: 1, med: 2, high: 3 }
@@ -268,11 +276,6 @@ function ReviewPageContent() {
       const average = ratingValues.length > 0
         ? ratingValues.reduce((a, b) => a + b, 0) / ratingValues.length
         : 0
-
-      const { data: highlightData } = await (supabase.from('highlights') as any)
-        .select('unarchived_at')
-        .eq('id', target.highlight_id)
-        .single()
 
       let lowRatingsCount = 0
       if (highlightData?.unarchived_at) {
@@ -297,13 +300,17 @@ function ReviewPageContent() {
         })
         .eq('id', target.highlight_id)
 
-      const updated = highlights.map((h) =>
-        h.id === target.id ? { ...h, rating } : h
-      )
-      const nextUnrated = updated.findIndex((h) => h.rating === null)
-      if (nextUnrated >= 0) {
-        setCurrentIndex(nextUnrated)
-      }
+      // Use functional updater to avoid stale closure
+      setHighlights((prev) => {
+        const updated = prev.map((h) =>
+          h.id === target.id ? { ...h, rating } : h
+        )
+        const nextUnrated = updated.findIndex((h) => h.rating === null)
+        if (nextUnrated >= 0) {
+          setCurrentIndex(nextUnrated)
+        }
+        return updated
+      })
     } catch (error) {
       console.error('Error auto-rating highlight:', error)
       setHighlights((prev) =>
@@ -332,23 +339,31 @@ function ReviewPageContent() {
         prev.map((h) => (h.id === current.id ? { ...h, rating } : h))
       )
 
+      // Stage 1: save rating + fire-and-forget month tracking
+      const [y, mo] = today.split('-').map(Number)
+      const monthYear = `${y}-${String(mo).padStart(2, '0')}`
       await (supabase.from('daily_summary_highlights') as any)
         .update({ rating })
         .eq('id', current.id)
-
-      const [y, mo] = today.split('-').map(Number)
-      const monthYear = `${y}-${String(mo).padStart(2, '0')}`
-      await (supabase.from('highlight_months_reviewed') as any)
+      // Non-critical: fire-and-forget
+      ;(supabase.from('highlight_months_reviewed') as any)
         .upsert(
           { highlight_id: current.highlight_id, month_year: monthYear },
           { onConflict: 'highlight_id,month_year' }
         )
 
-      const { data: allRatingsData } = await supabase
-        .from('daily_summary_highlights')
-        .select('rating')
-        .eq('highlight_id', current.highlight_id)
-        .not('rating', 'is', null)
+      // Stage 2: fetch all ratings + unarchived_at in parallel
+      const [{ data: allRatingsData }, { data: highlightData }] = await Promise.all([
+        supabase
+          .from('daily_summary_highlights')
+          .select('rating')
+          .eq('highlight_id', current.highlight_id)
+          .not('rating', 'is', null),
+        (supabase.from('highlights') as any)
+          .select('unarchived_at')
+          .eq('id', current.highlight_id)
+          .single(),
+      ])
 
       const allRatings = (allRatingsData || []) as Array<{ rating: string }>
       const ratingMap: Record<string, number> = { low: 1, med: 2, high: 3 }
@@ -356,11 +371,6 @@ function ReviewPageContent() {
       const average = ratingValues.length > 0
         ? ratingValues.reduce((a, b) => a + b, 0) / ratingValues.length
         : 0
-
-      const { data: highlightData } = await (supabase.from('highlights') as any)
-        .select('unarchived_at')
-        .eq('id', current.highlight_id)
-        .single()
 
       let lowRatingsCount = 0
       if (highlightData?.unarchived_at) {
@@ -385,15 +395,19 @@ function ReviewPageContent() {
         })
         .eq('id', current.highlight_id)
 
-      const updated = highlights.map((h) =>
-        h.id === current.id ? { ...h, rating } : h
-      )
-      const nextUnrated = updated.findIndex(
-        (h, i) => h.rating === null && i !== currentIndex
-      )
-      if (nextUnrated >= 0) {
-        setCurrentIndex(nextUnrated)
-      }
+      // Use functional updater to avoid stale closure
+      setHighlights((prev) => {
+        const updated = prev.map((h) =>
+          h.id === current.id ? { ...h, rating } : h
+        )
+        const nextUnrated = updated.findIndex(
+          (h, i) => h.rating === null && i !== currentIndex
+        )
+        if (nextUnrated >= 0) {
+          setCurrentIndex(nextUnrated)
+        }
+        return updated
+      })
     } catch (error) {
       console.error('Error rating highlight:', error)
       setHighlights((prev) =>
