@@ -10,7 +10,7 @@
 // 3. Open freedwise.vercel.app/widget-auth in Safari to get your token
 // 4. Paste the token below as WIDGET_TOKEN (temporarily)
 // 5. Run the script ONCE by tapping the Play button (not as widget)
-// 6. After seeing "Token stored securely", CLEAR the token from line 18 below
+// 6. After seeing "Token stored securely", CLEAR the token from line 22 below
 // 7. Add a Large Scriptable widget to your home screen
 // 8. Long-press the widget > Edit Widget > choose this script
 //
@@ -207,7 +207,7 @@ async function createWidget() {
     title.centerAlignText()
     widget.addSpacer(12)
 
-    const msg = widget.addText('Now CLEAR the WIDGET_TOKEN from line 18 in your script.\n\nThe token is stored in Keychain and no longer needs to be in the script.')
+    const msg = widget.addText('Now CLEAR the WIDGET_TOKEN from line 22 in your script.\n\nThe token is stored in Keychain and no longer needs to be in the script.')
     msg.font = Font.systemFont(14)
     msg.textColor = isDark ? COLORS.textDark : COLORS.text
     msg.centerAlignText()
