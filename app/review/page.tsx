@@ -43,7 +43,6 @@ function ReviewPageContent() {
   const [currentIndex, setCurrentIndex] = useState(0)
   const [loading, setLoading] = useState(true)
   const [ratingInProgress, setRatingInProgress] = useState(false)
-  const [autoRated, setAutoRated] = useState(false)
   const autoRateProcessed = useRef(false)
   const supabase = createClient()
   const searchParams = useSearchParams()
@@ -90,14 +89,17 @@ function ReviewPageContent() {
   const loadHighlights = useCallback(async () => {
     setLoading(true)
     try {
-      const { data: { user } } = await supabase.auth.getUser()
+      // getSession reads from local cookie — no network call needed
+      const { data: { session } } = await supabase.auth.getSession()
+      const user = session?.user
       if (!user) {
         setLoading(false)
         return
       }
 
-      // Run independent queries in parallel
-      const [catResult, pinResult, summaryResult] = await Promise.all([
+      // All queries in parallel — highlights joined with daily_summaries eliminates
+      // the previous sequential: fetch summary → then fetch highlights
+      const [catResult, pinResult, hlResult] = await Promise.all([
         supabase
           .from('categories')
           .select('id, name')
@@ -107,53 +109,44 @@ function ReviewPageContent() {
           .select('highlight_id')
           .eq('user_id', user.id),
         supabase
-          .from('daily_summaries')
-          .select('id')
-          .eq('date', today)
-          .eq('user_id', user.id)
-          .maybeSingle(),
+          .from('daily_summary_highlights')
+          .select(`
+            id,
+            highlight_id,
+            rating,
+            daily_summaries!inner(id),
+            highlight:highlights (
+              id,
+              text,
+              html_content,
+              source,
+              author,
+              archived,
+              highlight_categories (
+                category:categories (*)
+              )
+            )
+          `)
+          .eq('daily_summaries.date', today)
+          .eq('daily_summaries.user_id', user.id)
+          .order('rating', { ascending: false, nullsFirst: true })
+          .order('id', { ascending: true }),
       ])
 
       setCategories(catResult.data || [])
       setPinnedHighlightIds(new Set((pinResult.data || []).map((p: any) => p.highlight_id)))
 
-      if (summaryResult.error) throw summaryResult.error
-      if (!summaryResult.data) {
+      if (hlResult.error) throw hlResult.error
+
+      if (!hlResult.data || hlResult.data.length === 0) {
         setHighlights([])
         setLoading(false)
         return
       }
 
-      const summary = summaryResult.data as { id: string }
-
-      // Get highlights for this summary
-      const { data: summaryHighlights, error: highlightsError } = await supabase
-        .from('daily_summary_highlights')
-        .select(`
-          id,
-          highlight_id,
-          rating,
-          highlight:highlights (
-            id,
-            text,
-            html_content,
-            source,
-            author,
-            archived,
-            highlight_categories (
-              category:categories (*)
-            )
-          )
-        `)
-        .eq('daily_summary_id', summary.id)
-        .order('rating', { ascending: false, nullsFirst: true })
-        .order('id', { ascending: true })
-
-      if (highlightsError) throw highlightsError
-
-      const processed: ReviewHighlight[] = (summaryHighlights || []).map((sh: any) => ({
+      const processed: ReviewHighlight[] = (hlResult.data || []).map((sh: any) => ({
         id: sh.id,
-        daily_summary_id: summary.id,
+        daily_summary_id: sh.daily_summaries?.id || '',
         highlight_id: sh.highlight_id,
         rating: sh.rating,
         highlight: sh.highlight
@@ -218,12 +211,20 @@ function ReviewPageContent() {
             await handlePin(highlights[targetIndex].highlight_id)
             router.replace('/review', { scroll: false })
           }, 300)
-        } else if (rateParam && ['low', 'med', 'high'].includes(rateParam) && highlights[targetIndex].rating === null) {
-          setTimeout(() => {
-            handleRateByIndex(targetIndex, rateParam)
-            setAutoRated(true)
+        } else if (rateParam && ['low', 'med', 'high'].includes(rateParam)) {
+          if (highlights[targetIndex].rating === null) {
+            setTimeout(() => {
+              handleRateByIndex(targetIndex, rateParam)
+              router.replace('/review', { scroll: false })
+            }, 300)
+          } else {
+            // Already rated — navigate to next unreviewed instead
+            const nextUnrated = highlights.findIndex((h) => h.rating === null)
+            if (nextUnrated >= 0) setCurrentIndex(nextUnrated)
             router.replace('/review', { scroll: false })
-          }, 300)
+          }
+        } else {
+          router.replace('/review', { scroll: false })
         }
       } else {
         router.replace('/review', { scroll: false })
@@ -655,7 +656,7 @@ function ReviewPageContent() {
     )
   }
 
-  if (allDone) {
+  if (allDone && !searchParams.get('id')) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center bg-gradient-to-br from-blue-50 to-indigo-100 dark:from-gray-900 dark:to-gray-800 px-6">
         <div className="text-6xl mb-4">🎉</div>
@@ -846,13 +847,6 @@ function ReviewPageContent() {
                     </p>
                   )}
 
-                  {current.rating && (
-                    <div className="mt-4 pt-3 border-t border-gray-100 dark:border-gray-700">
-                      <span className="text-xs text-gray-400 dark:text-gray-500">
-                        Rated: <span className="font-medium capitalize">{current.rating}</span>
-                      </span>
-                    </div>
-                  )}
                 </>
               )}
             </div>
@@ -860,48 +854,57 @@ function ReviewPageContent() {
             {/* Rating buttons */}
             {!editingId && (
               <>
-                {!current.rating ? (
-                  <div className="flex gap-3">
-                    <button
-                      onClick={() => handleRate('low')}
-                      disabled={ratingInProgress}
-                      className="flex-1 py-4 text-lg font-semibold rounded-xl transition-all transform hover:scale-105 active:scale-95 bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300 border-2 border-red-300 dark:border-red-700 disabled:opacity-50"
-                    >
-                      Low
-                    </button>
-                    <button
-                      onClick={() => handleRate('med')}
-                      disabled={ratingInProgress}
-                      className="flex-1 py-4 text-lg font-semibold rounded-xl transition-all transform hover:scale-105 active:scale-95 bg-yellow-100 dark:bg-yellow-900/30 text-yellow-700 dark:text-yellow-300 border-2 border-yellow-300 dark:border-yellow-700 disabled:opacity-50"
-                    >
-                      Med
-                    </button>
-                    <button
-                      onClick={() => handleRate('high')}
-                      disabled={ratingInProgress}
-                      className="flex-1 py-4 text-lg font-semibold rounded-xl transition-all transform hover:scale-105 active:scale-95 bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300 border-2 border-green-300 dark:border-green-700 disabled:opacity-50"
-                    >
-                      High
-                    </button>
-                  </div>
-                ) : (
-                  <div className="flex gap-3">
-                    <button
-                      onClick={goToPrev}
-                      disabled={currentIndex === 0}
-                      className="flex-1 py-3 text-base font-medium rounded-xl bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 transition disabled:opacity-30"
-                    >
-                      Prev
-                    </button>
-                    <button
-                      onClick={goToNext}
-                      disabled={currentIndex === highlights.length - 1}
-                      className="flex-1 py-3 text-base font-medium rounded-xl bg-blue-600 text-white transition hover:bg-blue-700 disabled:opacity-30"
-                    >
-                      Next
-                    </button>
-                  </div>
-                )}
+                <div className="flex gap-3">
+                  <button
+                    onClick={() => handleRate('low')}
+                    disabled={ratingInProgress}
+                    className={`flex-1 py-4 text-lg font-semibold rounded-xl transition-all transform hover:scale-105 active:scale-95 border-2 disabled:opacity-50 ${
+                      current.rating === 'low'
+                        ? 'bg-red-500 text-white border-red-600 ring-2 ring-red-400 ring-offset-1'
+                        : 'bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300 border-red-300 dark:border-red-700'
+                    }`}
+                  >
+                    Low
+                  </button>
+                  <button
+                    onClick={() => handleRate('med')}
+                    disabled={ratingInProgress}
+                    className={`flex-1 py-4 text-lg font-semibold rounded-xl transition-all transform hover:scale-105 active:scale-95 border-2 disabled:opacity-50 ${
+                      current.rating === 'med'
+                        ? 'bg-yellow-500 text-white border-yellow-600 ring-2 ring-yellow-400 ring-offset-1'
+                        : 'bg-yellow-100 dark:bg-yellow-900/30 text-yellow-700 dark:text-yellow-300 border-yellow-300 dark:border-yellow-700'
+                    }`}
+                  >
+                    Med
+                  </button>
+                  <button
+                    onClick={() => handleRate('high')}
+                    disabled={ratingInProgress}
+                    className={`flex-1 py-4 text-lg font-semibold rounded-xl transition-all transform hover:scale-105 active:scale-95 border-2 disabled:opacity-50 ${
+                      current.rating === 'high'
+                        ? 'bg-green-500 text-white border-green-600 ring-2 ring-green-400 ring-offset-1'
+                        : 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300 border-green-300 dark:border-green-700'
+                    }`}
+                  >
+                    High
+                  </button>
+                </div>
+                <div className="flex gap-3 mt-3">
+                  <button
+                    onClick={goToPrev}
+                    disabled={currentIndex === 0}
+                    className="flex-1 py-2.5 text-base font-medium rounded-xl bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 transition disabled:opacity-30"
+                  >
+                    Prev
+                  </button>
+                  <button
+                    onClick={goToNext}
+                    disabled={currentIndex === highlights.length - 1}
+                    className="flex-1 py-2.5 text-base font-medium rounded-xl bg-blue-600 text-white transition hover:bg-blue-700 disabled:opacity-30"
+                  >
+                    Next
+                  </button>
+                </div>
 
                 {/* Action buttons */}
                 <div className="flex gap-2 mt-3 justify-center flex-wrap">
