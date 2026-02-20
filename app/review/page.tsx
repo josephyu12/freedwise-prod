@@ -257,8 +257,8 @@ function ReviewPageContent() {
           { onConflict: 'highlight_id,month_year' }
         )
 
-      // Stage 2: fetch all ratings + unarchived_at in parallel
-      const [{ data: allRatingsData }, { data: highlightData }] = await Promise.all([
+      // Stage 2: fetch all ratings + low ratings with dates + unarchived_at in parallel
+      const [{ data: allRatingsData }, { data: highlightData }, { data: lowRatingsWithDates }] = await Promise.all([
         supabase
           .from('daily_summary_highlights')
           .select('rating')
@@ -268,6 +268,11 @@ function ReviewPageContent() {
           .select('unarchived_at')
           .eq('id', target.highlight_id)
           .single(),
+        supabase
+          .from('daily_summary_highlights')
+          .select('rating, daily_summary:daily_summaries!inner(date)')
+          .eq('highlight_id', target.highlight_id)
+          .eq('rating', 'low'),
       ])
 
       const allRatings = (allRatingsData || []) as Array<{ rating: string }>
@@ -277,20 +282,15 @@ function ReviewPageContent() {
         ? ratingValues.reduce((a, b) => a + b, 0) / ratingValues.length
         : 0
 
-      let lowRatingsCount = 0
-      if (highlightData?.unarchived_at) {
-        const { data: recentLowRatings } = await supabase
-          .from('daily_summary_highlights')
-          .select('rating, daily_summary:daily_summaries!inner(date)')
-          .eq('highlight_id', target.highlight_id)
-          .eq('rating', 'low')
-          .gt('daily_summary.date', highlightData.unarchived_at.split('T')[0])
-        lowRatingsCount = (recentLowRatings || []).length
-      } else {
-        lowRatingsCount = allRatings.filter((r) => r.rating === 'low').length
-      }
-
-      const shouldArchive = lowRatingsCount >= 2
+      // Check if low-rated in two consecutive months
+      const unarchivedAt = highlightData?.unarchived_at?.split('T')[0]
+      const lowMonths = new Set(
+        ((lowRatingsWithDates || []) as Array<{ rating: string; daily_summary: { date: string } }>)
+          .filter((r) => !unarchivedAt || r.daily_summary.date > unarchivedAt)
+          .map((r) => r.daily_summary.date.substring(0, 7))
+      )
+      const prevMonth = mo === 1 ? `${y - 1}-12` : `${y}-${String(mo - 1).padStart(2, '0')}`
+      const shouldArchive = lowMonths.has(monthYear) && lowMonths.has(prevMonth)
 
       await (supabase.from('highlights') as any)
         .update({
@@ -352,8 +352,8 @@ function ReviewPageContent() {
           { onConflict: 'highlight_id,month_year' }
         )
 
-      // Stage 2: fetch all ratings + unarchived_at in parallel
-      const [{ data: allRatingsData }, { data: highlightData }] = await Promise.all([
+      // Stage 2: fetch all ratings + low ratings with dates + unarchived_at in parallel
+      const [{ data: allRatingsData }, { data: highlightData }, { data: lowRatingsWithDates }] = await Promise.all([
         supabase
           .from('daily_summary_highlights')
           .select('rating')
@@ -363,6 +363,11 @@ function ReviewPageContent() {
           .select('unarchived_at')
           .eq('id', current.highlight_id)
           .single(),
+        supabase
+          .from('daily_summary_highlights')
+          .select('rating, daily_summary:daily_summaries!inner(date)')
+          .eq('highlight_id', current.highlight_id)
+          .eq('rating', 'low'),
       ])
 
       const allRatings = (allRatingsData || []) as Array<{ rating: string }>
@@ -372,20 +377,15 @@ function ReviewPageContent() {
         ? ratingValues.reduce((a, b) => a + b, 0) / ratingValues.length
         : 0
 
-      let lowRatingsCount = 0
-      if (highlightData?.unarchived_at) {
-        const { data: recentLowRatings } = await supabase
-          .from('daily_summary_highlights')
-          .select('rating, daily_summary:daily_summaries!inner(date)')
-          .eq('highlight_id', current.highlight_id)
-          .eq('rating', 'low')
-          .gt('daily_summary.date', highlightData.unarchived_at.split('T')[0])
-        lowRatingsCount = (recentLowRatings || []).length
-      } else {
-        lowRatingsCount = allRatings.filter((r) => r.rating === 'low').length
-      }
-
-      const shouldArchive = lowRatingsCount >= 2
+      // Check if low-rated in two consecutive months
+      const unarchivedAt = highlightData?.unarchived_at?.split('T')[0]
+      const lowMonths = new Set(
+        ((lowRatingsWithDates || []) as Array<{ rating: string; daily_summary: { date: string } }>)
+          .filter((r) => !unarchivedAt || r.daily_summary.date > unarchivedAt)
+          .map((r) => r.daily_summary.date.substring(0, 7))
+      )
+      const prevMonth = mo === 1 ? `${y - 1}-12` : `${y}-${String(mo - 1).padStart(2, '0')}`
+      const shouldArchive = lowMonths.has(monthYear) && lowMonths.has(prevMonth)
 
       await (supabase.from('highlights') as any)
         .update({

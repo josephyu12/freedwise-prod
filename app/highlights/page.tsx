@@ -1070,7 +1070,7 @@ export default function HighlightsPage() {
                 >
                   {highlight.archived && (
                     <div className="mb-2 px-2 py-1 bg-orange-100 dark:bg-orange-900 text-orange-800 dark:text-orange-200 rounded text-xs font-semibold inline-block">
-                      Archived (marked low twice)
+                      Archived (low two months in a row)
                     </div>
                   )}
                   {editingId === highlight.id ? (
