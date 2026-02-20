@@ -9,6 +9,15 @@ import { Pin, PinOff } from 'lucide-react'
 import RichTextEditor from '@/components/RichTextEditor'
 import PinDialog from '@/components/PinDialog'
 import { addToNotionSyncQueue } from '@/lib/notionSyncQueue'
+import { useOfflineStatus } from '@/hooks/useOfflineStatus'
+import OfflineBanner from '@/components/OfflineBanner'
+import {
+  cacheReviewData,
+  getCachedReviewData,
+  enqueueOfflineAction,
+  getPendingActions,
+  removeAction,
+} from '@/lib/offlineStore'
 
 interface ReviewHighlight {
   id: string
@@ -66,6 +75,12 @@ function ReviewPageContent() {
   const [pinDialogOpen, setPinDialogOpen] = useState(false)
   const [pendingPinHighlightId, setPendingPinHighlightId] = useState<string | null>(null)
 
+  // Offline state
+  const { isOnline } = useOfflineStatus()
+  const [isSyncing, setIsSyncing] = useState(false)
+  const [pendingSyncCount, setPendingSyncCount] = useState(0)
+  const [usingCachedData, setUsingCachedData] = useState(false)
+
   const today = format(new Date(), 'yyyy-MM-dd')
 
   const addToSyncQueue = async (
@@ -88,6 +103,7 @@ function ReviewPageContent() {
 
   const loadHighlights = useCallback(async () => {
     setLoading(true)
+    setUsingCachedData(false)
     try {
       // getSession reads from local cookie — no network call needed
       const { data: { session } } = await supabase.auth.getSession()
@@ -134,7 +150,8 @@ function ReviewPageContent() {
       ])
 
       setCategories(catResult.data || [])
-      setPinnedHighlightIds(new Set((pinResult.data || []).map((p: any) => p.highlight_id)))
+      const pinIds = (pinResult.data || []).map((p: any) => p.highlight_id)
+      setPinnedHighlightIds(new Set(pinIds))
 
       if (hlResult.error) throw hlResult.error
 
@@ -166,11 +183,40 @@ function ReviewPageContent() {
 
       setHighlights(processed)
 
+      // Cache highlights for offline use
+      try {
+        await cacheReviewData({
+          highlights: processed,
+          categories: catResult.data || [],
+          pinnedHighlightIds: pinIds,
+          cachedAt: Date.now(),
+        })
+      } catch (e) {
+        console.warn('Failed to cache review data:', e)
+      }
+
       // Start at the first unrated highlight
       const firstUnrated = processed.findIndex((h) => h.rating === null)
       setCurrentIndex(firstUnrated >= 0 ? firstUnrated : 0)
     } catch (error) {
       console.error('Error loading highlights:', error)
+
+      // If offline, try to load from cache
+      if (!navigator.onLine) {
+        try {
+          const cached = await getCachedReviewData()
+          if (cached) {
+            setHighlights(cached.highlights)
+            setCategories(cached.categories || [])
+            setPinnedHighlightIds(new Set(cached.pinnedHighlightIds || []))
+            setUsingCachedData(true)
+            const firstUnrated = cached.highlights.findIndex((h: any) => h.rating === null)
+            setCurrentIndex(firstUnrated >= 0 ? firstUnrated : 0)
+          }
+        } catch (cacheError) {
+          console.error('Failed to load cached data:', cacheError)
+        }
+      }
     } finally {
       setLoading(false)
     }
@@ -334,11 +380,60 @@ function ReviewPageContent() {
     if (!current || ratingInProgress) return
     setRatingInProgress(true)
 
-    try {
-      setHighlights((prev) =>
-        prev.map((h) => (h.id === current.id ? { ...h, rating } : h))
-      )
+    // Optimistic UI update (runs whether online or offline)
+    setHighlights((prev) =>
+      prev.map((h) => (h.id === current.id ? { ...h, rating } : h))
+    )
 
+    // If offline, queue the action and update local state only
+    if (!isOnline) {
+      try {
+        await enqueueOfflineAction({
+          type: 'rate-review',
+          params: {
+            summaryHighlightId: current.id,
+            highlightId: current.highlight_id,
+            rating,
+            today,
+          },
+        })
+        // Move to next unrated
+        setHighlights((prev) => {
+          const updated = prev.map((h) =>
+            h.id === current.id ? { ...h, rating } : h
+          )
+          const nextUnrated = updated.findIndex(
+            (h, i) => h.rating === null && i !== currentIndex
+          )
+          if (nextUnrated >= 0) {
+            setCurrentIndex(nextUnrated)
+          }
+          return updated
+        })
+        // Update cached data with the new rating
+        try {
+          const cached = await getCachedReviewData()
+          if (cached) {
+            const updatedHighlights = cached.highlights.map((h: any) =>
+              h.id === current.id ? { ...h, rating } : h
+            )
+            await cacheReviewData({ ...cached, highlights: updatedHighlights, cachedAt: Date.now() })
+          }
+        } catch (e) {
+          console.warn('Failed to update cache:', e)
+        }
+      } catch (error) {
+        console.error('Error queuing offline rating:', error)
+        setHighlights((prev) =>
+          prev.map((h) => (h.id === current.id ? { ...h, rating: null } : h))
+        )
+      } finally {
+        setRatingInProgress(false)
+      }
+      return
+    }
+
+    try {
       // Stage 1: save rating + fire-and-forget month tracking
       const [y, mo] = today.split('-').map(Number)
       const monthYear = `${y}-${String(mo).padStart(2, '0')}`
@@ -644,6 +739,98 @@ function ReviewPageContent() {
     }
   }
 
+  // ─── Offline Sync ─────────────────────────────────────────
+
+  // When coming back online, replay queued actions
+  useEffect(() => {
+    if (!isOnline) return
+
+    const syncOfflineActions = async () => {
+      const actions = await getPendingActions()
+      if (actions.length === 0) return
+
+      setIsSyncing(true)
+      setPendingSyncCount(actions.length)
+
+      for (const action of actions) {
+        try {
+          if (action.type === 'rate-review') {
+            const { summaryHighlightId, highlightId, rating, today: actionToday } = action.params
+            const [y, mo] = actionToday.split('-').map(Number)
+            const monthYear = `${y}-${String(mo).padStart(2, '0')}`
+
+            await (supabase.from('daily_summary_highlights') as any)
+              .update({ rating })
+              .eq('id', summaryHighlightId)
+
+            ;(supabase.from('highlight_months_reviewed') as any)
+              .upsert(
+                { highlight_id: highlightId, month_year: monthYear },
+                { onConflict: 'highlight_id,month_year' }
+              )
+
+            const [{ data: allRatingsData }, { data: highlightData }, { data: lowRatingsWithDates }] = await Promise.all([
+              supabase
+                .from('daily_summary_highlights')
+                .select('rating')
+                .eq('highlight_id', highlightId)
+                .not('rating', 'is', null),
+              (supabase.from('highlights') as any)
+                .select('unarchived_at')
+                .eq('id', highlightId)
+                .single(),
+              supabase
+                .from('daily_summary_highlights')
+                .select('rating, daily_summary:daily_summaries!inner(date)')
+                .eq('highlight_id', highlightId)
+                .eq('rating', 'low'),
+            ])
+
+            const allRatings = (allRatingsData || []) as Array<{ rating: string }>
+            const ratingMap: Record<string, number> = { low: 1, med: 2, high: 3 }
+            const ratingValues = allRatings.map((r) => ratingMap[r.rating] || 0).filter((v) => v > 0)
+            const average = ratingValues.length > 0
+              ? ratingValues.reduce((a, b) => a + b, 0) / ratingValues.length
+              : 0
+
+            const unarchivedAt = highlightData?.unarchived_at?.split('T')[0]
+            const lowMonths = new Set(
+              ((lowRatingsWithDates || []) as Array<{ rating: string; daily_summary: { date: string } }>)
+                .filter((r) => !unarchivedAt || r.daily_summary.date > unarchivedAt)
+                .map((r) => r.daily_summary.date.substring(0, 7))
+            )
+            const prevMonth = mo === 1 ? `${y - 1}-12` : `${y}-${String(mo - 1).padStart(2, '0')}`
+            const shouldArchive = lowMonths.has(monthYear) && lowMonths.has(prevMonth)
+
+            await (supabase.from('highlights') as any)
+              .update({
+                average_rating: average,
+                rating_count: ratingValues.length,
+                ...(shouldArchive ? { archived: true } : {}),
+              })
+              .eq('id', highlightId)
+          }
+
+          await removeAction(action.id!)
+          setPendingSyncCount((prev) => prev - 1)
+        } catch (error) {
+          console.error('Error syncing offline action:', error)
+          // Leave the action in the queue for next retry
+          break
+        }
+      }
+
+      setIsSyncing(false)
+      setPendingSyncCount(0)
+
+      // Reload fresh data after sync
+      loadHighlights()
+    }
+
+    syncOfflineActions()
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOnline])
+
   // ─── Render ───────────────────────────────────────────────
 
   if (loading) {
@@ -700,6 +887,9 @@ function ReviewPageContent() {
 
   return (
     <div className="min-h-screen flex flex-col bg-gradient-to-br from-blue-50 to-indigo-100 dark:from-gray-900 dark:to-gray-800">
+      {/* Offline Banner */}
+      <OfflineBanner isOnline={isOnline} isSyncing={isSyncing} pendingCount={pendingSyncCount} />
+
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 safe-area-top">
         <Link
@@ -924,18 +1114,21 @@ function ReviewPageContent() {
                 <div className="flex gap-2 mt-3 justify-center flex-wrap">
                   <button
                     onClick={() => handleStartEdit(current.highlight)}
-                    className="px-3 py-1 text-sm bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300 rounded hover:bg-blue-200 dark:hover:bg-blue-800 transition"
+                    disabled={!isOnline}
+                    className="px-3 py-1 text-sm bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300 rounded hover:bg-blue-200 dark:hover:bg-blue-800 transition disabled:opacity-40 disabled:cursor-not-allowed"
+                    title={!isOnline ? 'Editing is not available offline' : undefined}
                   >
                     Edit
                   </button>
                   <button
                     onClick={() => handlePin(current.highlight_id)}
-                    className={`px-3 py-1 text-sm rounded transition flex items-center gap-1 ${
+                    disabled={!isOnline}
+                    className={`px-3 py-1 text-sm rounded transition flex items-center gap-1 disabled:opacity-40 disabled:cursor-not-allowed ${
                       pinnedHighlightIds.has(current.highlight_id)
                         ? 'bg-yellow-100 dark:bg-yellow-900 text-yellow-700 dark:text-yellow-300 hover:bg-yellow-200 dark:hover:bg-yellow-800'
                         : 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'
                     }`}
-                    title={pinnedHighlightIds.has(current.highlight_id) ? 'Unpin' : 'Pin'}
+                    title={!isOnline ? 'Pinning is not available offline' : pinnedHighlightIds.has(current.highlight_id) ? 'Unpin' : 'Pin'}
                   >
                     {pinnedHighlightIds.has(current.highlight_id) ? (
                       <><PinOff className="w-3.5 h-3.5" /> Unpin</>
@@ -946,21 +1139,27 @@ function ReviewPageContent() {
                   {current.highlight.archived ? (
                     <button
                       onClick={() => handleUnarchiveHighlight(current.highlight_id)}
-                      className="px-3 py-1 text-sm bg-green-100 dark:bg-green-900 text-green-700 dark:text-green-300 rounded hover:bg-green-200 dark:hover:bg-green-800 transition"
+                      disabled={!isOnline}
+                      className="px-3 py-1 text-sm bg-green-100 dark:bg-green-900 text-green-700 dark:text-green-300 rounded hover:bg-green-200 dark:hover:bg-green-800 transition disabled:opacity-40 disabled:cursor-not-allowed"
+                      title={!isOnline ? 'Unarchiving is not available offline' : undefined}
                     >
                       Unarchive
                     </button>
                   ) : (
                     <button
                       onClick={() => handleArchiveHighlight(current.highlight_id)}
-                      className="px-3 py-1 text-sm bg-orange-100 dark:bg-orange-900 text-orange-700 dark:text-orange-300 rounded hover:bg-orange-200 dark:hover:bg-orange-800 transition"
+                      disabled={!isOnline}
+                      className="px-3 py-1 text-sm bg-orange-100 dark:bg-orange-900 text-orange-700 dark:text-orange-300 rounded hover:bg-orange-200 dark:hover:bg-orange-800 transition disabled:opacity-40 disabled:cursor-not-allowed"
+                      title={!isOnline ? 'Archiving is not available offline' : undefined}
                     >
                       Archive
                     </button>
                   )}
                   <button
                     onClick={() => handleDeleteHighlight(current.highlight_id)}
-                    className="px-3 py-1 text-sm bg-red-100 dark:bg-red-900 text-red-700 dark:text-red-300 rounded hover:bg-red-200 dark:hover:bg-red-800 transition"
+                    disabled={!isOnline}
+                    className="px-3 py-1 text-sm bg-red-100 dark:bg-red-900 text-red-700 dark:text-red-300 rounded hover:bg-red-200 dark:hover:bg-red-800 transition disabled:opacity-40 disabled:cursor-not-allowed"
+                    title={!isOnline ? 'Deleting is not available offline' : undefined}
                   >
                     Delete
                   </button>

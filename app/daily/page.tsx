@@ -11,6 +11,15 @@ import PinDialog from '@/components/PinDialog'
 import { useUnsavedChanges } from '@/hooks/useUnsavedChanges'
 import { Pin, PinOff } from 'lucide-react'
 import { addToNotionSyncQueue } from '@/lib/notionSyncQueue'
+import { useOfflineStatus } from '@/hooks/useOfflineStatus'
+import OfflineBanner from '@/components/OfflineBanner'
+import {
+  cacheDailyData,
+  getCachedDailyData,
+  enqueueOfflineAction,
+  getPendingActions,
+  removeAction,
+} from '@/lib/offlineStore'
 
 function CalendarView({
   selectedDate,
@@ -190,6 +199,12 @@ export default function DailyPage() {
   const supabase = createClient()
   const router = useRouter()
 
+  // Offline state
+  const { isOnline } = useOfflineStatus()
+  const [isSyncing, setIsSyncing] = useState(false)
+  const [pendingSyncCount, setPendingSyncCount] = useState(0)
+  const [usingCachedData, setUsingCachedData] = useState(false)
+
   const editingHighlight = editingId
     ? summary?.highlights.find((sh) => sh.highlight?.id === editingId)?.highlight
     : null
@@ -312,6 +327,7 @@ export default function DailyPage() {
 
   const loadDailySummary = useCallback(async (selectedDate: string) => {
     setLoading(true)
+    setUsingCachedData(false)
     try {
       const { data: { user } } = await supabase.auth.getUser()
       if (!user) {
@@ -319,8 +335,10 @@ export default function DailyPage() {
         return
       }
 
-      // First, ensure today's summary exists
-      await ensureDailySummary(selectedDate)
+      // First, ensure today's summary exists (skip when offline)
+      if (navigator.onLine) {
+        await ensureDailySummary(selectedDate)
+      }
 
       // Then load it
       const { data: summaryDataRaw, error } = await supabase
@@ -387,20 +405,51 @@ export default function DailyPage() {
             : null,
         }))
 
-        setSummary({
+        const summaryObj = {
           id: summaryData.id,
           date: summaryData.date,
           highlights: processedHighlights,
           created_at: summaryData.created_at,
-        })
+        }
+
+        setSummary(summaryObj)
+
+        // Cache for offline use
+        try {
+          await cacheDailyData({
+            date: selectedDate,
+            summary: summaryObj,
+            categories: categories,
+            pinnedHighlightIds: Array.from(pinnedHighlightIds),
+            cachedAt: Date.now(),
+          })
+        } catch (e) {
+          console.warn('Failed to cache daily data:', e)
+        }
       } else {
         setSummary(null)
       }
     } catch (error) {
       console.error('Error loading daily summary:', error)
+
+      // If offline, try to load from cache
+      if (!navigator.onLine) {
+        try {
+          const cached = await getCachedDailyData(selectedDate)
+          if (cached) {
+            setSummary(cached.summary)
+            if (cached.categories) setCategories(cached.categories as any[])
+            if (cached.pinnedHighlightIds) setPinnedHighlightIds(new Set(cached.pinnedHighlightIds))
+            setUsingCachedData(true)
+          }
+        } catch (cacheError) {
+          console.error('Failed to load cached data:', cacheError)
+        }
+      }
     } finally {
       setLoading(false)
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ensureDailySummary, supabase])
 
   const loadMonthReviewStatus = useCallback(async (monthToLoad: Date) => {
@@ -624,18 +673,83 @@ export default function DailyPage() {
     highlightId: string,
     rating: 'low' | 'med' | 'high' | null
   ) => {
-    try {
-      // Optimistically update the UI first
-      if (summary) {
-        const updatedHighlights = summary.highlights.map((sh) => {
-          if (sh.id === summaryHighlightId) {
-            return { ...sh, rating }
-          }
-          return sh
-        })
-        setSummary({ ...summary, highlights: updatedHighlights })
-      }
+    // Optimistic UI update (runs whether online or offline)
+    if (summary) {
+      const updatedHighlights = summary.highlights.map((sh) => {
+        if (sh.id === summaryHighlightId) {
+          return { ...sh, rating }
+        }
+        return sh
+      })
+      setSummary({ ...summary, highlights: updatedHighlights })
+    }
 
+    // If offline, queue the action and update local state only
+    if (!isOnline) {
+      try {
+        await enqueueOfflineAction({
+          type: 'rate-daily',
+          params: {
+            summaryHighlightId,
+            highlightId,
+            rating,
+            summaryDate: summary?.date || date,
+          },
+        })
+
+        // Update overlay state
+        if (summary && rating !== null) {
+          setSlidingOutIds((prev) => new Set(prev).add(summaryHighlightId))
+          const currentIndex = summary.highlights.findIndex((sh) => sh.id === summaryHighlightId)
+          const nextHighlight = summary.highlights[currentIndex + 1]
+          if (nextHighlight?.highlight?.id) {
+            setTimeout(() => {
+              const nextElement = document.getElementById(`highlight-${nextHighlight.highlight!.id}`)
+              if (nextElement) {
+                nextElement.scrollIntoView({ behavior: 'smooth', block: 'center' })
+              }
+            }, 200)
+          }
+        } else if (rating === null) {
+          setSlidingOutIds((prev) => {
+            const next = new Set(prev)
+            next.delete(summaryHighlightId)
+            return next
+          })
+        }
+
+        // Update cached data
+        try {
+          const cached = await getCachedDailyData(date)
+          if (cached && cached.summary) {
+            const updatedSummary = {
+              ...cached.summary,
+              highlights: cached.summary.highlights.map((sh: any) =>
+                sh.id === summaryHighlightId ? { ...sh, rating } : sh
+              ),
+            }
+            await cacheDailyData({ ...cached, summary: updatedSummary, cachedAt: Date.now() })
+          }
+        } catch (e) {
+          console.warn('Failed to update cache:', e)
+        }
+      } catch (error) {
+        console.error('Error queuing offline rating:', error)
+        // Revert optimistic update on error
+        if (summary) {
+          const revertedHighlights = summary.highlights.map((sh) => {
+            if (sh.id === summaryHighlightId) {
+              return { ...sh, rating: null }
+            }
+            return sh
+          })
+          setSummary({ ...summary, highlights: revertedHighlights })
+        }
+      }
+      return
+    }
+
+    try {
       // Update the rating in daily_summary_highlights
       const { error: updateError } = await (supabase
         .from('daily_summary_highlights') as any)
@@ -1055,6 +1169,105 @@ export default function DailyPage() {
     }
   }
 
+  // ─── Offline Sync ─────────────────────────────────────────
+
+  // When coming back online, replay queued actions
+  useEffect(() => {
+    if (!isOnline) return
+
+    const syncOfflineActions = async () => {
+      const actions = await getPendingActions()
+      // Only process daily-type actions here
+      const dailyActions = actions.filter((a) => a.type === 'rate-daily')
+      if (dailyActions.length === 0) return
+
+      setIsSyncing(true)
+      setPendingSyncCount(dailyActions.length)
+
+      for (const action of dailyActions) {
+        try {
+          if (action.type === 'rate-daily') {
+            const { summaryHighlightId, highlightId, rating, summaryDate } = action.params
+
+            await (supabase.from('daily_summary_highlights') as any)
+              .update({ rating })
+              .eq('id', summaryHighlightId)
+
+            if (rating !== null && summaryDate) {
+              const [y, mo] = summaryDate.split('-').map(Number)
+              const monthYear = `${y}-${String(mo).padStart(2, '0')}`
+              ;(supabase.from('highlight_months_reviewed') as any)
+                .upsert(
+                  { highlight_id: highlightId, month_year: monthYear },
+                  { onConflict: 'highlight_id,month_year' }
+                )
+            }
+
+            const { data: allRatingsData } = await supabase
+              .from('daily_summary_highlights')
+              .select('rating')
+              .eq('highlight_id', highlightId)
+              .not('rating', 'is', null)
+
+            const allRatings = (allRatingsData || []) as Array<{ rating: string }>
+            const ratingMap: Record<string, number> = { low: 1, med: 2, high: 3 }
+            const ratingValues = allRatings.map((r) => ratingMap[r.rating] || 0).filter((v) => v > 0)
+            const average = ratingValues.length > 0
+              ? ratingValues.reduce((a, b) => a + b, 0) / ratingValues.length
+              : 0
+
+            const { data: highlightData } = await (supabase.from('highlights') as any)
+              .select('unarchived_at')
+              .eq('id', highlightId)
+              .single()
+
+            let lowRatingsCount = 0
+            if (highlightData?.unarchived_at) {
+              const { data: recentLowRatings } = await supabase
+                .from('daily_summary_highlights')
+                .select('rating, daily_summary:daily_summaries!inner(date)')
+                .eq('highlight_id', highlightId)
+                .eq('rating', 'low')
+                .gt('daily_summary.date', highlightData.unarchived_at.split('T')[0])
+              lowRatingsCount = (recentLowRatings || []).length
+            } else {
+              lowRatingsCount = allRatings.filter((r) => r.rating === 'low').length
+            }
+
+            const shouldArchive = lowRatingsCount >= 2
+
+            await (supabase.from('highlights') as any)
+              .update({
+                average_rating: average,
+                rating_count: ratingValues.length,
+                ...(shouldArchive ? { archived: true } : {}),
+              })
+              .eq('id', highlightId)
+          }
+
+          await removeAction(action.id!)
+          setPendingSyncCount((prev) => prev - 1)
+        } catch (error) {
+          console.error('Error syncing offline action:', error)
+          break
+        }
+      }
+
+      setIsSyncing(false)
+      setPendingSyncCount(0)
+
+      // Reload fresh data after sync
+      loadDailySummary(date)
+      const [year, month] = date.split('-').map(Number)
+      const dateMonth = new Date(year, month - 1, 1)
+      loadMonthReviewStatus(dateMonth)
+      loadMonthsWithAssignments()
+    }
+
+    syncOfflineActions()
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOnline])
+
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
@@ -1065,6 +1278,9 @@ export default function DailyPage() {
 
   return (
     <main className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 dark:from-gray-900 dark:to-gray-800">
+      {/* Offline Banner */}
+      <OfflineBanner isOnline={isOnline} isSyncing={isSyncing} pendingCount={pendingSyncCount} />
+
       <div className="container mx-auto px-4 py-8">
         <div className="max-w-4xl mx-auto">
           <div className="flex justify-between items-center mb-4 sm:mb-8">
@@ -1377,12 +1593,13 @@ export default function DailyPage() {
                                     e.stopPropagation()
                                     handlePin(highlight.id)
                                   }}
-                                  className={`px-2 sm:px-3 py-1 text-xs sm:text-sm rounded transition ${
+                                  disabled={!isOnline}
+                                  className={`px-2 sm:px-3 py-1 text-xs sm:text-sm rounded transition disabled:opacity-40 disabled:cursor-not-allowed ${
                                     pinnedHighlightIds.has(highlight.id)
                                       ? 'bg-yellow-100 dark:bg-yellow-900 text-yellow-700 dark:text-yellow-300 hover:bg-yellow-200 dark:hover:bg-yellow-800'
                                       : 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'
                                   }`}
-                                  title={pinnedHighlightIds.has(highlight.id) ? 'Unpin' : 'Pin'}
+                                  title={!isOnline ? 'Pinning is not available offline' : pinnedHighlightIds.has(highlight.id) ? 'Unpin' : 'Pin'}
                                 >
                                   {pinnedHighlightIds.has(highlight.id) ? (
                                     <PinOff className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
@@ -1395,7 +1612,9 @@ export default function DailyPage() {
                                     e.stopPropagation()
                                     handleStartEdit(highlight)
                                   }}
-                                  className="px-2 sm:px-3 py-1 text-xs sm:text-sm bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300 rounded hover:bg-blue-200 dark:hover:bg-blue-800 transition"
+                                  disabled={!isOnline}
+                                  className="px-2 sm:px-3 py-1 text-xs sm:text-sm bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300 rounded hover:bg-blue-200 dark:hover:bg-blue-800 transition disabled:opacity-40 disabled:cursor-not-allowed"
+                                  title={!isOnline ? 'Editing is not available offline' : undefined}
                                 >
                                   Edit
                                 </button>
@@ -1404,11 +1623,13 @@ export default function DailyPage() {
                                     e.stopPropagation()
                                     handleArchive(highlight.id, !highlight.archived)
                                   }}
-                                  className={`px-2 sm:px-3 py-1 text-xs sm:text-sm rounded transition ${
+                                  disabled={!isOnline}
+                                  className={`px-2 sm:px-3 py-1 text-xs sm:text-sm rounded transition disabled:opacity-40 disabled:cursor-not-allowed ${
                                     highlight.archived
                                       ? 'bg-green-100 dark:bg-green-900 text-green-700 dark:text-green-300 hover:bg-green-200 dark:hover:bg-green-800'
                                       : 'bg-orange-100 dark:bg-orange-900 text-orange-700 dark:text-orange-300 hover:bg-orange-200 dark:hover:bg-orange-800'
                                   }`}
+                                  title={!isOnline ? 'Archiving is not available offline' : undefined}
                                 >
                                   {highlight.archived ? 'Unarchive' : 'Archive'}
                                 </button>
@@ -1417,7 +1638,9 @@ export default function DailyPage() {
                                     e.stopPropagation()
                                     handleDelete(highlight.id)
                                   }}
-                                  className="px-2 sm:px-3 py-1 text-xs sm:text-sm bg-red-100 dark:bg-red-900 text-red-700 dark:text-red-300 rounded hover:bg-red-200 dark:hover:bg-red-800 transition"
+                                  disabled={!isOnline}
+                                  className="px-2 sm:px-3 py-1 text-xs sm:text-sm bg-red-100 dark:bg-red-900 text-red-700 dark:text-red-300 rounded hover:bg-red-200 dark:hover:bg-red-800 transition disabled:opacity-40 disabled:cursor-not-allowed"
+                                  title={!isOnline ? 'Deleting is not available offline' : undefined}
                                 >
                                   Delete
                                 </button>
