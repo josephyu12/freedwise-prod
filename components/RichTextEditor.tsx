@@ -1,6 +1,6 @@
 'use client'
 
-import { useRef, useState, useEffect } from 'react'
+import { useRef, useState, useEffect, useCallback } from 'react'
 
 interface RichTextEditorProps {
   value: string
@@ -12,7 +12,50 @@ interface RichTextEditorProps {
 export default function RichTextEditor({ value, htmlValue, onChange, placeholder }: RichTextEditorProps) {
   const editorRef = useRef<HTMLDivElement>(null)
   const isInternalUpdate = useRef(false)
+  const savedSelection = useRef<Range | null>(null)
   const [isFocused, setIsFocused] = useState(false)
+
+  // Track selection changes so we can restore it after toolbar button clicks
+  // (on mobile, tapping a button causes contentEditable to blur and lose selection)
+  useEffect(() => {
+    const handleSelectionChange = () => {
+      const sel = window.getSelection()
+      if (
+        sel &&
+        sel.rangeCount > 0 &&
+        editorRef.current &&
+        editorRef.current.contains(sel.anchorNode)
+      ) {
+        savedSelection.current = sel.getRangeAt(0).cloneRange()
+      }
+    }
+    document.addEventListener('selectionchange', handleSelectionChange)
+    return () => document.removeEventListener('selectionchange', handleSelectionChange)
+  }, [])
+
+  // Restore the last saved selection within the editor
+  const restoreSelection = useCallback(() => {
+    if (savedSelection.current && editorRef.current) {
+      try {
+        if (editorRef.current.contains(savedSelection.current.startContainer)) {
+          const sel = window.getSelection()
+          if (sel) {
+            sel.removeAllRanges()
+            sel.addRange(savedSelection.current)
+            return true
+          }
+        }
+      } catch (e) {
+        // Range may be invalid if DOM changed
+      }
+    }
+    return false
+  }, [])
+
+  // Prevent toolbar buttons from stealing focus from the contentEditable
+  const preventFocusLoss = useCallback((e: React.MouseEvent | React.TouchEvent) => {
+    e.preventDefault()
+  }, [])
 
   useEffect(() => {
     if (isInternalUpdate.current) {
@@ -53,6 +96,8 @@ export default function RichTextEditor({ value, htmlValue, onChange, placeholder
     if (!editorRef.current) return
     
     editorRef.current.focus()
+    // Restore the saved selection (may have been lost when toolbar button was tapped on mobile)
+    restoreSelection()
     
     // For list commands, use a more reliable approach
     if (command === 'insertUnorderedList') {
@@ -331,6 +376,7 @@ export default function RichTextEditor({ value, htmlValue, onChange, placeholder
       <div className="flex gap-1 p-2.5 bg-gray-50/80 dark:bg-gray-700/50 border-b border-gray-200 dark:border-gray-600/50 backdrop-blur-sm">
         <button
           type="button"
+          onMouseDown={preventFocusLoss}
           onClick={() => execCommand('bold')}
           className={`${toolbarBtnClass} font-bold`}
           title="Bold"
@@ -339,6 +385,7 @@ export default function RichTextEditor({ value, htmlValue, onChange, placeholder
         </button>
         <button
           type="button"
+          onMouseDown={preventFocusLoss}
           onClick={() => execCommand('italic')}
           className={`${toolbarBtnClass} italic`}
           title="Italic"
@@ -347,6 +394,7 @@ export default function RichTextEditor({ value, htmlValue, onChange, placeholder
         </button>
         <button
           type="button"
+          onMouseDown={preventFocusLoss}
           onClick={() => execCommand('underline')}
           className={`${toolbarBtnClass} underline`}
           title="Underline"
@@ -355,6 +403,7 @@ export default function RichTextEditor({ value, htmlValue, onChange, placeholder
         </button>
         <button
           type="button"
+          onMouseDown={preventFocusLoss}
           onClick={() => execCommand('strikeThrough')}
           className={`${toolbarBtnClass} line-through`}
           title="Strikethrough"
@@ -364,6 +413,7 @@ export default function RichTextEditor({ value, htmlValue, onChange, placeholder
         <div className="w-px bg-gray-200 dark:bg-gray-600/50 mx-1.5 self-stretch" />
         <button
           type="button"
+          onMouseDown={preventFocusLoss}
           onClick={() => execCommand('insertUnorderedList')}
           className={toolbarBtnClass}
           title="Bullet List"
@@ -372,6 +422,7 @@ export default function RichTextEditor({ value, htmlValue, onChange, placeholder
         </button>
         <button
           type="button"
+          onMouseDown={preventFocusLoss}
           onClick={() => execCommand('insertOrderedList')}
           className={toolbarBtnClass}
           title="Numbered List"
@@ -381,6 +432,7 @@ export default function RichTextEditor({ value, htmlValue, onChange, placeholder
         <div className="w-px bg-gray-200 dark:bg-gray-600/50 mx-1.5 self-stretch" />
         <button
           type="button"
+          onMouseDown={preventFocusLoss}
           onClick={indentList}
           className={toolbarBtnClass}
           title="Indent (Tab)"
@@ -389,6 +441,7 @@ export default function RichTextEditor({ value, htmlValue, onChange, placeholder
         </button>
         <button
           type="button"
+          onMouseDown={preventFocusLoss}
           onClick={outdentList}
           className={toolbarBtnClass}
           title="Outdent (Shift+Tab)"
