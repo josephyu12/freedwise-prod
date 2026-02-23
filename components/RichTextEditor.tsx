@@ -1,6 +1,6 @@
 'use client'
 
-import { useRef, useState, useEffect, useCallback } from 'react'
+import { useRef, useState, useEffect } from 'react'
 
 interface RichTextEditorProps {
   value: string
@@ -15,8 +15,8 @@ export default function RichTextEditor({ value, htmlValue, onChange, placeholder
   const savedSelection = useRef<Range | null>(null)
   const [isFocused, setIsFocused] = useState(false)
 
-  // Track selection changes so we can restore it after toolbar button clicks
-  // (on mobile, tapping a button causes contentEditable to blur and lose selection)
+  // Track selection changes so we can restore it after toolbar button taps on mobile
+  // (on iOS, tapping a button causes contentEditable to blur and lose its selection)
   useEffect(() => {
     const handleSelectionChange = () => {
       const sel = window.getSelection()
@@ -31,30 +31,6 @@ export default function RichTextEditor({ value, htmlValue, onChange, placeholder
     }
     document.addEventListener('selectionchange', handleSelectionChange)
     return () => document.removeEventListener('selectionchange', handleSelectionChange)
-  }, [])
-
-  // Restore the last saved selection within the editor
-  const restoreSelection = useCallback(() => {
-    if (savedSelection.current && editorRef.current) {
-      try {
-        if (editorRef.current.contains(savedSelection.current.startContainer)) {
-          const sel = window.getSelection()
-          if (sel) {
-            sel.removeAllRanges()
-            sel.addRange(savedSelection.current)
-            return true
-          }
-        }
-      } catch (e) {
-        // Range may be invalid if DOM changed
-      }
-    }
-    return false
-  }, [])
-
-  // Prevent toolbar buttons from stealing focus from the contentEditable
-  const preventFocusLoss = useCallback((e: React.MouseEvent | React.TouchEvent) => {
-    e.preventDefault()
   }, [])
 
   useEffect(() => {
@@ -96,8 +72,21 @@ export default function RichTextEditor({ value, htmlValue, onChange, placeholder
     if (!editorRef.current) return
     
     editorRef.current.focus()
-    // Restore the saved selection (may have been lost when toolbar button was tapped on mobile)
-    restoreSelection()
+
+    // Restore saved selection (may have been lost when toolbar button was tapped on mobile)
+    if (savedSelection.current) {
+      try {
+        if (editorRef.current.contains(savedSelection.current.startContainer)) {
+          const sel = window.getSelection()
+          if (sel) {
+            sel.removeAllRanges()
+            sel.addRange(savedSelection.current)
+          }
+        }
+      } catch (e) {
+        // Range may be invalid if DOM changed, just proceed without restoring
+      }
+    }
     
     // For list commands, use a more reliable approach
     if (command === 'insertUnorderedList') {
@@ -369,81 +358,71 @@ export default function RichTextEditor({ value, htmlValue, onChange, placeholder
     }
   }
 
-  const toolbarBtnClass = "px-3 py-1.5 text-sm rounded-lg transition-all duration-200 hover:scale-105 active:scale-95 bg-white/80 dark:bg-gray-600/80 hover:bg-indigo-50 dark:hover:bg-indigo-900/30 hover:text-indigo-600 dark:hover:text-indigo-300 text-gray-700 dark:text-gray-300"
-
   return (
-    <div className="rich-text-elegant">
-      <div className="flex gap-1 p-2.5 bg-gray-50/80 dark:bg-gray-700/50 border-b border-gray-200 dark:border-gray-600/50 backdrop-blur-sm">
+    <div className="border border-gray-300 dark:border-gray-600 rounded-lg overflow-hidden focus-within:ring-2 focus-within:ring-blue-500 focus-within:border-transparent">
+      <div className="flex gap-1 p-2 bg-gray-50 dark:bg-gray-700 border-b border-gray-300 dark:border-gray-600">
         <button
           type="button"
-          onMouseDown={preventFocusLoss}
           onClick={() => execCommand('bold')}
-          className={`${toolbarBtnClass} font-bold`}
+          className="px-3 py-1 text-sm font-bold bg-white dark:bg-gray-600 rounded hover:bg-gray-100 dark:hover:bg-gray-500 transition"
           title="Bold"
         >
           B
         </button>
         <button
           type="button"
-          onMouseDown={preventFocusLoss}
           onClick={() => execCommand('italic')}
-          className={`${toolbarBtnClass} italic`}
+          className="px-3 py-1 text-sm italic bg-white dark:bg-gray-600 rounded hover:bg-gray-100 dark:hover:bg-gray-500 transition"
           title="Italic"
         >
           I
         </button>
         <button
           type="button"
-          onMouseDown={preventFocusLoss}
           onClick={() => execCommand('underline')}
-          className={`${toolbarBtnClass} underline`}
+          className="px-3 py-1 text-sm underline bg-white dark:bg-gray-600 rounded hover:bg-gray-100 dark:hover:bg-gray-500 transition"
           title="Underline"
         >
           U
         </button>
         <button
           type="button"
-          onMouseDown={preventFocusLoss}
           onClick={() => execCommand('strikeThrough')}
-          className={`${toolbarBtnClass} line-through`}
+          className="px-3 py-1 text-sm line-through bg-white dark:bg-gray-600 rounded hover:bg-gray-100 dark:hover:bg-gray-500 transition"
           title="Strikethrough"
         >
           S
         </button>
-        <div className="w-px bg-gray-200 dark:bg-gray-600/50 mx-1.5 self-stretch" />
+        <div className="w-px bg-gray-300 dark:bg-gray-600 mx-1" />
         <button
           type="button"
-          onMouseDown={preventFocusLoss}
           onClick={() => execCommand('insertUnorderedList')}
-          className={toolbarBtnClass}
+          className="px-3 py-1 text-sm bg-white dark:bg-gray-600 rounded hover:bg-gray-100 dark:hover:bg-gray-500 transition"
           title="Bullet List"
         >
           •
         </button>
         <button
           type="button"
-          onMouseDown={preventFocusLoss}
           onClick={() => execCommand('insertOrderedList')}
-          className={toolbarBtnClass}
+          className="px-3 py-1 text-sm bg-white dark:bg-gray-600 rounded hover:bg-gray-100 dark:hover:bg-gray-500 transition"
           title="Numbered List"
         >
           1.
         </button>
-        <div className="w-px bg-gray-200 dark:bg-gray-600/50 mx-1.5 self-stretch" />
+        <div className="w-px bg-gray-300 dark:bg-gray-600 mx-1" />
         <button
           type="button"
-          onMouseDown={preventFocusLoss}
           onClick={indentList}
-          className={toolbarBtnClass}
+          className="px-3 py-1 text-sm bg-white dark:bg-gray-600 rounded hover:bg-gray-100 dark:hover:bg-gray-500 transition"
           title="Indent (Tab)"
         >
           →
         </button>
         <button
           type="button"
-          onMouseDown={preventFocusLoss}
           onClick={outdentList}
-          className={toolbarBtnClass}
+          className="px-3 py-1 text-sm bg-white dark:bg-gray-600 rounded hover:bg-gray-100 dark:hover:bg-gray-500 transition"
           title="Outdent (Shift+Tab)"
         >
           ←
@@ -457,7 +436,7 @@ export default function RichTextEditor({ value, htmlValue, onChange, placeholder
         onKeyDown={handleKeyDown}
         onFocus={() => setIsFocused(true)}
         onBlur={() => setIsFocused(false)}
-        className="min-h-[160px] px-5 py-3 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-200 focus:outline-none rich-text-editor text-base leading-relaxed"
+        className="min-h-[120px] px-4 py-2 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-200 focus:outline-none rich-text-editor"
         style={{ whiteSpace: 'pre-wrap' }}
         data-placeholder={placeholder}
         suppressContentEditableWarning
