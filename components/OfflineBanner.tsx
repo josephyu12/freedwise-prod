@@ -12,6 +12,9 @@ interface OfflineBannerProps {
 export default function OfflineBanner({ isOnline, isSyncing, pendingCount }: OfflineBannerProps) {
   if (isOnline && !isSyncing) return null
 
+  // Detect weak signal: our heartbeat says offline but navigator thinks we're online
+  const isWeakSignal = !isOnline && typeof navigator !== 'undefined' && navigator.onLine
+
   return (
     <div
       className={`w-full px-4 py-2 text-center text-sm font-medium transition-all duration-300 ${
@@ -28,6 +31,8 @@ export default function OfflineBanner({ isOnline, isSyncing, pendingCount }: Off
           </svg>
           Syncing {pendingCount ? `${pendingCount} pending` : ''} change{pendingCount !== 1 ? 's' : ''}…
         </span>
+      ) : isWeakSignal ? (
+        <span>📶 Weak connection — ratings will be saved and synced automatically</span>
       ) : (
         <span>⚡ You&apos;re offline — ratings will sync when you reconnect</span>
       )}

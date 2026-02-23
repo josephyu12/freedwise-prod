@@ -201,21 +201,20 @@ function ReviewPageContent() {
     } catch (error) {
       console.error('Error loading highlights:', error)
 
-      // If offline, try to load from cache
-      if (!navigator.onLine) {
-        try {
-          const cached = await getCachedReviewData()
-          if (cached) {
-            setHighlights(cached.highlights)
-            setCategories(cached.categories || [])
-            setPinnedHighlightIds(new Set(cached.pinnedHighlightIds || []))
-            setUsingCachedData(true)
-            const firstUnrated = cached.highlights.findIndex((h: any) => h.rating === null)
-            setCurrentIndex(firstUnrated >= 0 ? firstUnrated : 0)
-          }
-        } catch (cacheError) {
-          console.error('Failed to load cached data:', cacheError)
+      // Network failed — try to load from cache regardless of navigator.onLine
+      // (handles weak signal where Wi-Fi is connected but internet is unreachable)
+      try {
+        const cached = await getCachedReviewData()
+        if (cached) {
+          setHighlights(cached.highlights)
+          setCategories(cached.categories || [])
+          setPinnedHighlightIds(new Set(cached.pinnedHighlightIds || []))
+          setUsingCachedData(true)
+          const firstUnrated = cached.highlights.findIndex((h: any) => h.rating === null)
+          setCurrentIndex(firstUnrated >= 0 ? firstUnrated : 0)
         }
+      } catch (cacheError) {
+        console.error('Failed to load cached data:', cacheError)
       }
     } finally {
       setLoading(false)
@@ -504,10 +503,51 @@ function ReviewPageContent() {
         return updated
       })
     } catch (error) {
-      console.error('Error rating highlight:', error)
-      setHighlights((prev) =>
-        prev.map((h) => (h.id === current.id ? { ...h, rating: null } : h))
-      )
+      console.error('Error rating highlight (falling back to offline queue):', error)
+      // Network failed on weak signal — fall back to offline queueing
+      // instead of reverting the rating. The optimistic UI update is already applied.
+      try {
+        await enqueueOfflineAction({
+          type: 'rate-review',
+          params: {
+            summaryHighlightId: current.id,
+            highlightId: current.highlight_id,
+            rating,
+            today,
+          },
+        })
+        // Advance to next unrated highlight
+        setHighlights((prev) => {
+          const updated = prev.map((h) =>
+            h.id === current.id ? { ...h, rating } : h
+          )
+          const nextUnrated = updated.findIndex(
+            (h, i) => h.rating === null && i !== currentIndex
+          )
+          if (nextUnrated >= 0) {
+            setCurrentIndex(nextUnrated)
+          }
+          return updated
+        })
+        // Update cached data
+        try {
+          const cached = await getCachedReviewData()
+          if (cached) {
+            const updatedHighlights = cached.highlights.map((h: any) =>
+              h.id === current.id ? { ...h, rating } : h
+            )
+            await cacheReviewData({ ...cached, highlights: updatedHighlights, cachedAt: Date.now() })
+          }
+        } catch (e) {
+          console.warn('Failed to update cache:', e)
+        }
+      } catch (queueError) {
+        // If even queueing fails (IndexedDB issue), revert as last resort
+        console.error('Failed to queue offline action:', queueError)
+        setHighlights((prev) =>
+          prev.map((h) => (h.id === current.id ? { ...h, rating: null } : h))
+        )
+      }
     } finally {
       setRatingInProgress(false)
     }
