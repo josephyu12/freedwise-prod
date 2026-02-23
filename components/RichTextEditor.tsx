@@ -11,9 +11,14 @@ interface RichTextEditorProps {
 
 export default function RichTextEditor({ value, htmlValue, onChange, placeholder }: RichTextEditorProps) {
   const editorRef = useRef<HTMLDivElement>(null)
+  const isInternalUpdate = useRef(false)
   const [isFocused, setIsFocused] = useState(false)
 
   useEffect(() => {
+    if (isInternalUpdate.current) {
+      isInternalUpdate.current = false
+      return
+    }
     if (editorRef.current) {
       // Only update if the content has actually changed to avoid cursor position issues
       const currentHtml = editorRef.current.innerHTML
@@ -37,6 +42,7 @@ export default function RichTextEditor({ value, htmlValue, onChange, placeholder
 
   const handleInput = () => {
     if (editorRef.current) {
+      isInternalUpdate.current = true
       const html = editorRef.current.innerHTML
       const text = editorRef.current.textContent || ''
       onChange(text, html)
