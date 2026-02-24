@@ -1,6 +1,7 @@
 'use client'
 
 import { useRef, useState, useEffect } from 'react'
+import { sanitizeHtml } from '@/lib/sanitizeHtml'
 
 interface RichTextEditorProps {
   value: string
@@ -62,7 +63,7 @@ export default function RichTextEditor({ value, htmlValue, onChange, placeholder
   const handleInput = () => {
     if (editorRef.current) {
       isInternalUpdate.current = true
-      const html = editorRef.current.innerHTML
+      const html = sanitizeHtml(editorRef.current.innerHTML)
       const text = editorRef.current.textContent || ''
       onChange(text, html)
     }

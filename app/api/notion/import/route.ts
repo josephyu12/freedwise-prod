@@ -1,6 +1,24 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { Client } from '@notionhq/client'
 
+// Retry wrapper for Notion API calls that handles 429 rate limiting
+async function notionRetry<T>(fn: () => Promise<T>, maxRetries = 5): Promise<T> {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn()
+    } catch (error: any) {
+      const isRateLimit = error?.status === 429 || error?.code === 'rate_limited' ||
+        (error?.message && error.message.includes('rate limit'))
+      if (!isRateLimit || attempt === maxRetries) throw error
+      // Use retry-after header if available, otherwise exponential backoff
+      const retryAfter = error?.headers?.get?.('retry-after')
+      const waitMs = retryAfter ? parseInt(retryAfter, 10) * 1000 : Math.min(1000 * Math.pow(2, attempt), 30000)
+      await new Promise(resolve => setTimeout(resolve, waitMs))
+    }
+  }
+  throw new Error('Unreachable')
+}
+
 // Convert Notion rich text to HTML
 function notionRichTextToHTML(richText: any[]): string {
   return richText.map((text: any) => {
@@ -25,13 +43,13 @@ function notionRichTextToHTML(richText: any[]): string {
 // Recursively fetch children blocks for a list item
 async function fetchBlockChildren(notion: Client, blockId: string): Promise<any[]> {
   const children: any[] = []
-  let cursor = undefined
+  let cursor: string | undefined = undefined
   
   do {
-    const response = await notion.blocks.children.list({
+    const response = await notionRetry(() => notion.blocks.children.list({
       block_id: blockId,
       start_cursor: cursor,
-    })
+    }))
     children.push(...response.results)
     cursor = response.next_cursor || undefined
   } while (cursor)
@@ -221,13 +239,13 @@ export async function POST(request: NextRequest) {
     
     // Fetch page content with all nested children
     const blocks = []
-    let cursor = undefined
+    let cursor: string | undefined = undefined
     
     do {
-      const response = await notion.blocks.children.list({
+      const response = await notionRetry(() => notion.blocks.children.list({
         block_id: pageId,
         start_cursor: cursor,
-      })
+      }))
       
       blocks.push(...response.results)
       cursor = response.next_cursor || undefined

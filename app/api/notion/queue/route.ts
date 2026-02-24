@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { sanitizeHtml } from '@/lib/sanitizeHtml'
 
 /**
  * POST /api/notion/queue
@@ -20,9 +21,9 @@ export async function POST(request: NextRequest) {
       highlightId,
       operationType,
       text = null,
-      htmlContent = null,
+      htmlContent: rawHtmlContent = null,
       originalText = null,
-      originalHtmlContent = null,
+      originalHtmlContent: rawOriginalHtmlContent = null,
     } = body as {
       highlightId: string | null
       operationType: 'add' | 'update' | 'delete'
@@ -31,6 +32,10 @@ export async function POST(request: NextRequest) {
       originalText?: string | null
       originalHtmlContent?: string | null
     }
+
+    // Sanitize HTML to strip browser-injected noise (webkit styles, data-* attrs, etc.)
+    const htmlContent = rawHtmlContent ? sanitizeHtml(rawHtmlContent) : null
+    const originalHtmlContent = rawOriginalHtmlContent ? sanitizeHtml(rawOriginalHtmlContent) : null
 
     if (!operationType || !['add', 'update', 'delete'].includes(operationType)) {
       return NextResponse.json({ error: 'Invalid operationType' }, { status: 400 })

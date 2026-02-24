@@ -4,6 +4,10 @@
  */
 export type NotionSyncOperation = 'add' | 'update' | 'delete'
 
+// Debounce timer for the immediate sync trigger so rapid edits coalesce
+// into a single /api/notion/sync call (avoids Notion rate limiting).
+let syncDebounceTimer: ReturnType<typeof setTimeout> | null = null
+
 export async function addToNotionSyncQueue(params: {
   highlightId: string | null
   operationType: NotionSyncOperation
@@ -29,10 +33,14 @@ export async function addToNotionSyncQueue(params: {
     if (!res.ok && res.status >= 500) {
       console.warn('Failed to add to sync queue:', (data as { error?: string }).error || res.statusText)
     }
-    // Trigger sync immediately so changes reach Notion without waiting for the next 10s poll
+    // Trigger sync after a short debounce so rapid edits coalesce into one request
     // (important on mobile when the user may leave the app right after saving)
     if (res.ok && (data as { enqueued?: boolean }).enqueued === true) {
-      fetch('/api/notion/sync', { method: 'POST' }).catch(() => {})
+      if (syncDebounceTimer) clearTimeout(syncDebounceTimer)
+      syncDebounceTimer = setTimeout(() => {
+        syncDebounceTimer = null
+        fetch('/api/notion/sync', { method: 'POST' }).catch(() => {})
+      }, 2000)
     }
     // 200 with enqueued: false and existing: true means deduplicated — no need to warn
   } catch (e) {

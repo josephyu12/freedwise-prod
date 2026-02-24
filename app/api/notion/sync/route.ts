@@ -343,6 +343,10 @@ export async function POST(request: NextRequest) {
     let processed = 0
     let failed = 0
     for (const item of toProcess) {
+      // Delay between items to stay under Notion's rate limit (3 req/s)
+      if (processed > 0 || failed > 0) {
+        await new Promise(resolve => setTimeout(resolve, 1500))
+      }
       const result = await processQueueItem(supabase, item, notionSettings)
       if (result.success) processed++
       else failed++
