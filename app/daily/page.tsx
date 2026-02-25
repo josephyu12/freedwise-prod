@@ -991,8 +991,10 @@ export default function DailyPage() {
         await (supabase.from('highlight_categories') as any).insert(categoryLinks)
       }
 
-      // Add to Notion sync queue (if configured and not skipped)
-      if (!skipNotionSync) {
+      // Add to Notion sync queue only if text/HTML actually changed (skip for category/source/author-only edits)
+      const textChanged = editText.trim() !== (originalText || '') ||
+        (editHtmlContent.trim() || null) !== (originalHtmlContent || null)
+      if (!skipNotionSync && textChanged) {
         await addToSyncQueue(
           highlightId,
           'update',

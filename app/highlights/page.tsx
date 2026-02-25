@@ -680,8 +680,10 @@ export default function HighlightsPage() {
         await (supabase.from('highlight_categories') as any).insert(categoryLinks)
       }
 
-      // Add to Notion sync queue (if configured and not skipped)
-      if (!skipNotionSync) {
+      // Add to Notion sync queue only if text/HTML actually changed (skip for category-only edits)
+      const textChanged = editText.trim() !== (originalText || '') ||
+        (editHtmlContent.trim() || null) !== (originalHtmlContent || null)
+      if (!skipNotionSync && textChanged) {
         await addToSyncQueue(
           editingId,
           'update',

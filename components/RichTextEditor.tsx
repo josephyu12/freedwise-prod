@@ -172,8 +172,8 @@ export default function RichTextEditor({ value, htmlValue, onChange, placeholder
     e.preventDefault()
     const html = e.clipboardData.getData('text/html')
     if (html) {
-      // Paste with formatting preserved (bold, italic, underline, strikethrough, etc.)
-      document.execCommand('insertHTML', false, html)
+      // Paste with formatting preserved but browser noise stripped
+      document.execCommand('insertHTML', false, sanitizeHtml(html))
     } else {
       const text = e.clipboardData.getData('text/plain')
       document.execCommand('insertText', false, text)

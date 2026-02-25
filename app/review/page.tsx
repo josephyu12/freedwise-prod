@@ -616,8 +616,10 @@ function ReviewPageContent() {
         await (supabase.from('highlight_categories') as any).insert(categoryLinks)
       }
 
-      // Notion sync
-      if (!skipNotionSync) {
+      // Notion sync — only if text/HTML actually changed (skip for category/source/author-only edits)
+      const textChanged = editText.trim() !== (original?.text || '') ||
+        (editHtmlContent.trim() || null) !== (original?.html_content || null)
+      if (!skipNotionSync && textChanged) {
         await addToSyncQueue(
           highlightId, 'update',
           editText.trim(), editHtmlContent.trim() || null,

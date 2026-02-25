@@ -327,7 +327,7 @@ export async function POST(request: NextRequest) {
       .from('notion_sync_queue') as any)
       .select('*')
       .eq('user_id', user.id)
-      .or(`and(status.eq.pending,retry_count.eq.0),and(status.eq.pending,retry_count.gt.0,retry_count.lt.5,or(next_retry_at.is.null,next_retry_at.lte.${now})),and(status.eq.failed,retry_count.lt.20,or(next_retry_at.is.null,next_retry_at.lte.${now})),and(status.eq.processing,updated_at.lt.${staleCutoff})`)
+      .or(`and(status.eq.pending,retry_count.eq.0),and(status.eq.pending,retry_count.gt.0,retry_count.lt.5,or(next_retry_at.is.null,next_retry_at.lte.${now})),and(status.eq.failed,retry_count.lt.5,or(next_retry_at.is.null,next_retry_at.lte.${now})),and(status.eq.processing,updated_at.lt.${staleCutoff})`)
       .order('created_at', { ascending: true })
       .limit(10)
 
