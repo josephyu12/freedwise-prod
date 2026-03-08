@@ -182,31 +182,33 @@ export default function Home() {
   }
 
   return (
-    <main className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 dark:from-gray-900 dark:to-gray-800">
-      <div className="container mx-auto px-4 py-8 sm:py-12">
-        <div className="max-w-4xl mx-auto">
-          <h1 className="text-3xl sm:text-4xl lg:text-5xl font-bold text-gray-900 dark:text-white mb-2 sm:mb-4">
-            Freedwise
-          </h1>
-          <p className="text-base sm:text-lg lg:text-xl text-gray-600 dark:text-gray-300 mb-6 sm:mb-8">
-            Resurface your highlights in daily summaries
-          </p>
+    <main className="min-h-screen" style={{ background: 'var(--background)' }}>
+      <div className="container mx-auto px-4 py-10 sm:py-16">
+        <div className="max-w-3xl mx-auto">
+          {/* Hero */}
+          <div className="mb-10 sm:mb-14">
+            <h1 className="text-4xl sm:text-5xl font-bold tracking-tight mb-3" style={{ color: 'var(--text-primary)' }}>
+              Freedwise
+            </h1>
+            <p className="text-lg sm:text-xl font-light" style={{ color: 'var(--text-secondary)' }}>
+              Resurface your highlights in daily summaries
+            </p>
+          </div>
 
-          {/* Quick Add Highlight Form */}
-          <form onSubmit={handleSubmit} className="mb-8 sm:mb-12 bg-white dark:bg-gray-800 p-4 sm:p-6 rounded-xl shadow-lg border border-gray-200 dark:border-gray-700">
-            <div className="space-y-4">
-              <div>
-                <RichTextEditor
-                  value={text}
-                  htmlValue={htmlContent}
-                  onChange={(newText, newHtml) => {
-                    setText(newText)
-                    setHtmlContent(newHtml)
-                  }}
-                  placeholder="What do you want to remember?"
-                />
-              </div>
-              <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+          {/* Quick Add — Typeform-style open form */}
+          <form onSubmit={handleSubmit} className="mb-14 sm:mb-16">
+            <div className="glass-card p-6 sm:p-8">
+              <RichTextEditor
+                value={text}
+                htmlValue={htmlContent}
+                onChange={(newText, newHtml) => {
+                  setText(newText)
+                  setHtmlContent(newHtml)
+                }}
+                placeholder="What do you want to remember?"
+              />
+              
+              <div className="flex flex-col sm:flex-row sm:items-center gap-3 mt-6">
                 <div className="flex-1 flex flex-wrap gap-2">
                   {categories.map((cat) => (
                     <button
@@ -219,11 +221,15 @@ export default function Home() {
                           setSelectedCategories([...selectedCategories, cat.id])
                         }
                       }}
-                      className={`px-3 py-1.5 rounded-full text-sm transition ${
+                      className={`px-3 py-1.5 rounded-full text-sm font-medium transition-all duration-200 ${
                         selectedCategories.includes(cat.id)
-                          ? 'bg-blue-600 text-white shadow-md'
-                          : 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'
+                          ? 'bg-indigo-500 text-white shadow-sm'
+                          : 'hover:bg-gray-100 dark:hover:bg-gray-700'
                       }`}
+                      style={!selectedCategories.includes(cat.id) ? { 
+                        color: 'var(--text-secondary)',
+                        border: '1px solid var(--border)'
+                      } : undefined}
                     >
                       {cat.name}
                     </button>
@@ -232,7 +238,8 @@ export default function Home() {
                     <button
                       type="button"
                       onClick={() => setShowCategoryInput(true)}
-                      className="px-3 py-1.5 rounded-full text-sm bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition border border-dashed border-gray-300 dark:border-gray-600"
+                      className="px-3 py-1.5 rounded-full text-sm transition-colors"
+                      style={{ color: 'var(--text-tertiary)', border: '1px dashed var(--border)' }}
                     >
                       + Category
                     </button>
@@ -255,7 +262,7 @@ export default function Home() {
                       <button
                         type="button"
                         onClick={handleCreateCategory}
-                        className="px-3 py-1.5 bg-blue-600 text-white rounded-full text-sm hover:bg-blue-700 transition"
+                        className="btn-primary text-xs !py-1.5 !px-3"
                       >
                         Add
                       </button>
@@ -265,7 +272,7 @@ export default function Home() {
                           setShowCategoryInput(false)
                           setNewCategoryName('')
                         }}
-                        className="px-3 py-1.5 bg-gray-200 dark:bg-gray-700 rounded-full text-sm hover:bg-gray-300 dark:hover:bg-gray-600 transition"
+                        className="btn-ghost text-xs"
                       >
                         ✕
                       </button>
@@ -275,19 +282,19 @@ export default function Home() {
                 <button
                   type="submit"
                   disabled={!text.trim() || saving}
-                  className="w-full sm:w-auto px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition font-medium shadow-md disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                  className="btn-primary w-full sm:w-auto !px-8 !py-3"
                 >
                   {saving ? (
                     <>
-                      <svg className="animate-spin h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                      <svg className="animate-spin h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                         <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
                         <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                       </svg>
-                      <span>Saving...</span>
+                      <span>Saving…</span>
                     </>
                   ) : saveSuccess ? (
                     <>
-                      <svg className="h-5 w-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <svg className="h-4 w-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
                       </svg>
                       <span>Saved!</span>
@@ -300,99 +307,80 @@ export default function Home() {
             </div>
           </form>
           
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-6">
+          {/* Navigation Cards */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
             <Link
               href="/highlights"
-              className="flex items-center gap-4 p-4 sm:p-6 bg-white dark:bg-gray-800 rounded-lg shadow-lg hover:shadow-xl transition-shadow"
+              className="glass-card glass-card-interactive p-5 flex items-center gap-4 group"
             >
-              <div className="flex-shrink-0 w-12 h-12 bg-blue-100 dark:bg-blue-900 rounded-lg flex items-center justify-center">
-                <svg className="w-6 h-6 text-blue-600 dark:text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+              <div className="flex-shrink-0 w-11 h-11 rounded-xl bg-indigo-50 dark:bg-indigo-500/10 flex items-center justify-center group-hover:bg-indigo-100 dark:group-hover:bg-indigo-500/20 transition-colors">
+                <svg className="w-5 h-5 text-indigo-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
                 </svg>
               </div>
               <div>
-                <h2 className="text-lg sm:text-xl font-semibold text-gray-900 dark:text-white mb-1">
-                  Highlights
-                </h2>
-                <p className="text-sm text-gray-600 dark:text-gray-300">
-                  Manage your highlights
-                </p>
+                <h2 className="font-semibold text-gray-900 dark:text-white">Highlights</h2>
+                <p className="text-sm" style={{ color: 'var(--text-tertiary)' }}>Manage your highlights</p>
               </div>
             </Link>
             
             <Link
               href="/search"
-              className="flex items-center gap-4 p-4 sm:p-6 bg-white dark:bg-gray-800 rounded-lg shadow-lg hover:shadow-xl transition-shadow"
+              className="glass-card glass-card-interactive p-5 flex items-center gap-4 group"
             >
-              <div className="flex-shrink-0 w-12 h-12 bg-green-100 dark:bg-green-900 rounded-lg flex items-center justify-center">
-                <svg className="w-6 h-6 text-green-600 dark:text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+              <div className="flex-shrink-0 w-11 h-11 rounded-xl bg-emerald-50 dark:bg-emerald-500/10 flex items-center justify-center group-hover:bg-emerald-100 dark:group-hover:bg-emerald-500/20 transition-colors">
+                <svg className="w-5 h-5 text-emerald-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
                 </svg>
               </div>
               <div>
-                <h2 className="text-lg sm:text-xl font-semibold text-gray-900 dark:text-white mb-1">
-                  Search
-                </h2>
-                <p className="text-sm text-gray-600 dark:text-gray-300">
-                  Find highlights
-                </p>
+                <h2 className="font-semibold text-gray-900 dark:text-white">Search</h2>
+                <p className="text-sm" style={{ color: 'var(--text-tertiary)' }}>Find highlights</p>
               </div>
             </Link>
             
             <Link
               href="/daily"
-              className="flex items-center gap-4 p-4 sm:p-6 bg-white dark:bg-gray-800 rounded-lg shadow-lg hover:shadow-xl transition-shadow"
+              className="glass-card glass-card-interactive p-5 flex items-center gap-4 group"
             >
-              <div className="flex-shrink-0 w-12 h-12 bg-purple-100 dark:bg-purple-900 rounded-lg flex items-center justify-center">
-                <svg className="w-6 h-6 text-purple-600 dark:text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+              <div className="flex-shrink-0 w-11 h-11 rounded-xl bg-violet-50 dark:bg-violet-500/10 flex items-center justify-center group-hover:bg-violet-100 dark:group-hover:bg-violet-500/20 transition-colors">
+                <svg className="w-5 h-5 text-violet-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
                 </svg>
               </div>
               <div>
-                <h2 className="text-lg sm:text-xl font-semibold text-gray-900 dark:text-white mb-1">
-                  Daily Review
-                </h2>
-                <p className="text-sm text-gray-600 dark:text-gray-300">
-                  Review highlights
-                </p>
+                <h2 className="font-semibold text-gray-900 dark:text-white">Daily Review</h2>
+                <p className="text-sm" style={{ color: 'var(--text-tertiary)' }}>Review highlights</p>
               </div>
             </Link>
             
             <Link
               href="/archives"
-              className="flex items-center gap-4 p-4 sm:p-6 bg-white dark:bg-gray-800 rounded-lg shadow-lg hover:shadow-xl transition-shadow"
+              className="glass-card glass-card-interactive p-5 flex items-center gap-4 group"
             >
-              <div className="flex-shrink-0 w-12 h-12 bg-orange-100 dark:bg-orange-900 rounded-lg flex items-center justify-center">
-                <svg className="w-6 h-6 text-orange-600 dark:text-orange-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4" />
+              <div className="flex-shrink-0 w-11 h-11 rounded-xl bg-amber-50 dark:bg-amber-500/10 flex items-center justify-center group-hover:bg-amber-100 dark:group-hover:bg-amber-500/20 transition-colors">
+                <svg className="w-5 h-5 text-amber-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4" />
                 </svg>
               </div>
               <div>
-                <h2 className="text-lg sm:text-xl font-semibold text-gray-900 dark:text-white mb-1">
-                  Archives
-                </h2>
-                <p className="text-sm text-gray-600 dark:text-gray-300">
-                  Archived highlights
-                </p>
+                <h2 className="font-semibold text-gray-900 dark:text-white">Archives</h2>
+                <p className="text-sm" style={{ color: 'var(--text-tertiary)' }}>Archived highlights</p>
               </div>
             </Link>
             
             <Link
               href="/pins"
-              className="flex items-center gap-4 p-4 sm:p-6 bg-white dark:bg-gray-800 rounded-lg shadow-lg hover:shadow-xl transition-shadow"
+              className="glass-card glass-card-interactive p-5 flex items-center gap-4 group"
             >
-              <div className="flex-shrink-0 w-12 h-12 bg-yellow-100 dark:bg-yellow-900 rounded-lg flex items-center justify-center">
-                <svg className="w-6 h-6 text-yellow-600 dark:text-yellow-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" />
+              <div className="flex-shrink-0 w-11 h-11 rounded-xl bg-rose-50 dark:bg-rose-500/10 flex items-center justify-center group-hover:bg-rose-100 dark:group-hover:bg-rose-500/20 transition-colors">
+                <svg className="w-5 h-5 text-rose-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" />
                 </svg>
               </div>
               <div>
-                <h2 className="text-lg sm:text-xl font-semibold text-gray-900 dark:text-white mb-1">
-                  Pin Board
-                </h2>
-                <p className="text-sm text-gray-600 dark:text-gray-300">
-                  Your pinned highlights
-                </p>
+                <h2 className="font-semibold text-gray-900 dark:text-white">Pin Board</h2>
+                <p className="text-sm" style={{ color: 'var(--text-tertiary)' }}>Your pinned highlights</p>
               </div>
             </Link>
           </div>

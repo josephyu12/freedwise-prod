@@ -360,75 +360,8 @@ export default function RichTextEditor({ value, htmlValue, onChange, placeholder
   }
 
   return (
-    <div className="border border-gray-300 dark:border-gray-600 rounded-lg overflow-hidden focus-within:ring-2 focus-within:ring-blue-500 focus-within:border-transparent">
-      <div className="flex gap-1 p-2 bg-gray-50 dark:bg-gray-700 border-b border-gray-300 dark:border-gray-600">
-        <button
-          type="button"
-          onClick={() => execCommand('bold')}
-          className="px-3 py-1 text-sm font-bold bg-white dark:bg-gray-600 rounded hover:bg-gray-100 dark:hover:bg-gray-500 transition"
-          title="Bold"
-        >
-          B
-        </button>
-        <button
-          type="button"
-          onClick={() => execCommand('italic')}
-          className="px-3 py-1 text-sm italic bg-white dark:bg-gray-600 rounded hover:bg-gray-100 dark:hover:bg-gray-500 transition"
-          title="Italic"
-        >
-          I
-        </button>
-        <button
-          type="button"
-          onClick={() => execCommand('underline')}
-          className="px-3 py-1 text-sm underline bg-white dark:bg-gray-600 rounded hover:bg-gray-100 dark:hover:bg-gray-500 transition"
-          title="Underline"
-        >
-          U
-        </button>
-        <button
-          type="button"
-          onClick={() => execCommand('strikeThrough')}
-          className="px-3 py-1 text-sm line-through bg-white dark:bg-gray-600 rounded hover:bg-gray-100 dark:hover:bg-gray-500 transition"
-          title="Strikethrough"
-        >
-          S
-        </button>
-        <div className="w-px bg-gray-300 dark:bg-gray-600 mx-1" />
-        <button
-          type="button"
-          onClick={() => execCommand('insertUnorderedList')}
-          className="px-3 py-1 text-sm bg-white dark:bg-gray-600 rounded hover:bg-gray-100 dark:hover:bg-gray-500 transition"
-          title="Bullet List"
-        >
-          •
-        </button>
-        <button
-          type="button"
-          onClick={() => execCommand('insertOrderedList')}
-          className="px-3 py-1 text-sm bg-white dark:bg-gray-600 rounded hover:bg-gray-100 dark:hover:bg-gray-500 transition"
-          title="Numbered List"
-        >
-          1.
-        </button>
-        <div className="w-px bg-gray-300 dark:bg-gray-600 mx-1" />
-        <button
-          type="button"
-          onClick={indentList}
-          className="px-3 py-1 text-sm bg-white dark:bg-gray-600 rounded hover:bg-gray-100 dark:hover:bg-gray-500 transition"
-          title="Indent (Tab)"
-        >
-          →
-        </button>
-        <button
-          type="button"
-          onClick={outdentList}
-          className="px-3 py-1 text-sm bg-white dark:bg-gray-600 rounded hover:bg-gray-100 dark:hover:bg-gray-500 transition"
-          title="Outdent (Shift+Tab)"
-        >
-          ←
-        </button>
-      </div>
+    <div className="relative">
+      {/* Typeform-inspired open editing area */}
       <div
         ref={editorRef}
         contentEditable
@@ -437,12 +370,99 @@ export default function RichTextEditor({ value, htmlValue, onChange, placeholder
         onKeyDown={handleKeyDown}
         onFocus={() => setIsFocused(true)}
         onBlur={() => setIsFocused(false)}
-        className="min-h-[120px] px-4 py-2 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-200 focus:outline-none rich-text-editor"
-        style={{ whiteSpace: 'pre-wrap' }}
-        data-placeholder={placeholder}
+        className="min-h-[2.5rem] px-1 pt-1 pb-3 text-lg leading-relaxed text-gray-900 dark:text-gray-100 focus:outline-none rich-text-editor"
+        style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', overflowWrap: 'break-word', overflow: 'hidden' }}
+        data-placeholder={placeholder || 'Type your answer here...'}
         suppressContentEditableWarning
       />
+
+      {/* Bottom accent line */}
+      <div
+        className={`h-0.5 rounded-full transition-all duration-300 ${
+          isFocused
+            ? 'bg-gradient-to-r from-indigo-500 to-purple-500 scale-x-100'
+            : 'bg-gray-200 dark:bg-gray-700 scale-x-100'
+        }`}
+      />
+
+      {/* Floating toolbar — appears on focus */}
+      <div
+        className={`flex items-center gap-0.5 mt-3 transition-all duration-200 ${
+          isFocused ? 'opacity-100 translate-y-0' : 'opacity-40 translate-y-0'
+        }`}
+      >
+        <button
+          type="button"
+          onMouseDown={(e) => { e.preventDefault(); execCommand('bold') }}
+          className="w-8 h-8 flex items-center justify-center text-sm font-bold text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
+          title="Bold"
+        >
+          B
+        </button>
+        <button
+          type="button"
+          onMouseDown={(e) => { e.preventDefault(); execCommand('italic') }}
+          className="w-8 h-8 flex items-center justify-center text-sm italic text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
+          title="Italic"
+        >
+          I
+        </button>
+        <button
+          type="button"
+          onMouseDown={(e) => { e.preventDefault(); execCommand('underline') }}
+          className="w-8 h-8 flex items-center justify-center text-sm underline text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
+          title="Underline"
+        >
+          U
+        </button>
+        <button
+          type="button"
+          onMouseDown={(e) => { e.preventDefault(); execCommand('strikeThrough') }}
+          className="w-8 h-8 flex items-center justify-center text-sm line-through text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
+          title="Strikethrough"
+        >
+          S
+        </button>
+        <div className="w-px h-5 bg-gray-200 dark:bg-gray-700 mx-1" />
+        <button
+          type="button"
+          onMouseDown={(e) => { e.preventDefault(); execCommand('insertUnorderedList') }}
+          className="w-8 h-8 flex items-center justify-center text-sm text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
+          title="Bullet List"
+        >
+          •
+        </button>
+        <button
+          type="button"
+          onMouseDown={(e) => { e.preventDefault(); execCommand('insertOrderedList') }}
+          className="w-8 h-8 flex items-center justify-center text-sm text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
+          title="Numbered List"
+        >
+          1.
+        </button>
+        <div className="w-px h-5 bg-gray-200 dark:bg-gray-700 mx-1" />
+        <button
+          type="button"
+          onMouseDown={(e) => { e.preventDefault(); indentList() }}
+          className="w-8 h-8 flex items-center justify-center text-sm text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
+          title="Indent (Tab)"
+        >
+          →
+        </button>
+        <button
+          type="button"
+          onMouseDown={(e) => { e.preventDefault(); outdentList() }}
+          className="w-8 h-8 flex items-center justify-center text-sm text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
+          title="Outdent (Shift+Tab)"
+        >
+          ←
+        </button>
+
+        {/* Hint */}
+        <span className="ml-auto text-xs text-gray-300 dark:text-gray-600 select-none hidden sm:inline">
+          Shift + Enter ↵ for line break
+        </span>
+      </div>
     </div>
   )
 }
-

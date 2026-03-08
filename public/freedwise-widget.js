@@ -25,12 +25,12 @@ const WIDGET_TOKEN = '' // <-- Paste token here temporarily, then CLEAR after fi
 const KEYCHAIN_KEY = 'freedwise_widget_token'
 
 const COLORS = {
-  bg: new Color('#f0f4ff'),
-  bgDark: new Color('#1a1a2e'),
-  text: new Color('#1f2937'),
-  textDark: new Color('#e5e7eb'),
-  textMuted: new Color('#6b7280'),
-  textMutedDark: new Color('#9ca3af'),
+  bg: new Color('#f8fafc'),
+  bgDark: new Color('#0c0f1a'),
+  text: new Color('#0f172a'),
+  textDark: new Color('#e2e8f0'),
+  textMuted: new Color('#475569'),
+  textMutedDark: new Color('#94a3b8'),
   red: new Color('#fee2e2'),
   redText: new Color('#b91c1c'),
   redBorder: new Color('#fca5a5'),
@@ -40,9 +40,9 @@ const COLORS = {
   green: new Color('#dcfce7'),
   greenText: new Color('#15803d'),
   greenBorder: new Color('#86efac'),
-  blue: new Color('#3b82f6'),
-  progress: new Color('#e5e7eb'),
-  progressDark: new Color('#374151'),
+  blue: new Color('#6366f1'),
+  progress: new Color('#e2e8f0'),
+  progressDark: new Color('#2a3041'),
 }
 
 // ─── Token Management ───────────────────────────────────────
@@ -335,8 +335,6 @@ async function createWidget() {
 
   const rateUrl = (rating) =>
     `${APP_URL}/review?rate=${rating}&id=${h.summaryHighlightId}`
-  const actionUrl = (action) =>
-    `${APP_URL}/review?action=${action}&id=${h.summaryHighlightId}`
 
   btnStack.addSpacer()
 
@@ -390,79 +388,6 @@ async function createWidget() {
   highLabel.centerAlignText()
 
   btnStack.addSpacer()
-
-  widget.addSpacer(8)
-
-  // Action buttons row - smaller, centered
-  const actionStack = widget.addStack()
-  actionStack.layoutHorizontally()
-  actionStack.centerAlignContent()
-
-  actionStack.addSpacer()
-
-  // Edit button (blue)
-  const editBtn = actionStack.addStack()
-  editBtn.layoutHorizontally()
-  editBtn.centerAlignContent()
-  editBtn.setPadding(6, 12, 6, 12)
-  editBtn.cornerRadius = 8
-  editBtn.backgroundColor = new Color('#dbeafe')
-  editBtn.borderColor = new Color('#93c5fd')
-  editBtn.borderWidth = 1
-  editBtn.url = `${APP_URL}/highlights?edit=${h.highlightId}`
-  const editLabel = editBtn.addText('Edit')
-  editLabel.font = Font.mediumSystemFont(12)
-  editLabel.textColor = new Color('#1d4ed8')
-
-  actionStack.addSpacer(8)
-
-  // Pin button (yellow)
-  const pinBtn = actionStack.addStack()
-  pinBtn.layoutHorizontally()
-  pinBtn.centerAlignContent()
-  pinBtn.setPadding(6, 12, 6, 12)
-  pinBtn.cornerRadius = 8
-  pinBtn.backgroundColor = new Color('#fef9c3')
-  pinBtn.borderColor = new Color('#fde047')
-  pinBtn.borderWidth = 1
-  pinBtn.url = actionUrl('pin')
-  const pinLabel = pinBtn.addText('Pin')
-  pinLabel.font = Font.mediumSystemFont(12)
-  pinLabel.textColor = new Color('#a16207')
-
-  actionStack.addSpacer(8)
-
-  // Archive button (orange)
-  const archiveBtn = actionStack.addStack()
-  archiveBtn.layoutHorizontally()
-  archiveBtn.centerAlignContent()
-  archiveBtn.setPadding(6, 12, 6, 12)
-  archiveBtn.cornerRadius = 8
-  archiveBtn.backgroundColor = new Color('#ffedd5')
-  archiveBtn.borderColor = new Color('#fdba74')
-  archiveBtn.borderWidth = 1
-  archiveBtn.url = actionUrl('archive')
-  const archiveLabel = archiveBtn.addText('Archive')
-  archiveLabel.font = Font.mediumSystemFont(12)
-  archiveLabel.textColor = new Color('#c2410c')
-
-  actionStack.addSpacer(8)
-
-  // Delete button
-  const deleteBtn = actionStack.addStack()
-  deleteBtn.layoutHorizontally()
-  deleteBtn.centerAlignContent()
-  deleteBtn.setPadding(6, 12, 6, 12)
-  deleteBtn.cornerRadius = 8
-  deleteBtn.backgroundColor = new Color('#fee2e2')
-  deleteBtn.borderColor = new Color('#fca5a5')
-  deleteBtn.borderWidth = 1
-  deleteBtn.url = actionUrl('delete')
-  const deleteLabel = deleteBtn.addText('Delete')
-  deleteLabel.font = Font.mediumSystemFont(12)
-  deleteLabel.textColor = new Color('#b91c1c')
-
-  actionStack.addSpacer()
 
   // Fallback tap opens review page at this highlight
   widget.url = `${APP_URL}/review?id=${h.summaryHighlightId}`

@@ -3,6 +3,7 @@ import './globals.css'
 import AuthButton from '@/components/AuthButton'
 import ScrollToTop from '@/components/ScrollToTop'
 import NotionSyncProcessor from '@/components/NotionSyncProcessor'
+import Link from 'next/link'
 
 export const metadata: Metadata = {
   title: 'Freedwise',
@@ -26,17 +27,28 @@ export default function RootLayout({
     <html lang="en">
       <head>
         <link rel="manifest" href="/manifest.json" />
-        <meta name="theme-color" content="#3b82f6" />
+        <meta name="theme-color" content="#6366f1" />
       </head>
-      <body>
-        <div className="fixed top-2 right-2 sm:top-4 sm:right-4 z-50 flex items-center gap-2">
+      <body className="flex flex-col min-h-screen">
+        <div className="fixed top-3 right-3 sm:top-4 sm:right-4 z-50 flex items-center gap-2">
           <ScrollToTop />
           <AuthButton />
         </div>
         <NotionSyncProcessor />
-        {children}
+        <div className="flex-1">
+          {children}
+        </div>
+        <footer className="app-footer py-6 px-4 mt-auto">
+          <div className="max-w-4xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-3">
+            <p className="text-xs">© {new Date().getFullYear()} Freedwise. All rights reserved.</p>
+            <nav className="flex items-center gap-4 text-xs">
+              <Link href="/privacy">Privacy Policy</Link>
+              <Link href="/terms">Terms of Service</Link>
+              <Link href="/about">About</Link>
+            </nav>
+          </div>
+        </footer>
       </body>
     </html>
   )
 }
-

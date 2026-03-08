@@ -3,7 +3,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { useRouter } from 'next/navigation'
-import Link from 'next/link'
 
 interface NotionSettings {
   id?: string
@@ -261,62 +260,73 @@ export default function SettingsPage() {
 
   if (loading) {
     return (
-      <main className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 dark:from-gray-900 dark:to-gray-800 flex items-center justify-center">
-        <div className="text-xl">Loading...</div>
+      <main className="min-h-screen flex items-center justify-center" style={{ background: 'var(--background)' }}>
+        <div className="text-lg" style={{ color: 'var(--text-secondary)' }}>Loading…</div>
       </main>
     )
   }
 
   return (
-    <main className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 dark:from-gray-900 dark:to-gray-800">
-      <div className="container mx-auto px-4 py-8">
+    <main className="min-h-screen" style={{ background: 'var(--background)' }}>
+      <div className="container mx-auto px-4 py-10">
         <div className="max-w-2xl mx-auto">
-          <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-4 mb-6 sm:mb-8">
-            <h1 className="text-2xl sm:text-3xl lg:text-4xl font-bold text-gray-900 dark:text-white">
-              Settings
-            </h1>
-            <Link
-              href="/"
-              className="flex items-center gap-2 px-3 py-2 bg-gray-200 dark:bg-gray-700 rounded-lg hover:bg-gray-300 dark:hover:bg-gray-600 transition text-sm sm:text-base"
+          <h1 className="text-3xl sm:text-4xl font-bold tracking-tight mb-8" style={{ color: 'var(--text-primary)' }}>
+            Settings
+          </h1>
+
+          {/* Status message */}
+          {message && (
+            <div
+              className={`mb-6 p-4 rounded-xl text-sm font-medium ${
+                message.type === 'success'
+                  ? 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-500/20'
+                  : 'bg-red-50 dark:bg-red-500/10 text-red-700 dark:text-red-300 border border-red-200 dark:border-red-500/20'
+              }`}
             >
-              <svg className="w-4 h-4 sm:w-5 sm:h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" />
-              </svg>
-              <span className="hidden sm:inline">Home</span>
-            </Link>
-          </div>
+              {message.text}
+            </div>
+          )}
 
-          <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-lg">
-            <h2 className="text-2xl font-semibold text-gray-900 dark:text-white mb-4">
-              Notion Integration
-            </h2>
-            <p className="text-gray-600 dark:text-gray-300 mb-6">
-              Connect your Notion workspace to automatically sync highlights. Your credentials are stored securely and only used for your account.
+          {/* Notion Integration */}
+          <div className="glass-card p-6 sm:p-8 mb-6">
+            <div className="flex items-center gap-3 mb-1">
+              <div className="w-9 h-9 rounded-lg bg-gray-100 dark:bg-gray-700 flex items-center justify-center">
+                <svg className="w-5 h-5" style={{ color: 'var(--text-secondary)' }} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+                </svg>
+              </div>
+              <div>
+                <h2 className="text-xl font-semibold" style={{ color: 'var(--text-primary)' }}>Notion Integration</h2>
+              </div>
+            </div>
+            <p className="text-sm mb-4 ml-12" style={{ color: 'var(--text-tertiary)' }}>
+              Connect your Notion workspace to automatically sync highlights.
             </p>
-            <p className="text-gray-600 dark:text-gray-300 mb-6">
-              <b>NOTE: This is a one-way sync. Changes to your Notion page will not be reflected in the app.</b>
-            </p>
+            <div className="px-3 py-2 rounded-lg text-xs mb-6" style={{ background: 'var(--brand-surface)', color: 'var(--brand)' }}>
+              One-way sync — changes to your Notion page will not be reflected in the app.
+            </div>
 
-
-            <form onSubmit={handleSave} className="space-y-6">
-              <div className="flex items-center gap-3">
-                <input
-                  type="checkbox"
-                  id="enabled"
-                  checked={settings.enabled}
-                  onChange={(e) => setSettings({ ...settings, enabled: e.target.checked })}
-                  className="checkbox-elegant"
-                />
-                <label htmlFor="enabled" className="text-gray-700 dark:text-gray-300 font-medium">
+            <form onSubmit={handleSave} className="space-y-5">
+              {/* Toggle */}
+              <div className="flex items-center justify-between">
+                <label htmlFor="enabled" className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>
                   Enable Notion sync
                 </label>
+                <button
+                  type="button"
+                  id="enabled"
+                  onClick={() => setSettings({ ...settings, enabled: !settings.enabled })}
+                  className={`toggle-switch ${settings.enabled ? 'active' : ''}`}
+                  role="switch"
+                  aria-checked={settings.enabled}
+                />
               </div>
 
               {settings.enabled && (
                 <>
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                      Notion API Key *
+                    <label className="block text-sm font-medium mb-2" style={{ color: 'var(--text-primary)' }}>
+                      Notion API Key
                     </label>
                     <div className="flex gap-2">
                       <input
@@ -330,18 +340,19 @@ export default function SettingsPage() {
                       <button
                         type="button"
                         onClick={() => setShowApiKey(!showApiKey)}
-                        className="px-4 py-2 bg-gray-200 dark:bg-gray-700 rounded-lg hover:bg-gray-300 dark:hover:bg-gray-600 transition text-sm"
+                        className="btn-secondary !px-4 text-xs"
                       >
                         {showApiKey ? 'Hide' : 'Show'}
                       </button>
                     </div>
-                    <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                    <p className="mt-1.5 text-xs" style={{ color: 'var(--text-tertiary)' }}>
                       Get your API key from{' '}
                       <a
                         href="https://www.notion.so/my-integrations"
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="text-blue-600 dark:text-blue-400 hover:underline"
+                        className="underline hover:no-underline"
+                        style={{ color: 'var(--brand)' }}
                       >
                         notion.so/my-integrations
                       </a>
@@ -349,57 +360,37 @@ export default function SettingsPage() {
                   </div>
 
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                      Notion Page ID *
+                    <label className="block text-sm font-medium mb-2" style={{ color: 'var(--text-primary)' }}>
+                      Notion Page ID
                     </label>
                     <input
                       type="text"
                       value={settings.notion_page_id}
                       onChange={(e) => setSettings({ ...settings, notion_page_id: e.target.value })}
                       className="input-boxed-elegant"
-                      placeholder="32-character page ID from Notion URL"
+                      placeholder="32-character page ID"
                       required={settings.enabled}
                     />
-                    <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                      Open your Notion page, click &quot;Share&quot; → &quot;Copy link&quot;. The Page ID is the long string of characters at the end of the URL (after the last dash).
+                    <p className="mt-1.5 text-xs" style={{ color: 'var(--text-tertiary)' }}>
+                      Open your Notion page, click &quot;Share&quot; → &quot;Copy link&quot;. The Page ID is the long string at the end of the URL.
                     </p>
                   </div>
                 </>
               )}
 
-              {message && (
-                <div
-                  className={`p-4 rounded-lg ${
-                    message.type === 'success'
-                      ? 'bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800'
-                      : 'bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800'
-                  }`}
-                >
-                  <p
-                    className={`text-sm ${
-                      message.type === 'success'
-                        ? 'text-green-800 dark:text-green-200'
-                        : 'text-red-800 dark:text-red-200'
-                    }`}
-                  >
-                    {message.text}
-                  </p>
-                </div>
-              )}
-
-              <div className="flex gap-3">
+              <div className="flex gap-3 pt-2">
                 <button
                   type="submit"
                   disabled={saving}
-                  className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition disabled:bg-gray-400 disabled:cursor-not-allowed"
+                  className="btn-primary"
                 >
-                  {saving ? 'Saving...' : 'Save Settings'}
+                  {saving ? 'Saving…' : 'Save Settings'}
                 </button>
                 {settings.notion_api_key && (
                   <button
                     type="button"
                     onClick={handleDelete}
-                    className="px-6 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition"
+                    className="btn-danger"
                   >
                     Delete Settings
                   </button>
@@ -408,11 +399,17 @@ export default function SettingsPage() {
             </form>
           </div>
 
-          <div className="mt-8 bg-white dark:bg-gray-800 p-6 rounded-lg shadow-lg">
-            <h2 className="text-2xl font-semibold text-gray-900 dark:text-white mb-2">
-              Last month reviewed
-            </h2>
-            <p className="text-gray-600 dark:text-gray-300 mb-4">
+          {/* Last month reviewed */}
+          <div className="glass-card p-6 sm:p-8 mb-6">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-9 h-9 rounded-lg bg-violet-50 dark:bg-violet-500/10 flex items-center justify-center">
+                <svg className="w-5 h-5 text-violet-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+                </svg>
+              </div>
+              <h2 className="text-xl font-semibold" style={{ color: 'var(--text-primary)' }}>Last month reviewed</h2>
+            </div>
+            <p className="text-sm mb-4" style={{ color: 'var(--text-secondary)' }}>
               {lastMonthLabel ? (
                 <>In <strong>{lastMonthLabel}</strong>, you reviewed <strong>{lastMonthReviewedCount ?? '—'}</strong> highlight{lastMonthReviewedCount === 1 ? '' : 's'}.</>
               ) : (
@@ -420,28 +417,29 @@ export default function SettingsPage() {
               )}
             </p>
             {lastMonthLabel && unreviewedHighlights.length > 0 && (
-              <div className="mt-4 pt-4 border-t border-gray-200 dark:border-gray-600">
-                <h3 className="text-lg font-medium text-gray-900 dark:text-white mb-2">
-                  Highlights added before {lastMonthLabel} ended that were not reviewed
+              <div className="mt-4 pt-4" style={{ borderTop: '1px solid var(--border)' }}>
+                <h3 className="text-sm font-semibold mb-2" style={{ color: 'var(--text-primary)' }}>
+                  Not reviewed before {lastMonthLabel} ended
                 </h3>
-                <ul className="space-y-3">
+                <ul className="space-y-2">
                   {unreviewedHighlights.map((h) => {
                     const createdDate = h.created_at ? new Date(h.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : '—'
                     const assignedLabel = h.assigned_date
                       ? (() => {
-                          const [yr, mo, day] = h.assigned_date.split('-')
+                          const [, mo, day] = h.assigned_date.split('-')
                           return `Assigned to ${parseInt(mo, 10)}/${parseInt(day, 10)}`
                         })()
                       : 'Not assigned a review date'
                     return (
                       <li
                         key={h.id}
-                        className="p-3 bg-gray-50 dark:bg-gray-700/50 rounded-lg text-sm"
+                        className="p-3 rounded-lg text-sm"
+                        style={{ background: 'var(--surface-hover)' }}
                       >
-                        <p className="text-gray-800 dark:text-gray-200 line-clamp-2 mb-1">
+                        <p className="line-clamp-2 mb-1" style={{ color: 'var(--text-primary)' }}>
                           {h.textSnippet || '(no text)'}
                         </p>
-                        <p className="text-gray-500 dark:text-gray-400 text-xs">
+                        <p className="text-xs" style={{ color: 'var(--text-tertiary)' }}>
                           Added {createdDate} · {assignedLabel}
                         </p>
                       </li>
@@ -451,20 +449,20 @@ export default function SettingsPage() {
               </div>
             )}
             {lastMonthLabel && unreviewedHighlights.length === 0 && lastMonthReviewedCount !== null && (
-              <p className="text-gray-500 dark:text-gray-400 text-sm mt-2">
+              <p className="text-xs mt-2" style={{ color: 'var(--text-tertiary)' }}>
                 All highlights that existed before {lastMonthLabel} ended were reviewed (or none existed).
               </p>
             )}
             {lastMonthLabel && (
-              <div className="mt-4 pt-4 border-t border-gray-200 dark:border-gray-600">
-                <p className="text-gray-600 dark:text-gray-300 text-sm mb-2">
-                  If you rated highlights but lost connection during review, the &quot;reviewed&quot; list may be out of sync. Use this to backfill last month.
+              <div className="mt-4 pt-4" style={{ borderTop: '1px solid var(--border)' }}>
+                <p className="text-xs mb-2" style={{ color: 'var(--text-tertiary)' }}>
+                  If you rated highlights but lost connection during review, the &quot;reviewed&quot; list may be out of sync.
                 </p>
                 <button
                   type="button"
                   onClick={handleSyncReviewedStatus}
                   disabled={syncingRepair}
-                  className="px-4 py-2 bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-gray-200 rounded-lg hover:bg-gray-300 dark:hover:bg-gray-600 transition disabled:opacity-50 disabled:cursor-not-allowed text-sm"
+                  className="btn-secondary text-xs"
                 >
                   {syncingRepair ? 'Syncing…' : 'Sync reviewed status for last month'}
                 </button>
@@ -472,21 +470,25 @@ export default function SettingsPage() {
             )}
           </div>
 
-          <div className="mt-8 bg-white dark:bg-gray-800 p-6 rounded-lg shadow-lg border border-red-200 dark:border-red-900/50">
-            <h2 className="text-2xl font-semibold text-gray-900 dark:text-white mb-2">
-              Reset daily highlights (this month)
-            </h2>
-            <p className="text-gray-600 dark:text-gray-300 mb-4">
-              This will remove all ratings and &quot;reviewed&quot; status for the current month, then reassign all highlights evenly across the month. You will need to review them again.
+          {/* Danger Zone */}
+          <div className="glass-card p-6 sm:p-8 mb-6" style={{ borderColor: 'var(--danger)', borderWidth: '1px' }}>
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-9 h-9 rounded-lg bg-red-50 dark:bg-red-500/10 flex items-center justify-center">
+                <svg className="w-5 h-5 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4.5c-.77-.833-2.694-.833-3.464 0L3.34 16.5c-.77.833.192 2.5 1.732 2.5z" />
+                </svg>
+              </div>
+              <h2 className="text-xl font-semibold" style={{ color: 'var(--text-primary)' }}>Reset daily highlights</h2>
+            </div>
+            <p className="text-sm mb-4" style={{ color: 'var(--text-secondary)' }}>
+              This will remove all ratings and &quot;reviewed&quot; status for the current month, then reassign all highlights evenly. You will need to review them again.
             </p>
-            <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg p-4 mb-4">
-              <p className="text-amber-800 dark:text-amber-200 text-sm font-medium">
-                Warning: This cannot be undone. All progress for this month will be lost.
-              </p>
+            <div className="px-3 py-2 rounded-lg text-xs mb-4 bg-amber-50 dark:bg-amber-500/10 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-500/20">
+              ⚠️ This cannot be undone. All progress for this month will be lost.
             </div>
             {showResetConfirm && (
-              <div className="mb-4 p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg">
-                <p className="text-red-800 dark:text-red-200 text-sm mb-3">
+              <div className="mb-4 p-4 rounded-lg bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/20">
+                <p className="text-sm text-red-700 dark:text-red-300 mb-3">
                   Click &quot;Yes, reset monthly highlights&quot; again to confirm.
                 </p>
                 <div className="flex gap-2">
@@ -494,15 +496,15 @@ export default function SettingsPage() {
                     type="button"
                     onClick={handleResetDailyHighlights}
                     disabled={resettingDaily}
-                    className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                    className="btn-danger text-sm"
                   >
-                    {resettingDaily ? 'Resetting...' : 'Yes, reset monthly highlights'}
+                    {resettingDaily ? 'Resetting…' : 'Yes, reset monthly highlights'}
                   </button>
                   <button
                     type="button"
                     onClick={() => setShowResetConfirm(false)}
                     disabled={resettingDaily}
-                    className="px-4 py-2 bg-gray-200 dark:bg-gray-700 rounded-lg hover:bg-gray-300 dark:hover:bg-gray-600 transition"
+                    className="btn-secondary text-sm"
                   >
                     Cancel
                   </button>
@@ -514,27 +516,34 @@ export default function SettingsPage() {
                 type="button"
                 onClick={handleResetDailyHighlights}
                 disabled={resettingDaily}
-                className="px-6 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                className="btn-danger"
               >
-                {resettingDaily ? 'Resetting...' : 'Reset all daily highlights for this month'}
+                {resettingDaily ? 'Resetting…' : 'Reset all daily highlights for this month'}
               </button>
             )}
           </div>
 
-          <div className="mt-8 bg-white dark:bg-gray-800 p-6 rounded-lg shadow-lg border border-amber-200 dark:border-amber-900/50">
-            <h2 className="text-2xl font-semibold text-gray-900 dark:text-white mb-2">
-              Debug: last day of month
-            </h2>
-            <p className="text-gray-600 dark:text-gray-300 mb-4">
-              Run daily redistribution as if today were the last day of the month (e.g. the 31st). Use this to test that highlights added on the last day get assigned to that day and to assign any orphans to the last day.
+          {/* Debug section */}
+          <div className="glass-card p-6 sm:p-8" style={{ borderColor: 'var(--warning)', borderWidth: '1px' }}>
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-9 h-9 rounded-lg bg-amber-50 dark:bg-amber-500/10 flex items-center justify-center">
+                <svg className="w-5 h-5 text-amber-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
+                </svg>
+              </div>
+              <h2 className="text-xl font-semibold" style={{ color: 'var(--text-primary)' }}>Debug: last day of month</h2>
+            </div>
+            <p className="text-sm mb-4" style={{ color: 'var(--text-secondary)' }}>
+              Run daily redistribution as if today were the last day of the month. Use this to test that highlights added on the last day get assigned and to assign any orphans.
             </p>
             <button
               type="button"
               onClick={handleDebugLastDayRedistribute}
               disabled={debugRedistributing}
-              className="px-6 py-2 bg-amber-600 text-white rounded-lg hover:bg-amber-700 transition disabled:opacity-50 disabled:cursor-not-allowed"
+              className="btn-secondary"
+              style={{ borderColor: 'var(--warning)' }}
             >
-              {debugRedistributing ? 'Running...' : 'Redistribute (debug last day)'}
+              {debugRedistributing ? 'Running…' : 'Redistribute (debug last day)'}
             </button>
           </div>
         </div>
@@ -542,4 +551,3 @@ export default function SettingsPage() {
     </main>
   )
 }
-
