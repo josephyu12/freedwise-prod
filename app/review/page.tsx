@@ -6,6 +6,7 @@ import Link from 'next/link'
 import { useSearchParams, useRouter } from 'next/navigation'
 import { format } from 'date-fns'
 import { Pin, PinOff } from 'lucide-react'
+import { parseIntoParagraphs, groupParagraphsByDividers, ParagraphBlock } from '@/lib/splitHighlightText'
 import RichTextEditor from '@/components/RichTextEditor'
 import PinDialog from '@/components/PinDialog'
 import { addToNotionSyncQueue } from '@/lib/notionSyncQueue'
@@ -70,6 +71,12 @@ function ReviewPageContent() {
   const [updatingNotion, setUpdatingNotion] = useState(false)
   const [newCategoryName, setNewCategoryName] = useState('')
   const [showCategoryInput, setShowCategoryInput] = useState(false)
+
+  // Split state
+  const [splitMode, setSplitMode] = useState(false)
+  const [splitParagraphs, setSplitParagraphs] = useState<ParagraphBlock[]>([])
+  const [splitPoints, setSplitPoints] = useState<Set<number>>(new Set())
+  const [splittingInProgress, setSplittingInProgress] = useState(false)
 
   // Pin state
   const [pinnedHighlightIds, setPinnedHighlightIds] = useState<Set<string>>(new Set())
@@ -566,6 +573,139 @@ function ReviewPageContent() {
     }
   }
 
+  // ─── Split ────────────────────────────────────────────────
+
+  const handleStartSplit = (highlight: any) => {
+    const paragraphs = parseIntoParagraphs(highlight.html_content, highlight.text)
+    if (paragraphs.length <= 1) {
+      alert('This highlight has only one paragraph — nothing to split.')
+      return
+    }
+    setSplitParagraphs(paragraphs)
+    setSplitPoints(new Set())
+    setSplitMode(true)
+  }
+
+  const handleToggleSplitPoint = (index: number) => {
+    setSplitPoints((prev) => {
+      const next = new Set(prev)
+      if (next.has(index)) {
+        next.delete(index)
+      } else {
+        next.add(index)
+      }
+      return next
+    })
+  }
+
+  const handleCancelSplit = () => {
+    setSplitMode(false)
+    setSplitParagraphs([])
+    setSplitPoints(new Set())
+  }
+
+  const handleConfirmSplit = async () => {
+    if (!current || !current.highlight || splitPoints.size === 0) return
+    setSplittingInProgress(true)
+    try {
+      const groups = groupParagraphsByDividers(splitParagraphs, splitPoints)
+      if (groups.length <= 1) {
+        alert('No split points selected.')
+        setSplittingInProgress(false)
+        return
+      }
+
+      const highlight = current.highlight
+      const originalText = highlight.text
+      const originalHtmlContent = highlight.html_content
+
+      // Update original highlight with first group
+      const firstGroup = groups[0]
+      await (supabase.from('highlights') as any)
+        .update({
+          text: firstGroup.text,
+          html_content: firstGroup.html,
+        })
+        .eq('id', highlight.id)
+
+      // Sync original to Notion
+      await addToSyncQueue(
+        highlight.id, 'update',
+        firstGroup.text, firstGroup.html,
+        originalText, originalHtmlContent
+      )
+
+      // Create new highlights for remaining groups
+      const { data: { user } } = await supabase.auth.getUser()
+      if (!user) throw new Error('Not authenticated')
+
+      const newHighlightIds: string[] = []
+      for (let i = 1; i < groups.length; i++) {
+        const group = groups[i]
+        const { data: newHighlight, error } = await (supabase.from('highlights') as any)
+          .insert({
+            text: group.text,
+            html_content: group.html,
+            source: highlight.source || null,
+            author: highlight.author || null,
+            resurface_count: 0,
+            average_rating: 0,
+            rating_count: 0,
+            user_id: user.id,
+          })
+          .select()
+          .single()
+
+        if (error) throw error
+
+        newHighlightIds.push(newHighlight.id)
+
+        // Copy categories
+        if (highlight.categories && highlight.categories.length > 0) {
+          const categoryLinks = highlight.categories.map((cat: any) => ({
+            highlight_id: newHighlight.id,
+            category_id: cat.id,
+          }))
+          await (supabase.from('highlight_categories') as any).insert(categoryLinks)
+        }
+
+        // Sync new highlight to Notion
+        addToSyncQueue(
+          newHighlight.id, 'add',
+          group.text, group.html
+        ).catch((err: any) => console.error('Error syncing split highlight:', err))
+      }
+
+      // Redistribute new highlights into daily schedule
+      if (newHighlightIds.length > 0) {
+        callRedistribute(newHighlightIds).catch(() => {})
+      }
+
+      // Update local state
+      setHighlights((prev) =>
+        prev.map((h) =>
+          h.highlight_id === highlight.id && h.highlight
+            ? {
+                ...h,
+                highlight: {
+                  ...h.highlight,
+                  text: firstGroup.text,
+                  html_content: firstGroup.html,
+                },
+              }
+            : h
+        )
+      )
+
+      handleCancelSplit()
+    } catch (error) {
+      console.error('Error splitting highlight:', error)
+      alert('Failed to split highlight. Please try again.')
+    } finally {
+      setSplittingInProgress(false)
+    }
+  }
+
   // ─── Edit ─────────────────────────────────────────────────
 
   const handleStartEdit = (highlight: any) => {
@@ -976,7 +1116,83 @@ function ReviewPageContent() {
                 </div>
               )}
 
-              {editingId === current.highlight.id ? (
+              {splitMode ? (
+                /* ─── Split UI ─── */
+                <div className="space-y-2">
+                  <div className="flex items-center gap-2 mb-3">
+                    <span className="text-sm font-semibold text-purple-700 dark:text-purple-300">
+                      Tap dividers to set split points
+                    </span>
+                  </div>
+                  <div className="max-h-[28em] overflow-y-auto rounded-lg border border-gray-200 dark:border-gray-700">
+                    {splitParagraphs.map((para, i) => {
+                      // Determine which group this paragraph belongs to
+                      let groupIndex = 0
+                      for (let j = 0; j < i; j++) {
+                        if (splitPoints.has(j)) groupIndex++
+                      }
+                      const groupColors = [
+                        'bg-blue-50 dark:bg-blue-900/20 border-l-blue-400',
+                        'bg-green-50 dark:bg-green-900/20 border-l-green-400',
+                        'bg-yellow-50 dark:bg-yellow-900/20 border-l-yellow-400',
+                        'bg-pink-50 dark:bg-pink-900/20 border-l-pink-400',
+                        'bg-purple-50 dark:bg-purple-900/20 border-l-purple-400',
+                        'bg-orange-50 dark:bg-orange-900/20 border-l-orange-400',
+                        'bg-teal-50 dark:bg-teal-900/20 border-l-teal-400',
+                        'bg-indigo-50 dark:bg-indigo-900/20 border-l-indigo-400',
+                      ]
+                      const colorClass = groupColors[groupIndex % groupColors.length]
+
+                      return (
+                        <div key={i}>
+                          <div
+                            className={`px-4 py-3 border-l-4 ${colorClass} prose dark:prose-invert max-w-none text-sm`}
+                            dangerouslySetInnerHTML={{ __html: para.html }}
+                          />
+                          {i < splitParagraphs.length - 1 && (
+                            <button
+                              type="button"
+                              onClick={() => handleToggleSplitPoint(i)}
+                              className={`w-full py-1.5 flex items-center justify-center gap-2 transition-all text-xs font-medium ${
+                                splitPoints.has(i)
+                                  ? 'bg-red-100 dark:bg-red-900/40 text-red-600 dark:text-red-400 border-y-2 border-dashed border-red-400 dark:border-red-600'
+                                  : 'bg-gray-50 dark:bg-gray-800 text-gray-400 dark:text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-gray-600 dark:hover:text-gray-300 border-y border-gray-200 dark:border-gray-700'
+                              }`}
+                            >
+                              {splitPoints.has(i) ? (
+                                <>Cut here</>
+                              ) : (
+                                <span>· · ·</span>
+                              )}
+                            </button>
+                          )}
+                        </div>
+                      )
+                    })}
+                  </div>
+                  {splitPoints.size > 0 && (
+                    <p className="text-xs text-gray-500 dark:text-gray-400 text-center">
+                      Will create {splitPoints.size + 1} highlights
+                    </p>
+                  )}
+                  <div className="flex gap-2 pt-1">
+                    <button
+                      onClick={handleConfirmSplit}
+                      disabled={splittingInProgress || splitPoints.size === 0}
+                      className="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {splittingInProgress ? 'Splitting...' : `Split into ${splitPoints.size + 1}`}
+                    </button>
+                    <button
+                      onClick={handleCancelSplit}
+                      disabled={splittingInProgress}
+                      className="px-4 py-2 bg-gray-200 dark:bg-gray-700 rounded-lg hover:bg-gray-300 dark:hover:bg-gray-600 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              ) : editingId === current.highlight.id ? (
                 /* ─── Inline Edit Form ─── */
                 <div className="space-y-4">
                   <div>
@@ -1162,6 +1378,14 @@ function ReviewPageContent() {
                     title={!isOnline ? 'Editing is not available offline' : undefined}
                   >
                     Edit
+                  </button>
+                  <button
+                    onClick={() => handleStartSplit(current.highlight)}
+                    disabled={!isOnline}
+                    className="px-3 py-1 text-sm bg-purple-100 dark:bg-purple-900 text-purple-700 dark:text-purple-300 rounded hover:bg-purple-200 dark:hover:bg-purple-800 transition disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1"
+                    title={!isOnline ? 'Splitting is not available offline' : 'Split into multiple highlights'}
+                  >
+                    Split
                   </button>
                   <button
                     onClick={() => handlePin(current.highlight_id)}
