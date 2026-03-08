@@ -9,6 +9,7 @@ import PinDialog from '@/components/PinDialog'
 import { useUnsavedChanges } from '@/hooks/useUnsavedChanges'
 import { Pin, PinOff } from 'lucide-react'
 import { addToNotionSyncQueue } from '@/lib/notionSyncQueue'
+import { callRedistribute } from '@/lib/redistribute'
 
 export default function HighlightsPage() {
   const [highlights, setHighlights] = useState<Highlight[]>([])
@@ -427,19 +428,7 @@ export default function HighlightsPage() {
       })
 
       // Redistribute daily assignments (await so the new highlight is placed before we show success)
-      try {
-        const redistributeRes = await fetch('/api/daily/redistribute', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ highlightIds: [data.id] }),
-        })
-        if (!redistributeRes.ok) {
-          const err = await redistributeRes.json().catch(() => ({}))
-          console.warn('Redistribute failed:', err)
-        }
-      } catch (error) {
-        console.warn('Failed to redistribute daily assignments:', error)
-      }
+      await callRedistribute([data.id])
       // Refresh highlights after redistribution to show assigned date
       loadHighlights()
 
@@ -573,7 +562,7 @@ export default function HighlightsPage() {
       if (error) throw error
 
       // Redistribute remaining highlights across future days so next month's daily reviews stay consistent
-      await fetch('/api/daily/redistribute', { method: 'POST' })
+      await callRedistribute()
 
       // Reload highlights to refresh count and list
       await loadHighlights()

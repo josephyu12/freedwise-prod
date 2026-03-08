@@ -32,6 +32,7 @@ export async function POST(request: NextRequest) {
     // Optional: { debugLastDay: true } pretends today is the last day of the month (e.g. 31st) for testing.
     let requestedHighlightIds: string[] = []
     let debugLastDay = false
+    let clientLocalDate: string | null = null
     try {
       const body = await request.json().catch(() => ({}))
       if (Array.isArray((body as { highlightIds?: unknown }).highlightIds)) {
@@ -40,16 +41,29 @@ export async function POST(request: NextRequest) {
       if ((body as { debugLastDay?: boolean }).debugLastDay === true) {
         debugLastDay = true
       }
+      if (typeof (body as { localDate?: unknown }).localDate === 'string') {
+        clientLocalDate = (body as { localDate: string }).localDate
+      }
     } catch {
       // ignore
     }
 
-    const now = new Date()
-    const year = now.getFullYear()
-    const month = now.getMonth() + 1
+    // Use client-supplied local date if provided (avoids UTC vs local timezone mismatch on the server).
+    // Fall back to server UTC if not provided.
+    let year: number, month: number, dayOfMonth: number
+    if (clientLocalDate && /^\d{4}-\d{2}-\d{2}$/.test(clientLocalDate)) {
+      const parts = clientLocalDate.split('-').map(Number)
+      year = parts[0]
+      month = parts[1]
+      dayOfMonth = parts[2]
+    } else {
+      const now = new Date()
+      year = now.getFullYear()
+      month = now.getMonth() + 1
+      dayOfMonth = now.getDate()
+    }
     // daysInMonth is correct for any month (28–31); use it for last-day logic, never hardcode 31
     const daysInMonth = new Date(year, month, 0).getDate()
-    let dayOfMonth = now.getDate()
     if (debugLastDay) {
       dayOfMonth = daysInMonth // pretend today is the last day (e.g. 31st) for debugging
     }

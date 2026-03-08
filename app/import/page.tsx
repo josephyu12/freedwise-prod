@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import Link from 'next/link'
 import { normalizeForBlockCompare } from '@/lib/notionBlocks'
+import { callRedistribute } from '@/lib/redistribute'
 
 interface HighlightPreview {
   text: string
@@ -231,15 +232,7 @@ export default function ImportPage() {
 
       // Redistribute daily assignments so new highlights get placed on remaining days
       if (newHighlightIds.length > 0) {
-        try {
-          await fetch('/api/daily/redistribute', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ highlightIds: newHighlightIds }),
-          })
-        } catch (error) {
-          console.warn('Failed to redistribute daily assignments:', error)
-        }
+        await callRedistribute(newHighlightIds)
       }
 
       const message = skipped > 0

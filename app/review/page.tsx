@@ -9,6 +9,7 @@ import { Pin, PinOff } from 'lucide-react'
 import RichTextEditor from '@/components/RichTextEditor'
 import PinDialog from '@/components/PinDialog'
 import { addToNotionSyncQueue } from '@/lib/notionSyncQueue'
+import { callRedistribute } from '@/lib/redistribute'
 import { useOfflineStatus } from '@/hooks/useOfflineStatus'
 import OfflineBanner from '@/components/OfflineBanner'
 import {
@@ -721,7 +722,7 @@ function ReviewPageContent() {
       await addToSyncQueue(highlightId, 'delete', text, htmlContent)
 
       await (supabase.from('highlights') as any).delete().eq('id', highlightId)
-      fetch('/api/daily/redistribute', { method: 'POST' }) // fire-and-forget
+      callRedistribute() // fire-and-forget
 
       setHighlights((prev) => {
         const updated = prev.filter((h) => h.highlight_id !== highlightId)

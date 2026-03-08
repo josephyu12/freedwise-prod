@@ -5,6 +5,7 @@ import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import RichTextEditor from '@/components/RichTextEditor'
 import { addToNotionSyncQueue } from '@/lib/notionSyncQueue'
+import { callRedistribute } from '@/lib/redistribute'
 import { useUnsavedChanges } from '@/hooks/useUnsavedChanges'
 
 export default function Home() {
@@ -164,15 +165,7 @@ export default function Home() {
       }).catch(() => {})
 
       // Redistribute: place only this new highlight on a remaining day
-      try {
-        await fetch('/api/daily/redistribute', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ highlightIds: [highlightData.id] }),
-        })
-      } catch (error) {
-        console.warn('Failed to redistribute daily assignments:', error)
-      }
+      await callRedistribute([highlightData.id])
 
       setSaveSuccess(true)
       setTimeout(() => setSaveSuccess(false), 2000)
