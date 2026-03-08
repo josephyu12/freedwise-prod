@@ -286,7 +286,63 @@ function ReviewPageContent() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loading, highlights, searchParams])
 
-  // Helper to rate a specific highlight by index (for auto-rate)
+  // Background-only: recalculate average rating and auto-archive after a rating is saved.
+  // Called fire-and-forget so the UI doesn't wait for it.
+  const updateHighlightStats = async (
+    highlightId: string,
+    monthYear: string,
+    mo: number,
+    y: number
+  ) => {
+    ;(supabase.from('highlight_months_reviewed') as any)
+      .upsert(
+        { highlight_id: highlightId, month_year: monthYear },
+        { onConflict: 'highlight_id,month_year' }
+      )
+
+    const [{ data: allRatingsData }, { data: highlightData }, { data: lowRatingsWithDates }] = await Promise.all([
+      supabase
+        .from('daily_summary_highlights')
+        .select('rating')
+        .eq('highlight_id', highlightId)
+        .not('rating', 'is', null),
+      (supabase.from('highlights') as any)
+        .select('unarchived_at')
+        .eq('id', highlightId)
+        .single(),
+      supabase
+        .from('daily_summary_highlights')
+        .select('rating, daily_summary:daily_summaries!inner(date)')
+        .eq('highlight_id', highlightId)
+        .eq('rating', 'low'),
+    ])
+
+    const ratingMap: Record<string, number> = { low: 1, med: 2, high: 3 }
+    const ratingValues = ((allRatingsData || []) as Array<{ rating: string }>)
+      .map((r) => ratingMap[r.rating] || 0).filter((v) => v > 0)
+    const average = ratingValues.length > 0
+      ? ratingValues.reduce((a, b) => a + b, 0) / ratingValues.length
+      : 0
+
+    const unarchivedAt = highlightData?.unarchived_at?.split('T')[0]
+    const lowMonths = new Set(
+      ((lowRatingsWithDates || []) as Array<{ rating: string; daily_summary: { date: string } }>)
+        .filter((r) => !unarchivedAt || r.daily_summary.date > unarchivedAt)
+        .map((r) => r.daily_summary.date.substring(0, 7))
+    )
+    const prevMonth = mo === 1 ? `${y - 1}-12` : `${y}-${String(mo - 1).padStart(2, '0')}`
+    const shouldArchive = lowMonths.has(monthYear) && lowMonths.has(prevMonth)
+
+    await (supabase.from('highlights') as any)
+      .update({
+        average_rating: average,
+        rating_count: ratingValues.length,
+        ...(shouldArchive ? { archived: true } : {}),
+      })
+      .eq('id', highlightId)
+  }
+
+  // Helper to rate a specific highlight by index (for auto-rate from widget URL params)
   const handleRateByIndex = async (index: number, rating: 'low' | 'med' | 'high') => {
     const target = highlights[index]
     if (!target || ratingInProgress) return
@@ -297,79 +353,29 @@ function ReviewPageContent() {
         prev.map((h) => (h.id === target.id ? { ...h, rating } : h))
       )
 
-      // Stage 1: save rating + fire-and-forget month tracking (parallel)
       const [y, mo] = today.split('-').map(Number)
       const monthYear = `${y}-${String(mo).padStart(2, '0')}`
+
+      // Critical path: save the rating, then release the UI lock immediately
       await (supabase.from('daily_summary_highlights') as any)
         .update({ rating })
         .eq('id', target.id)
-      // Non-critical: fire-and-forget
-      ;(supabase.from('highlight_months_reviewed') as any)
-        .upsert(
-          { highlight_id: target.highlight_id, month_year: monthYear },
-          { onConflict: 'highlight_id,month_year' }
-        )
 
-      // Stage 2: fetch all ratings + low ratings with dates + unarchived_at in parallel
-      const [{ data: allRatingsData }, { data: highlightData }, { data: lowRatingsWithDates }] = await Promise.all([
-        supabase
-          .from('daily_summary_highlights')
-          .select('rating')
-          .eq('highlight_id', target.highlight_id)
-          .not('rating', 'is', null),
-        (supabase.from('highlights') as any)
-          .select('unarchived_at')
-          .eq('id', target.highlight_id)
-          .single(),
-        supabase
-          .from('daily_summary_highlights')
-          .select('rating, daily_summary:daily_summaries!inner(date)')
-          .eq('highlight_id', target.highlight_id)
-          .eq('rating', 'low'),
-      ])
-
-      const allRatings = (allRatingsData || []) as Array<{ rating: string }>
-      const ratingMap: Record<string, number> = { low: 1, med: 2, high: 3 }
-      const ratingValues = allRatings.map((r) => ratingMap[r.rating] || 0).filter((v) => v > 0)
-      const average = ratingValues.length > 0
-        ? ratingValues.reduce((a, b) => a + b, 0) / ratingValues.length
-        : 0
-
-      // Check if low-rated in two consecutive months
-      const unarchivedAt = highlightData?.unarchived_at?.split('T')[0]
-      const lowMonths = new Set(
-        ((lowRatingsWithDates || []) as Array<{ rating: string; daily_summary: { date: string } }>)
-          .filter((r) => !unarchivedAt || r.daily_summary.date > unarchivedAt)
-          .map((r) => r.daily_summary.date.substring(0, 7))
-      )
-      const prevMonth = mo === 1 ? `${y - 1}-12` : `${y}-${String(mo - 1).padStart(2, '0')}`
-      const shouldArchive = lowMonths.has(monthYear) && lowMonths.has(prevMonth)
-
-      await (supabase.from('highlights') as any)
-        .update({
-          average_rating: average,
-          rating_count: ratingValues.length,
-          ...(shouldArchive ? { archived: true } : {}),
-        })
-        .eq('id', target.highlight_id)
-
-      // Use functional updater to avoid stale closure
       setHighlights((prev) => {
-        const updated = prev.map((h) =>
-          h.id === target.id ? { ...h, rating } : h
-        )
+        const updated = prev.map((h) => (h.id === target.id ? { ...h, rating } : h))
         const nextUnrated = updated.findIndex((h) => h.rating === null)
-        if (nextUnrated >= 0) {
-          setCurrentIndex(nextUnrated)
-        }
+        if (nextUnrated >= 0) setCurrentIndex(nextUnrated)
         return updated
       })
+      setRatingInProgress(false)
+
+      // Background: stats/auto-archive (doesn't block UI)
+      updateHighlightStats(target.highlight_id, monthYear, mo, y).catch(console.error)
     } catch (error) {
       console.error('Error auto-rating highlight:', error)
       setHighlights((prev) =>
         prev.map((h) => (h.id === target.id ? { ...h, rating: null } : h))
       )
-    } finally {
       setRatingInProgress(false)
     }
   }
@@ -441,63 +447,14 @@ function ReviewPageContent() {
     }
 
     try {
-      // Stage 1: save rating + fire-and-forget month tracking
       const [y, mo] = today.split('-').map(Number)
       const monthYear = `${y}-${String(mo).padStart(2, '0')}`
+
+      // Critical path: save the rating, then release the UI lock immediately
       await (supabase.from('daily_summary_highlights') as any)
         .update({ rating })
         .eq('id', current.id)
-      // Non-critical: fire-and-forget
-      ;(supabase.from('highlight_months_reviewed') as any)
-        .upsert(
-          { highlight_id: current.highlight_id, month_year: monthYear },
-          { onConflict: 'highlight_id,month_year' }
-        )
 
-      // Stage 2: fetch all ratings + low ratings with dates + unarchived_at in parallel
-      const [{ data: allRatingsData }, { data: highlightData }, { data: lowRatingsWithDates }] = await Promise.all([
-        supabase
-          .from('daily_summary_highlights')
-          .select('rating')
-          .eq('highlight_id', current.highlight_id)
-          .not('rating', 'is', null),
-        (supabase.from('highlights') as any)
-          .select('unarchived_at')
-          .eq('id', current.highlight_id)
-          .single(),
-        supabase
-          .from('daily_summary_highlights')
-          .select('rating, daily_summary:daily_summaries!inner(date)')
-          .eq('highlight_id', current.highlight_id)
-          .eq('rating', 'low'),
-      ])
-
-      const allRatings = (allRatingsData || []) as Array<{ rating: string }>
-      const ratingMap: Record<string, number> = { low: 1, med: 2, high: 3 }
-      const ratingValues = allRatings.map((r) => ratingMap[r.rating] || 0).filter((v) => v > 0)
-      const average = ratingValues.length > 0
-        ? ratingValues.reduce((a, b) => a + b, 0) / ratingValues.length
-        : 0
-
-      // Check if low-rated in two consecutive months
-      const unarchivedAt = highlightData?.unarchived_at?.split('T')[0]
-      const lowMonths = new Set(
-        ((lowRatingsWithDates || []) as Array<{ rating: string; daily_summary: { date: string } }>)
-          .filter((r) => !unarchivedAt || r.daily_summary.date > unarchivedAt)
-          .map((r) => r.daily_summary.date.substring(0, 7))
-      )
-      const prevMonth = mo === 1 ? `${y - 1}-12` : `${y}-${String(mo - 1).padStart(2, '0')}`
-      const shouldArchive = lowMonths.has(monthYear) && lowMonths.has(prevMonth)
-
-      await (supabase.from('highlights') as any)
-        .update({
-          average_rating: average,
-          rating_count: ratingValues.length,
-          ...(shouldArchive ? { archived: true } : {}),
-        })
-        .eq('id', current.highlight_id)
-
-      // Use functional updater to avoid stale closure
       setHighlights((prev) => {
         const updated = prev.map((h) =>
           h.id === current.id ? { ...h, rating } : h
@@ -505,11 +462,13 @@ function ReviewPageContent() {
         const nextUnrated = updated.findIndex(
           (h, i) => h.rating === null && i !== currentIndex
         )
-        if (nextUnrated >= 0) {
-          setCurrentIndex(nextUnrated)
-        }
+        if (nextUnrated >= 0) setCurrentIndex(nextUnrated)
         return updated
       })
+      setRatingInProgress(false)
+
+      // Background: stats/auto-archive (doesn't block UI)
+      updateHighlightStats(current.highlight_id, monthYear, mo, y).catch(console.error)
     } catch (error) {
       console.error('Error rating highlight (falling back to offline queue):', error)
       // Network failed on weak signal — fall back to offline queueing
