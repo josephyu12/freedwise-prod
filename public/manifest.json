@@ -2,7 +2,6 @@
   "name": "Freedwise",
   "short_name": "Freedwise",
   "description": "Resurface your highlights in daily summaries",
-  "start_url": "/review",
   "display": "standalone",
   "background_color": "#ffffff",
   "theme_color": "#3b82f6",
