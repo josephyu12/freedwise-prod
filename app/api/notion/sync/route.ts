@@ -107,6 +107,40 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
       if (!foundMatch || matchingBlocks.length === 0) {
         debugPayload.sampleNotionBlockGroups = buildNormalizedBlockGroups(allBlocks).slice(-8)
         console.warn('[notion/sync] update: Highlight not found. Full debug (last 8 block groups):', JSON.stringify(debugPayload, null, 2))
+
+        // Fallback: if this is a retry, a prior attempt likely deleted the blocks but failed
+        // to re-insert the new content. Re-add the highlight at the end of the page so
+        // content is never permanently lost from Notion.
+        if (queueItem.retry_count > 0) {
+          console.warn('[notion/sync] update: Falling back to re-add since retry_count > 0 (prior attempt likely deleted blocks)')
+          // Re-fetch latest content from DB
+          let fallbackHtml = queueItem.html_content ?? null
+          let fallbackText = queueItem.text ?? null
+          if (queueItem.highlight_id) {
+            const { data: latestHighlight } = await (supabase
+              .from('highlights') as any)
+              .select('text, html_content')
+              .eq('id', queueItem.highlight_id)
+              .maybeSingle()
+            if (latestHighlight?.text != null || latestHighlight?.html_content != null) {
+              fallbackText = latestHighlight.text ?? fallbackText
+              fallbackHtml = latestHighlight.html_content ?? fallbackHtml
+            }
+          }
+          const fallbackBlocks = htmlToNotionBlocks(fallbackHtml || fallbackText || '')
+          fallbackBlocks.push({ type: 'paragraph', paragraph: { rich_text: [] } })
+          await appendBlocksDeep(notion, notionSettings.notion_page_id, fallbackBlocks)
+          // Mark as completed (don't throw — the content is now back in Notion)
+          await (supabase
+            .from('notion_sync_queue') as any)
+            .update({
+              status: 'completed',
+              processed_at: new Date().toISOString(),
+            })
+            .eq('id', queueItem.id)
+          return { success: true }
+        }
+
         throw new Error('Highlight not found in Notion page. It may have been deleted or moved.')
       }
 

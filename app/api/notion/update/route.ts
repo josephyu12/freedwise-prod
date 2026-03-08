@@ -42,6 +42,10 @@ export async function POST(request: NextRequest) {
 
     const highlight = highlightData as { text: string; html_content: string | null }
 
+    // TODO: This route searches Notion using the *current* DB content, but by the time it runs
+    // the DB has already been updated with the new edit. The sync queue route handles this correctly
+    // by storing original_html_content separately. This route is currently unused from the client.
+
     // Initialize Notion client
     const notion = new Client({
       auth: notionApiKey,
