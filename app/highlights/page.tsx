@@ -1213,7 +1213,7 @@ export default function HighlightsPage() {
                           return (
                             <div key={i}>
                               <div
-                                className={`px-4 py-3 border-l-4 ${colorClass} prose dark:prose-invert max-w-none text-sm`}
+                                className={`px-4 py-3 border-l-4 ${colorClass} text-sm text-gray-900 dark:text-gray-100`}
                                 dangerouslySetInnerHTML={{ __html: para.html }}
                               />
                               {i < splitParagraphs.length - 1 && (
