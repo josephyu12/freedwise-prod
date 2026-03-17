@@ -127,11 +127,16 @@ export default function Home() {
       setHtmlContent('')
       setSelectedCategories([])
 
+      // Generate ID client-side so Notion sync can proceed even if the select
+      // after insert fails due to a mid-request session refresh across tabs
+      const newHighlightId = crypto.randomUUID()
+
       // Save to database
-      const { data: highlightData, error } = await (supabase
+      const { error } = await (supabase
         .from('highlights') as any)
         .insert([
           {
+            id: newHighlightId,
             text: highlightText,
             html_content: highlightHtml,
             resurface_count: 0,
@@ -140,15 +145,13 @@ export default function Home() {
             user_id: user.id,
           },
         ])
-        .select()
-        .single()
 
       if (error) throw error
 
       // Add categories in background (non-blocking)
       if (selectedCats.length > 0) {
         const categoryLinks = selectedCats.map((catId) => ({
-          highlight_id: highlightData.id,
+          highlight_id: newHighlightId,
           category_id: catId,
         }))
         ;(supabase.from('highlight_categories') as any).insert(categoryLinks).catch((err: any) => {
@@ -158,14 +161,14 @@ export default function Home() {
 
       // Add to Notion sync queue via deduplicating API (non-blocking)
       addToNotionSyncQueue({
-        highlightId: highlightData.id,
+        highlightId: newHighlightId,
         operationType: 'add',
         text: highlightText,
         htmlContent: highlightHtml,
       }).catch(() => {})
 
       // Redistribute: place only this new highlight on a remaining day
-      await callRedistribute([highlightData.id])
+      await callRedistribute([newHighlightId])
 
       setSaveSuccess(true)
       setTimeout(() => setSaveSuccess(false), 2000)
