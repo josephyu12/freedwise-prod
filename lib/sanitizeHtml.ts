@@ -14,5 +14,11 @@ export function sanitizeHtml(html: string): string {
   clean = clean.replace(/<(\w+)\s+>/g, '<$1>')
   // Remove empty <span> wrappers (left behind after stripping style/class)
   clean = clean.replace(/<span>(.*?)<\/span>/gi, '$1')
+  // Strip empty <p></p> tags immediately before a <ul> or <ol> (contentEditable artifact)
+  clean = clean.replace(/<p>\s*<\/p>\s*(?=<[uo]l[\s>])/gi, '')
+  // Strip empty <p></p> tags immediately after </ul> or </ol>
+  clean = clean.replace(/(<\/[uo]l>)\s*<p>\s*<\/p>/gi, '$1')
+  // Unwrap <ul>/<ol> from inside <p> tags: <p><ul>...</ul></p> → <ul>...</ul>
+  clean = clean.replace(/<p>\s*(<[uo]l[\s>][\s\S]*?<\/[uo]l>)\s*<\/p>/gi, '$1')
   return clean
 }

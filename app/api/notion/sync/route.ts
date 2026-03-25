@@ -180,18 +180,35 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
       const firstTopLevelMatchIndex = topLevelBlocks.findIndex((b: any) => matchingIds.has(b.id))
       const afterBlockId = firstTopLevelMatchIndex > 0 ? topLevelBlocks[firstTopLevelMatchIndex - 1].id : null
 
-      // Delete top-level matching blocks (Notion cascades to children automatically)
+      // Delete top-level matching blocks (Notion cascades to children automatically).
+      // Blocks may already be archived/deleted by a concurrent sync (rapid edits race condition) — skip those silently.
       for (const block of topLevelMatchingBlocks) {
         try {
           await notion.blocks.delete({ block_id: block.id })
         } catch (error: any) {
+          const msg = (error.message || '').toLowerCase()
+          if (msg.includes('archived') || msg.includes('not found') || error.code === 'object_not_found') {
+            console.warn(`[notion/sync] Block ${block.id} already deleted/archived, skipping`)
+            continue
+          }
           console.error(`Failed to delete block ${block.id} (${block.type}):`, error.message || error)
           throw error
         }
       }
 
-      // Insert new hierarchical blocks at the correct position
-      await appendBlocksDeep(notion, notionSettings.notion_page_id, newBlocks, afterBlockId)
+      // Insert new hierarchical blocks at the correct position.
+      // If afterBlockId was also deleted by a concurrent sync, fall back to appending at the end.
+      try {
+        await appendBlocksDeep(notion, notionSettings.notion_page_id, newBlocks, afterBlockId)
+      } catch (appendError: any) {
+        const msg = (appendError.message || '').toLowerCase()
+        if (afterBlockId && (msg.includes('archived') || msg.includes('not found') || appendError.code === 'object_not_found')) {
+          console.warn(`[notion/sync] afterBlockId ${afterBlockId} archived, appending at end`)
+          await appendBlocksDeep(notion, notionSettings.notion_page_id, newBlocks)
+        } else {
+          throw appendError
+        }
+      }
     } else if (queueItem.operation_type === 'delete') {
       // For delete, use the text/html_content stored in the queue item to find the block.
       // Same approach as update: fetch top-level blocks, flatten to include nested children,
