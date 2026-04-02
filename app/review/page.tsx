@@ -10,6 +10,7 @@ import { parseIntoParagraphs, groupParagraphsByDividers, ParagraphBlock } from '
 import RichTextEditor from '@/components/RichTextEditor'
 import PinDialog from '@/components/PinDialog'
 import { addToNotionSyncQueue } from '@/lib/notionSyncQueue'
+import { removeFromFutureMonths } from '@/lib/removeFromFutureMonths'
 import { callRedistribute } from '@/lib/redistribute'
 import { useOfflineStatus } from '@/hooks/useOfflineStatus'
 import OfflineBanner from '@/components/OfflineBanner'
@@ -781,6 +782,7 @@ function ReviewPageContent() {
       await (supabase.from('highlights') as any)
         .update({ archived: true })
         .eq('id', highlightId)
+      await removeFromFutureMonths(supabase, highlightId)
       setHighlights((prev) =>
         prev.map((h) =>
           h.highlight_id === highlightId && h.highlight
