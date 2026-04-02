@@ -37,26 +37,12 @@ const NAV_LINKS = [
 export default function AppHeader() {
   const pathname = usePathname()
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
-  const menuRef = useRef<HTMLDivElement>(null)
+  const panelRef = useRef<HTMLDivElement>(null)
 
   // Close mobile menu when route changes
   useEffect(() => {
     setMobileMenuOpen(false)
   }, [pathname])
-
-  // Close mobile menu on click outside
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
-        setMobileMenuOpen(false)
-      }
-    }
-
-    if (mobileMenuOpen) {
-      document.addEventListener('mousedown', handleClickOutside)
-    }
-    return () => document.removeEventListener('mousedown', handleClickOutside)
-  }, [mobileMenuOpen])
 
   // Close mobile menu on escape
   useEffect(() => {
@@ -69,6 +55,16 @@ export default function AppHeader() {
     return () => document.removeEventListener('keydown', handleEscape)
   }, [mobileMenuOpen])
 
+  // Prevent body scroll when menu is open
+  useEffect(() => {
+    if (mobileMenuOpen) {
+      document.body.style.overflow = 'hidden'
+    } else {
+      document.body.style.overflow = ''
+    }
+    return () => { document.body.style.overflow = '' }
+  }, [mobileMenuOpen])
+
   // Don't show header on login page
   if (pathname === '/login') return null
 
@@ -76,6 +72,8 @@ export default function AppHeader() {
     if (href === '/') return pathname === '/'
     return pathname.startsWith(href)
   }
+
+  const closeMenu = () => setMobileMenuOpen(false)
 
   return (
     <>
@@ -108,18 +106,17 @@ export default function AppHeader() {
           {/* Right side: ScrollToTop + Auth + Mobile hamburger */}
           <div className="app-header-right">
             <ScrollToTop />
-            <div className="hidden sm:block">
+            <div className="hidden md:block">
               <AuthButton />
             </div>
 
             {/* Mobile hamburger */}
             <button
               className="app-header-hamburger"
-              onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-              aria-label="Toggle navigation menu"
-              aria-expanded={mobileMenuOpen}
+              onClick={() => setMobileMenuOpen(true)}
+              aria-label="Open navigation menu"
             >
-              <div className={`hamburger-lines ${mobileMenuOpen ? 'open' : ''}`}>
+              <div className="hamburger-lines">
                 <span></span>
                 <span></span>
                 <span></span>
@@ -129,23 +126,39 @@ export default function AppHeader() {
         </div>
       </header>
 
-      {/* Mobile Menu Overlay */}
-      {mobileMenuOpen && (
-        <div className="mobile-nav-backdrop" aria-hidden="true" />
-      )}
+      {/* Mobile Menu Overlay — clicking it closes the menu */}
+      <div
+        className={`mobile-nav-backdrop ${mobileMenuOpen ? 'mobile-nav-backdrop-visible' : ''}`}
+        onClick={closeMenu}
+        aria-hidden="true"
+      />
 
       {/* Mobile Menu Panel */}
       <div
-        ref={menuRef}
+        ref={panelRef}
         className={`mobile-nav-panel ${mobileMenuOpen ? 'mobile-nav-panel-open' : ''}`}
       >
+        {/* Close button inside the panel */}
+        <div className="mobile-nav-panel-header">
+          <span className="mobile-nav-panel-title">Menu</span>
+          <button
+            className="mobile-nav-close"
+            onClick={closeMenu}
+            aria-label="Close navigation menu"
+          >
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+
         <nav className="mobile-nav-links">
           {NAV_LINKS.map((link) => (
             <Link
               key={link.href}
               href={link.href}
               className={`mobile-nav-link ${isActive(link.href) ? 'mobile-nav-link-active' : ''}`}
-              onClick={() => setMobileMenuOpen(false)}
+              onClick={closeMenu}
             >
               <span className="mobile-nav-link-icon">{link.icon}</span>
               <span>{link.label}</span>

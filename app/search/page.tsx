@@ -496,84 +496,124 @@ export default function SearchPage() {
   }
 
   return (
-    <main className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 dark:from-gray-900 dark:to-gray-800">
-      <div className="container mx-auto px-4 py-8">
-        <div className="max-w-6xl mx-auto">
+    <main className="min-h-screen" style={{ background: 'var(--background)' }}>
+      <div className="container mx-auto px-4 py-8 sm:py-10">
+        <div className="max-w-5xl mx-auto">
           <div className="mb-6 sm:mb-8">
-            <h1 className="text-2xl sm:text-3xl lg:text-4xl font-bold text-gray-900 dark:text-white">
+            <h1 className="text-2xl sm:text-3xl font-bold tracking-tight" style={{ color: 'var(--text-primary)' }}>
               Search Highlights
             </h1>
+            <p className="text-sm mt-1" style={{ color: 'var(--text-tertiary)' }}>
+              Find and explore your collected highlights
+            </p>
           </div>
 
-          <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-lg mb-6">
-            <div className="flex gap-4 mb-4">
+          {/* Search Bar */}
+          <div className="glass-card p-4 sm:p-6 mb-6">
+            <div className="flex flex-col sm:flex-row gap-3 sm:gap-4">
               <div className="flex-1">
                 <input
                   type="text"
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
                   placeholder="Search highlights..."
-                  className="input-elegant text-xl"
+                  className="input-boxed-elegant !text-base sm:!text-lg !py-3"
                   autoFocus
                 />
               </div>
-              <div className="flex gap-2">
+              <div className="flex gap-1.5 p-1 rounded-xl self-start sm:self-center" style={{ background: 'var(--surface-hover)' }}>
                 <button
                   onClick={() => setSearchType('fulltext')}
-                  className={`px-4 py-3 rounded-lg transition ${
-                    searchType === 'fulltext'
-                      ? 'bg-blue-600 text-white'
-                      : 'bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-600'
-                  }`}
+                  className="px-4 py-2 rounded-lg text-sm font-medium transition-all"
+                  style={{
+                    background: searchType === 'fulltext' ? 'var(--brand)' : 'transparent',
+                    color: searchType === 'fulltext' ? 'white' : 'var(--text-secondary)',
+                    boxShadow: searchType === 'fulltext' ? 'var(--shadow-sm)' : 'none',
+                  }}
                 >
                   Full Text
                 </button>
                 <button
                   onClick={() => setSearchType('semantic')}
-                  className={`px-4 py-3 rounded-lg transition ${
-                    searchType === 'semantic'
-                      ? 'bg-blue-600 text-white'
-                      : 'bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-600'
-                  }`}
+                  className="px-4 py-2 rounded-lg text-sm font-medium transition-all"
+                  style={{
+                    background: searchType === 'semantic' ? 'var(--brand)' : 'transparent',
+                    color: searchType === 'semantic' ? 'white' : 'var(--text-secondary)',
+                    boxShadow: searchType === 'semantic' ? 'var(--shadow-sm)' : 'none',
+                  }}
                 >
                   Semantic
                 </button>
               </div>
             </div>
             {query && (
-              <div className="text-sm text-gray-600 dark:text-gray-400">
+              <div className="mt-3 text-sm" style={{ color: 'var(--text-tertiary)' }}>
                 {loading ? (
-                  <span>Searching...</span>
+                  <span className="flex items-center gap-2">
+                    <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                    </svg>
+                    Searching...
+                  </span>
                 ) : (
                   <span>
                     Found {results.length} result{results.length !== 1 ? 's' : ''}
-                    {similarResults.length > 0 && `, ${similarResults.length} similar`}
+                    {similarResults.length > 0 && ` · ${similarResults.length} similar`}
                   </span>
                 )}
               </div>
             )}
           </div>
 
-          {query && !loading && results.length === 0 && similarResults.length === 0 && (
-            <div className="bg-white dark:bg-gray-800 p-8 rounded-lg shadow-lg text-center text-gray-500 dark:text-gray-400">
-              No results found. Try different keywords or switch to semantic search.
+          {/* Empty state — no query yet */}
+          {!query && (
+            <div className="glass-card p-10 sm:p-16 text-center">
+              <div className="w-16 h-16 mx-auto mb-4 rounded-2xl flex items-center justify-center" style={{ background: 'var(--brand-surface)' }}>
+                <svg className="w-8 h-8" style={{ color: 'var(--brand)' }} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                </svg>
+              </div>
+              <h2 className="text-lg font-semibold mb-2" style={{ color: 'var(--text-primary)' }}>
+                Start searching
+              </h2>
+              <p className="text-sm max-w-sm mx-auto" style={{ color: 'var(--text-tertiary)' }}>
+                Type a keyword to find highlights, or switch to <strong>Semantic</strong> search to find highlights by meaning.
+              </p>
             </div>
           )}
 
-          <div className="grid md:grid-cols-2 gap-6">
-            {/* Search Results */}
-            <div>
-              <h2 className="text-2xl font-semibold text-gray-900 dark:text-white mb-4">
-                Search Results
+          {/* No results */}
+          {query && !loading && results.length === 0 && similarResults.length === 0 && (
+            <div className="glass-card p-10 sm:p-16 text-center">
+              <div className="w-16 h-16 mx-auto mb-4 rounded-2xl flex items-center justify-center" style={{ background: 'var(--surface-hover)' }}>
+                <svg className="w-8 h-8" style={{ color: 'var(--text-tertiary)' }} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9.172 16.172a4 4 0 015.656 0M9 10h.01M15 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+              </div>
+              <h2 className="text-lg font-semibold mb-2" style={{ color: 'var(--text-primary)' }}>
+                No results found
               </h2>
-              <div className="space-y-4">
+              <p className="text-sm" style={{ color: 'var(--text-tertiary)' }}>
+                Try different keywords or switch to {searchType === 'fulltext' ? 'semantic' : 'full text'} search.
+              </p>
+            </div>
+          )}
+
+          {/* Results grid — stacks on mobile, side-by-side on lg+ */}
+          {(results.length > 0 || similarResults.length > 0) && (
+            <div className="grid lg:grid-cols-2 gap-6">
+              {/* Search Results Column */}
+              <div>
+                <h2 className="text-lg font-semibold mb-3" style={{ color: 'var(--text-primary)' }}>Results</h2>
+                <div className="space-y-3">
                 {results.map((highlight) => (
                   <div
                     key={highlight.id}
-                    className={`bg-white dark:bg-gray-800 p-6 rounded-lg shadow-lg transition ${
+                    className={`glass-card p-5 transition ${
                       selectedHighlight?.id === highlight.id
-                        ? 'ring-2 ring-blue-500'
-                        : 'hover:shadow-xl'
+                        ? 'ring-2 ring-[var(--brand)]'
+                        : ''
                     } ${editingId === highlight.id ? '' : 'cursor-pointer'}`}
                     onClick={() => editingId !== highlight.id && handleHighlightClick(highlight)}
                   >
@@ -853,12 +893,12 @@ export default function SearchPage() {
                   </div>
                 ))}
               </div>
-            </div>
+              </div>
 
-            {/* Similar Highlights */}
+            {/* Similar Highlights Column */}
             <div>
-              <h2 className="text-2xl font-semibold text-gray-900 dark:text-white mb-4">
-                {selectedHighlight ? 'Similar Highlights' : 'Select a highlight to see similar ones'}
+              <h2 className="text-lg font-semibold mb-3" style={{ color: 'var(--text-primary)' }}>
+                {selectedHighlight ? 'Similar Highlights' : 'Click a result to find similar'}
               </h2>
               {selectedHighlight && (
                 <div className="mb-4 p-4 bg-blue-50 dark:bg-blue-900/20 rounded-lg border border-blue-200 dark:border-blue-800">
@@ -877,8 +917,8 @@ export default function SearchPage() {
                 {similarResults.map((highlight) => (
                   <div
                     key={highlight.id}
-                    className={`bg-white dark:bg-gray-800 p-6 rounded-lg shadow-lg transition ${
-                      editingId === highlight.id ? '' : 'hover:shadow-xl cursor-pointer'
+                    className={`glass-card p-5 transition ${
+                      editingId === highlight.id ? '' : 'cursor-pointer'
                     }`}
                     onClick={() => editingId !== highlight.id && handleHighlightClick(highlight)}
                   >
@@ -1144,6 +1184,7 @@ export default function SearchPage() {
               </div>
             </div>
           </div>
+          )}
         </div>
       </div>
       <PinDialog
