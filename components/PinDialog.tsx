@@ -114,7 +114,7 @@ export default function PinDialog({ isOpen, onClose, onSelectRemove, onCancel }:
                     <div className="flex items-start justify-between gap-4">
                       <div className="flex-1 min-w-0">
                         <div
-                          className="text-sm text-gray-900 dark:text-gray-100 line-clamp-3 prose dark:prose-invert max-w-none prose-sm"
+                          className="text-sm text-gray-900 dark:text-gray-100 line-clamp-3 [&_*]:text-inherit"
                           dangerouslySetInnerHTML={{
                             __html: highlight.html_content || highlight.text,
                           }}
