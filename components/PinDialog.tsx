@@ -106,10 +106,6 @@ export default function PinDialog({ isOpen, onClose, onSelectRemove, onCancel }:
                 const highlight = pin.highlights
                 if (!highlight) return null
 
-                const text = highlight.html_content 
-                  ? highlight.html_content.replace(/<[^>]*>/g, '').substring(0, 200)
-                  : highlight.text.substring(0, 200)
-
                 return (
                   <div
                     key={pin.id}
@@ -117,10 +113,12 @@ export default function PinDialog({ isOpen, onClose, onSelectRemove, onCancel }:
                   >
                     <div className="flex items-start justify-between gap-4">
                       <div className="flex-1 min-w-0">
-                        <p className="text-sm text-gray-900 dark:text-gray-100 line-clamp-3">
-                          {text}
-                          {highlight.text.length > 200 && '...'}
-                        </p>
+                        <div
+                          className="text-sm text-gray-900 dark:text-gray-100 line-clamp-3 prose dark:prose-invert max-w-none prose-sm"
+                          dangerouslySetInnerHTML={{
+                            __html: highlight.html_content || highlight.text,
+                          }}
+                        />
                         <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
                           Pinned {new Date(pin.pinned_at).toLocaleDateString()}
                         </p>
