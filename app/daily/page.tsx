@@ -182,6 +182,7 @@ export default function DailyPage() {
   const [newCategoryName, setNewCategoryName] = useState('')
   const [showCategoryInput, setShowCategoryInput] = useState(false)
   const [skipNotionSync, setSkipNotionSync] = useState(false)
+  const [updatingNotion, setUpdatingNotion] = useState(false)
 
   // Split state
   const [splitMode, setSplitMode] = useState(false)
@@ -921,7 +922,7 @@ export default function DailyPage() {
 
   const handleSaveEdit = async (highlightId: string) => {
     if (!editText.trim()) return
-
+    setUpdatingNotion(true)
     try {
       // Get original highlight data before updating (needed for sync queue)
       const originalHighlight = summary?.highlights.find(
@@ -1023,6 +1024,8 @@ export default function DailyPage() {
     } catch (error) {
       console.error('Error updating highlight:', error)
       alert('Failed to update highlight. Please try again.')
+    } finally {
+      setUpdatingNotion(false)
     }
   }
 
@@ -1675,9 +1678,10 @@ export default function DailyPage() {
                             <div className="flex gap-2">
                               <button
                                 onClick={() => handleSaveEdit(highlight.id)}
-                                className="btn-primary !px-4 !py-2"
+                                disabled={updatingNotion || !editText.trim()}
+                                className="btn-primary !px-4 !py-2 disabled:opacity-50 disabled:cursor-not-allowed"
                               >
-                                Save
+                                {updatingNotion ? 'Saving...' : 'Save'}
                               </button>
                               <button
                                 onClick={handleCancelEdit}
