@@ -878,24 +878,6 @@ export default function HighlightsPage() {
                     </span>
                   )}
                 </button>
-                <Link
-                  href="/search"
-                  className="flex items-center gap-2 px-3.5 py-2 bg-emerald-500 text-white rounded-full hover:bg-emerald-600 transition-all text-sm font-medium shadow-sm"
-                >
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-                  </svg>
-                  <span className="hidden sm:inline">Search</span>
-                </Link>
-                <Link
-                  href="/"
-                  className="btn-secondary !rounded-full !py-2 !px-3.5 text-sm"
-                >
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" />
-                  </svg>
-                  <span className="hidden sm:inline">Home</span>
-                </Link>
               </div>
             </div>
           </div>

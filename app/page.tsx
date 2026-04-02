@@ -186,13 +186,10 @@ export default function Home() {
 
   return (
     <main className="min-h-screen" style={{ background: 'var(--background)' }}>
-      <div className="container mx-auto px-4 py-10 sm:py-16">
+      <div className="container mx-auto px-4 py-8 sm:py-12">
         <div className="max-w-3xl mx-auto">
-          {/* Hero */}
-          <div className="mb-10 sm:mb-14">
-            <h1 className="text-4xl sm:text-5xl font-bold tracking-tight mb-3" style={{ color: 'var(--text-primary)' }}>
-              Freedwise
-            </h1>
+          {/* Subtitle */}
+          <div className="mb-8 sm:mb-10">
             <p className="text-lg sm:text-xl font-light" style={{ color: 'var(--text-secondary)' }}>
               Resurface your highlights in daily summaries
             </p>

@@ -1036,12 +1036,6 @@ function ReviewPageContent() {
 
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 safe-area-top">
-        <Link
-          href="/"
-          className="text-sm text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition"
-        >
-          Home
-        </Link>
         <div className="text-sm font-medium text-gray-700 dark:text-gray-300">
           {ratedCount} / {highlights.length} reviewed
         </div>

@@ -1,10 +1,9 @@
 import type { Metadata } from 'next'
 import { Inter } from 'next/font/google'
 import './globals.css'
-import AuthButton from '@/components/AuthButton'
+import AppHeader from '@/components/AppHeader'
 
 const inter = Inter({ subsets: ['latin'], display: 'swap' })
-import ScrollToTop from '@/components/ScrollToTop'
 import NotionSyncProcessor from '@/components/NotionSyncProcessor'
 import Link from 'next/link'
 
@@ -33,10 +32,7 @@ export default function RootLayout({
         <meta name="theme-color" content="#6366f1" />
       </head>
       <body className={`${inter.className} flex flex-col min-h-screen`}>
-        <div className="fixed top-3 right-3 sm:top-4 sm:right-4 z-50 flex items-center gap-2">
-          <ScrollToTop />
-          <AuthButton />
-        </div>
+        <AppHeader />
         <NotionSyncProcessor />
         <div className="flex-1">
           {children}
