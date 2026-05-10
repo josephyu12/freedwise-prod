@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { X } from 'lucide-react'
+import { renderHighlightHtml } from '@/lib/renderHighlightHtml'
 
 interface PinnedHighlight {
   id: string
@@ -116,7 +117,7 @@ export default function PinDialog({ isOpen, onClose, onSelectRemove, onCancel }:
                         <div
                           className="text-sm text-gray-900 dark:text-gray-100 line-clamp-3 [&_*]:text-inherit"
                           dangerouslySetInnerHTML={{
-                            __html: highlight.html_content || highlight.text,
+                            __html: renderHighlightHtml(highlight.html_content, highlight.text),
                           }}
                         />
                         <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">

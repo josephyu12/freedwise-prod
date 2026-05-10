@@ -5,6 +5,7 @@ import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import { Pin, PinOff } from 'lucide-react'
 import PinDialog from '@/components/PinDialog'
+import { renderHighlightHtml } from '@/lib/renderHighlightHtml'
 
 interface PinnedHighlight {
   id: string
@@ -224,7 +225,7 @@ export default function PinsPage() {
                         <div
                           className="highlight-content text-base mb-3 prose dark:prose-invert max-w-none"
                           dangerouslySetInnerHTML={{
-                            __html: highlight.html_content || highlight.text,
+                            __html: renderHighlightHtml(highlight.html_content, highlight.text),
                           }}
                         />
                         <div className="flex items-center gap-4 text-xs text-gray-500 dark:text-gray-400">

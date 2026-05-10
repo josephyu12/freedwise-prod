@@ -11,6 +11,7 @@ import { Pin, PinOff } from 'lucide-react'
 import { addToNotionSyncQueue } from '@/lib/notionSyncQueue'
 import { callRedistribute } from '@/lib/redistribute'
 import { parseIntoParagraphs, groupParagraphsByDividers, ParagraphBlock } from '@/lib/splitHighlightText'
+import { renderHighlightHtml } from '@/lib/renderHighlightHtml'
 
 export default function HighlightsPage() {
   const [highlights, setHighlights] = useState<Highlight[]>([])
@@ -1317,7 +1318,7 @@ export default function HighlightsPage() {
                     <div
                       className="highlight-content text-base mb-3 prose dark:prose-invert max-w-none"
                       dangerouslySetInnerHTML={{
-                        __html: highlight.html_content || highlight.text,
+                        __html: renderHighlightHtml(highlight.html_content, highlight.text),
                       }}
                     />
                   )}

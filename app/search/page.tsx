@@ -10,6 +10,7 @@ import PinDialog from '@/components/PinDialog'
 import { useUnsavedChanges } from '@/hooks/useUnsavedChanges'
 import { Pin, PinOff } from 'lucide-react'
 import { addToNotionSyncQueue } from '@/lib/notionSyncQueue'
+import { renderHighlightHtml } from '@/lib/renderHighlightHtml'
 
 export default function SearchPage() {
   const [query, setQuery] = useState('')
@@ -764,7 +765,7 @@ export default function SearchPage() {
                         <div
                           className="highlight-content text-base mb-3 prose dark:prose-invert max-w-none"
                           dangerouslySetInnerHTML={{
-                            __html: highlight.html_content || highlight.text,
+                            __html: renderHighlightHtml(highlight.html_content, highlight.text),
                           }}
                         />
                         {highlight.categories && highlight.categories.length > 0 && (
@@ -908,7 +909,7 @@ export default function SearchPage() {
                   <div
                     className="highlight-content text-sm prose dark:prose-invert max-w-none"
                     dangerouslySetInnerHTML={{
-                      __html: selectedHighlight.html_content || selectedHighlight.text,
+                      __html: renderHighlightHtml(selectedHighlight.html_content, selectedHighlight.text),
                     }}
                   />
                 </div>
@@ -1069,7 +1070,7 @@ export default function SearchPage() {
                         <div
                           className="highlight-content text-base mb-3 prose dark:prose-invert max-w-none"
                           dangerouslySetInnerHTML={{
-                            __html: highlight.html_content || highlight.text,
+                            __html: renderHighlightHtml(highlight.html_content, highlight.text),
                           }}
                         />
                         {highlight.categories && highlight.categories.length > 0 && (

@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { Highlight } from '@/types/database'
 import { addToNotionSyncQueue } from '@/lib/notionSyncQueue'
+import { renderHighlightHtml } from '@/lib/renderHighlightHtml'
 
 export default function ArchivesPage() {
   const [highlights, setHighlights] = useState<Highlight[]>([])
@@ -202,7 +203,7 @@ export default function ArchivesPage() {
                   <div
                     className="highlight-content text-base mb-3 prose dark:prose-invert max-w-none"
                     dangerouslySetInnerHTML={{
-                      __html: highlight.html_content || highlight.text,
+                      __html: renderHighlightHtml(highlight.html_content, highlight.text),
                     }}
                   />
                   {highlight.categories && highlight.categories.length > 0 && (

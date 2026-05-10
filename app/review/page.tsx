@@ -7,6 +7,7 @@ import { useSearchParams, useRouter } from 'next/navigation'
 import { format } from 'date-fns'
 import { Pin, PinOff } from 'lucide-react'
 import { parseIntoParagraphs, groupParagraphsByDividers, ParagraphBlock } from '@/lib/splitHighlightText'
+import { renderHighlightHtml } from '@/lib/renderHighlightHtml'
 import RichTextEditor from '@/components/RichTextEditor'
 import PinDialog from '@/components/PinDialog'
 import { addToNotionSyncQueue } from '@/lib/notionSyncQueue'
@@ -1254,7 +1255,7 @@ function ReviewPageContent() {
                     className="highlight-content text-lg leading-relaxed prose dark:prose-invert max-w-none mb-4 overflow-y-auto"
                     style={{ maxHeight: '24em' }}
                     dangerouslySetInnerHTML={{
-                      __html: current.highlight.html_content || current.highlight.text,
+                      __html: renderHighlightHtml(current.highlight.html_content, current.highlight.text),
                     }}
                   />
 
