@@ -160,14 +160,34 @@ function calculateSimilarity(text1: string, text2: string, idf?: Map<string, num
   return cosineSimilarity(vector1, vector2)
 }
 
-// Normalize months_reviewed from Supabase relation to array of { id, month_year, created_at }.
+// Normalize months_reviewed: union the highlight_months_reviewed rows with months
+// derived from rated daily_assignments. The latter handles "lost signal" cases where
+// a rating saved but the highlight_months_reviewed insert never landed.
 function normalizeMonthsReviewed(h: any): any[] {
-  if (!h.months_reviewed || !Array.isArray(h.months_reviewed)) return []
-  return h.months_reviewed.map((mr: any) => ({
-    id: mr.id,
-    month_year: mr.month_year ?? (typeof mr === 'string' ? mr : null),
-    created_at: mr.created_at,
-  }))
+  const fromTable: { id: string; month_year: string; created_at: string | null }[] =
+    Array.isArray(h.months_reviewed)
+      ? h.months_reviewed.map((mr: any) => ({
+          id: mr.id,
+          month_year: mr.month_year ?? (typeof mr === 'string' ? mr : null),
+          created_at: mr.created_at,
+        }))
+      : []
+
+  const fromRatings: { id: string; month_year: string; created_at: string | null }[] = []
+  if (Array.isArray(h.daily_assignments)) {
+    for (const da of h.daily_assignments) {
+      const d = da?.daily_summary?.date
+      if (!d || da.rating == null) continue
+      const monthYear = String(d).split('T')[0].slice(0, 7)
+      fromRatings.push({ id: `derived-${monthYear}`, month_year: monthYear, created_at: null })
+    }
+  }
+
+  // Table entries take precedence (real id/created_at)
+  const map = new Map<string, { id: string; month_year: string; created_at: string | null }>()
+  for (const mr of fromRatings) if (mr.month_year) map.set(mr.month_year, mr)
+  for (const mr of fromTable) if (mr.month_year) map.set(mr.month_year, mr)
+  return Array.from(map.values()).sort((a, b) => a.month_year.localeCompare(b.month_year))
 }
 
 // Enrich highlight with current month's assigned_date (for "Review on" tags). Uses server's now so it updates when month rolls over.
@@ -193,7 +213,7 @@ function enrichWithAssignedDate(h: any): any {
   return { ...rest, assigned_date, months_reviewed }
 }
 
-const dailyAssignmentsSelect = 'daily_assignments:daily_summary_highlights(id,daily_summary:daily_summaries(id,date))'
+const dailyAssignmentsSelect = 'daily_assignments:daily_summary_highlights(id,rating,daily_summary:daily_summaries(id,date))'
 const monthsReviewedSelect = 'months_reviewed:highlight_months_reviewed(id,month_year,created_at)'
 
 export async function POST(request: NextRequest) {

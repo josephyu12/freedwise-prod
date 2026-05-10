@@ -210,13 +210,40 @@ export default function HighlightsPage() {
 
       let processedHighlights = (data || []).map((h: any) => {
         // Ensure months_reviewed is an array and properly formatted
-        const monthsReviewed = Array.isArray(h.months_reviewed) 
+        const monthsReviewedFromTable = Array.isArray(h.months_reviewed)
           ? h.months_reviewed.map((mr: any) => ({
               id: mr.id,
               month_year: mr.month_year || (typeof mr === 'string' ? mr : null),
               created_at: mr.created_at
             }))
           : []
+
+        // Also derive reviewed months from rated daily_assignments — handles cases
+        // where the rating saved but the highlight_months_reviewed insert failed (lost signal).
+        const monthsReviewedFromRatings: { id: string; month_year: string; created_at: string | null }[] = []
+        if (h.daily_assignments && Array.isArray(h.daily_assignments)) {
+          for (const da of h.daily_assignments) {
+            const assignmentDate = da?.daily_summary?.date
+            if (!assignmentDate || da.rating == null) continue
+            const monthYear = String(assignmentDate).split('T')[0].slice(0, 7)
+            monthsReviewedFromRatings.push({
+              id: `derived-${monthYear}`,
+              month_year: monthYear,
+              created_at: null,
+            })
+          }
+        }
+
+        // Union by month_year (table entries take precedence so we keep their real id/created_at)
+        const monthsReviewedMap = new Map<string, { id: string; month_year: string; created_at: string | null }>()
+        for (const mr of monthsReviewedFromRatings) {
+          if (mr.month_year) monthsReviewedMap.set(mr.month_year, mr)
+        }
+        for (const mr of monthsReviewedFromTable) {
+          if (mr.month_year) monthsReviewedMap.set(mr.month_year, mr)
+        }
+        const monthsReviewed = Array.from(monthsReviewedMap.values())
+          .sort((a, b) => a.month_year.localeCompare(b.month_year))
 
         // Get assigned date for current month and whether this month's assignment has a rating
         let assignedDate: string | null = null
@@ -240,8 +267,7 @@ export default function HighlightsPage() {
 
         const reviewedForCurrentMonth =
           hasRatingThisMonth ||
-          (Array.isArray(monthsReviewed) &&
-            monthsReviewed.some((mr: any) => (mr.month_year || (typeof mr === 'string' ? mr : null)) === currentMonth))
+          monthsReviewed.some((mr) => mr.month_year === currentMonth)
 
         return {
           ...h,

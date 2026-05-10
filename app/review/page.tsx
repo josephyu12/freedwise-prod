@@ -291,18 +291,14 @@ function ReviewPageContent() {
 
   // Background-only: recalculate average rating and auto-archive after a rating is saved.
   // Called fire-and-forget so the UI doesn't wait for it.
+  // The highlight_months_reviewed upsert is intentionally NOT here — it lives on the
+  // critical path so it persists even if the user closes the app immediately after rating.
   const updateHighlightStats = async (
     highlightId: string,
     monthYear: string,
     mo: number,
     y: number
   ) => {
-    ;(supabase.from('highlight_months_reviewed') as any)
-      .upsert(
-        { highlight_id: highlightId, month_year: monthYear },
-        { onConflict: 'highlight_id,month_year' }
-      )
-
     const [{ data: allRatingsData }, { data: highlightData }, { data: lowRatingsWithDates }] = await Promise.all([
       supabase
         .from('daily_summary_highlights')
@@ -359,10 +355,19 @@ function ReviewPageContent() {
       const [y, mo] = today.split('-').map(Number)
       const monthYear = `${y}-${String(mo).padStart(2, '0')}`
 
-      // Critical path: save the rating, then release the UI lock immediately
-      await (supabase.from('daily_summary_highlights') as any)
-        .update({ rating })
-        .eq('id', target.id)
+      // Critical path: save the rating AND mark this month as reviewed (source of truth).
+      // Both must persist before we release the UI lock — otherwise closing the app
+      // immediately after rating loses the highlight_months_reviewed row.
+      await Promise.all([
+        (supabase.from('daily_summary_highlights') as any)
+          .update({ rating })
+          .eq('id', target.id),
+        (supabase.from('highlight_months_reviewed') as any)
+          .upsert(
+            { highlight_id: target.highlight_id, month_year: monthYear },
+            { onConflict: 'highlight_id,month_year' }
+          ),
+      ])
 
       setHighlights((prev) => {
         const updated = prev.map((h) => (h.id === target.id ? { ...h, rating } : h))
@@ -453,10 +458,19 @@ function ReviewPageContent() {
       const [y, mo] = today.split('-').map(Number)
       const monthYear = `${y}-${String(mo).padStart(2, '0')}`
 
-      // Critical path: save the rating, then release the UI lock immediately
-      await (supabase.from('daily_summary_highlights') as any)
-        .update({ rating })
-        .eq('id', current.id)
+      // Critical path: save the rating AND mark this month as reviewed (source of truth).
+      // Both must persist before we release the UI lock — otherwise closing the app
+      // immediately after rating loses the highlight_months_reviewed row.
+      await Promise.all([
+        (supabase.from('daily_summary_highlights') as any)
+          .update({ rating })
+          .eq('id', current.id),
+        (supabase.from('highlight_months_reviewed') as any)
+          .upsert(
+            { highlight_id: current.highlight_id, month_year: monthYear },
+            { onConflict: 'highlight_id,month_year' }
+          ),
+      ])
 
       setHighlights((prev) => {
         const updated = prev.map((h) =>
@@ -909,7 +923,7 @@ function ReviewPageContent() {
               .update({ rating })
               .eq('id', summaryHighlightId)
 
-            ;(supabase.from('highlight_months_reviewed') as any)
+            await (supabase.from('highlight_months_reviewed') as any)
               .upsert(
                 { highlight_id: highlightId, month_year: monthYear },
                 { onConflict: 'highlight_id,month_year' }

@@ -1329,7 +1329,7 @@ export default function DailyPage() {
             if (rating !== null && summaryDate) {
               const [y, mo] = summaryDate.split('-').map(Number)
               const monthYear = `${y}-${String(mo).padStart(2, '0')}`
-              ;(supabase.from('highlight_months_reviewed') as any)
+              await (supabase.from('highlight_months_reviewed') as any)
                 .upsert(
                   { highlight_id: highlightId, month_year: monthYear },
                   { onConflict: 'highlight_id,month_year' }
