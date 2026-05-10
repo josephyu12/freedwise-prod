@@ -32,11 +32,17 @@ These migrations can be applied individually to update existing databases:
    - Required for update operations to find and update the correct blocks in Notion
    - **Date:** 2026-01-XX
 
-5. **`migration_make_highlight_id_nullable_in_sync_queue.sql`** (Latest)
+5. **`migration_make_highlight_id_nullable_in_sync_queue.sql`**
    - Makes `highlight_id` nullable in `notion_sync_queue` table
    - Required for delete operations: when a highlight is deleted, we still need to sync the deletion to Notion
    - Without this, the foreign key CASCADE would delete the queue item when the highlight is deleted
    - **Date:** 2026-01-XX
+
+6. **`migration_resurface_stats.sql`** (Latest)
+   - Adds triggers to keep `highlights.resurface_count` and `highlights.last_resurfaced` in sync
+   - `resurface_count` = number of distinct months reviewed; `last_resurfaced` = most recent rating timestamp
+   - Includes a one-time backfill (these fields were never written by app code prior to this migration)
+   - **Date:** 2026-05-10
 
 ## Migration Order
 
@@ -48,6 +54,7 @@ If applying migrations incrementally, use this order:
 4. `migration_add_fulltext_search.sql`
 5. `migration_add_original_text_to_sync_queue.sql`
 6. `migration_make_highlight_id_nullable_in_sync_queue.sql`
+7. `migration_resurface_stats.sql`
 
 ## Usage
 
@@ -65,6 +72,7 @@ If applying migrations incrementally, use this order:
 \i migration_add_fulltext_search.sql
 \i migration_add_original_text_to_sync_queue.sql
 \i migration_make_highlight_id_nullable_in_sync_queue.sql
+\i migration_resurface_stats.sql
 ```
 
 ## Notes
