@@ -85,11 +85,15 @@ WHERE h.id = stats.highlight_id;
 
 -- ---------------------------------------------------------------------------
 -- 4. One-time backfill of last_resurfaced from the most recent rated assignment.
+--    Anchor at noon UTC so the local-time render lands on the right calendar day
+--    (a bare ds.date::timestamptz = midnight UTC, which shifts to the prior day
+--    in any negative-offset timezone like ET).
 -- ---------------------------------------------------------------------------
 UPDATE highlights h
 SET last_resurfaced = stats.last_rated
 FROM (
-  SELECT dsh.highlight_id, MAX(ds.date)::timestamptz AS last_rated
+  SELECT dsh.highlight_id,
+         (MAX(ds.date)::timestamp + interval '12 hours') AT TIME ZONE 'UTC' AS last_rated
   FROM daily_summary_highlights dsh
   JOIN daily_summaries ds ON ds.id = dsh.daily_summary_id
   WHERE dsh.rating IS NOT NULL

@@ -38,10 +38,16 @@ These migrations can be applied individually to update existing databases:
    - Without this, the foreign key CASCADE would delete the queue item when the highlight is deleted
    - **Date:** 2026-01-XX
 
-6. **`migration_resurface_stats.sql`** (Latest)
+6. **`migration_resurface_stats.sql`**
    - Adds triggers to keep `highlights.resurface_count` and `highlights.last_resurfaced` in sync
    - `resurface_count` = number of distinct months reviewed; `last_resurfaced` = most recent rating timestamp
    - Includes a one-time backfill (these fields were never written by app code prior to this migration)
+   - **Date:** 2026-05-10
+
+7. **`migration_fix_last_resurfaced_tz.sql`** (Latest)
+   - Corrects `last_resurfaced` values that the prior backfill anchored at midnight UTC
+   - Re-anchors at noon UTC so `toLocaleDateString()` renders the right calendar day in negative-offset timezones (ET, etc.)
+   - Idempotent; only touches rows that look like the bad midnight-UTC cast
    - **Date:** 2026-05-10
 
 ## Migration Order
@@ -55,6 +61,7 @@ If applying migrations incrementally, use this order:
 5. `migration_add_original_text_to_sync_queue.sql`
 6. `migration_make_highlight_id_nullable_in_sync_queue.sql`
 7. `migration_resurface_stats.sql`
+8. `migration_fix_last_resurfaced_tz.sql`
 
 ## Usage
 
@@ -73,6 +80,7 @@ If applying migrations incrementally, use this order:
 \i migration_add_original_text_to_sync_queue.sql
 \i migration_make_highlight_id_nullable_in_sync_queue.sql
 \i migration_resurface_stats.sql
+\i migration_fix_last_resurfaced_tz.sql
 ```
 
 ## Notes
