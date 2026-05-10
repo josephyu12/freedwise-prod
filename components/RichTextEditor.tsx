@@ -8,9 +8,11 @@ interface RichTextEditorProps {
   htmlValue?: string
   onChange: (text: string, html: string) => void
   placeholder?: string
+  fullscreen?: boolean
+  onToggleFullscreen?: () => void
 }
 
-export default function RichTextEditor({ value, htmlValue, onChange, placeholder }: RichTextEditorProps) {
+export default function RichTextEditor({ value, htmlValue, onChange, placeholder, fullscreen, onToggleFullscreen }: RichTextEditorProps) {
   const editorRef = useRef<HTMLDivElement>(null)
   const isInternalUpdate = useRef(false)
   const savedSelection = useRef<Range | null>(null)
@@ -359,38 +361,12 @@ export default function RichTextEditor({ value, htmlValue, onChange, placeholder
     }
   }
 
-  return (
-    <div className="relative">
-      {/* Typeform-inspired open editing area */}
-      <div
-        ref={editorRef}
-        contentEditable
-        onInput={handleInput}
-        onPaste={handlePaste}
-        onKeyDown={handleKeyDown}
-        onFocus={() => setIsFocused(true)}
-        onBlur={() => setIsFocused(false)}
-        className="min-h-[2.5rem] px-1 pt-1 pb-3 text-lg leading-relaxed text-gray-900 dark:text-gray-100 focus:outline-none rich-text-editor"
-        style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', overflowWrap: 'break-word', overflow: 'hidden' }}
-        data-placeholder={placeholder || 'Type your answer here...'}
-        suppressContentEditableWarning
-      />
-
-      {/* Bottom accent line */}
-      <div
-        className={`h-0.5 rounded-full transition-all duration-300 ${
-          isFocused
-            ? 'bg-gradient-to-r from-indigo-500 to-purple-500 scale-x-100'
-            : 'bg-gray-200 dark:bg-gray-700 scale-x-100'
-        }`}
-      />
-
-      {/* Floating toolbar — appears on focus */}
-      <div
-        className={`flex items-center gap-0.5 mt-3 transition-all duration-200 ${
-          isFocused ? 'opacity-100 translate-y-0' : 'opacity-40 translate-y-0'
-        }`}
-      >
+  const toolbar = (
+    <div
+      className={`flex items-center gap-0.5 ${fullscreen ? 'mb-3' : 'mt-3'} transition-all duration-200 ${
+        isFocused || fullscreen ? 'opacity-100 translate-y-0' : 'opacity-40 translate-y-0'
+      }`}
+    >
         <button
           type="button"
           onMouseDown={(e) => { e.preventDefault(); execCommand('bold') }}
@@ -460,9 +436,72 @@ export default function RichTextEditor({ value, htmlValue, onChange, placeholder
 
         {/* Hint */}
         <span className="ml-auto text-xs text-gray-300 dark:text-gray-600 select-none hidden sm:inline">
-          Shift + Enter ↵ for line break
+          Shift + Enter ↵ for line break · Blank line ↵↵ to split
         </span>
+
+        {onToggleFullscreen && (
+          <button
+            type="button"
+            onMouseDown={(e) => { e.preventDefault(); onToggleFullscreen() }}
+            className="ml-auto sm:ml-2 w-8 h-8 flex items-center justify-center text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
+            title={fullscreen ? 'Minimize (Esc)' : 'Fullscreen'}
+            aria-label={fullscreen ? 'Minimize editor' : 'Expand editor to fullscreen'}
+          >
+            {fullscreen ? (
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 9l-5-5m0 0v4m0-4h4M15 9l5-5m0 0v4m0-4h-4M9 15l-5 5m0 0v-4m0 4h4M15 15l5 5m0 0v-4m0 4h-4" />
+              </svg>
+            ) : (
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8V4m0 0h4M4 4l5 5m11-5h-4m4 0v4m0-4l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" />
+              </svg>
+            )}
+          </button>
+        )}
       </div>
+  )
+
+  const editor = (
+    <div
+      ref={editorRef}
+      contentEditable
+      onInput={handleInput}
+      onPaste={handlePaste}
+      onKeyDown={handleKeyDown}
+      onFocus={() => setIsFocused(true)}
+      onBlur={() => setIsFocused(false)}
+      className={`${fullscreen ? 'flex-1 min-h-0 overflow-y-auto px-2 py-4 text-xl leading-relaxed' : 'min-h-[2.5rem] px-1 pt-1 pb-3 text-lg leading-relaxed'} text-gray-900 dark:text-gray-100 focus:outline-none rich-text-editor`}
+      style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', overflowWrap: 'break-word', ...(fullscreen ? {} : { overflow: 'hidden' }) }}
+      data-placeholder={placeholder || 'Type your answer here...'}
+      suppressContentEditableWarning
+    />
+  )
+
+  const accent = (
+    <div
+      className={`h-0.5 rounded-full transition-all duration-300 ${
+        isFocused
+          ? 'bg-gradient-to-r from-indigo-500 to-purple-500 scale-x-100'
+          : 'bg-gray-200 dark:bg-gray-700 scale-x-100'
+      }`}
+    />
+  )
+
+  if (fullscreen) {
+    return (
+      <div className="relative flex flex-col flex-1 min-h-0">
+        {toolbar}
+        {accent}
+        {editor}
+      </div>
+    )
+  }
+
+  return (
+    <div className="relative">
+      {editor}
+      {accent}
+      {toolbar}
     </div>
   )
 }

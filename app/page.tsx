@@ -7,6 +7,7 @@ import RichTextEditor from '@/components/RichTextEditor'
 import { addToNotionSyncQueue } from '@/lib/notionSyncQueue'
 import { callRedistribute } from '@/lib/redistribute'
 import { useUnsavedChanges } from '@/hooks/useUnsavedChanges'
+import { splitHtmlByBlankLines } from '@/lib/splitHighlightText'
 
 export default function Home() {
   const [text, setText] = useState('')
@@ -17,7 +18,23 @@ export default function Home() {
   const [showCategoryInput, setShowCategoryInput] = useState(false)
   const [saving, setSaving] = useState(false)
   const [saveSuccess, setSaveSuccess] = useState(false)
+  const [fullscreen, setFullscreen] = useState(false)
   const supabase = createClient()
+
+  // Lock background scroll + handle Esc while fullscreen
+  useEffect(() => {
+    if (!fullscreen) return
+    const prev = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setFullscreen(false)
+    }
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.body.style.overflow = prev
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [fullscreen])
 
   const hasUnsavedChanges = text.trim() !== ''
   useUnsavedChanges(hasUnsavedChanges)
@@ -76,7 +93,7 @@ export default function Home() {
     try {
       setSaving(true)
       setSaveSuccess(false)
-      
+
       const { data: { user } } = await supabase.auth.getUser()
       if (!user) {
         alert('Please log in to add highlights')
@@ -93,33 +110,49 @@ export default function Home() {
         return plainText.trim().toLowerCase().replace(/\s+/g, ' ')
       }
 
-      // Check for duplicate highlights
+      // Split a single submission into multiple highlights on blank-line separators
+      // (mirrors the Notion import behavior). Single-paragraph submissions return
+      // a one-entry array, so the rest of the flow is uniform.
+      const pieces = splitHtmlByBlankLines(highlightHtml, highlightText)
+      if (pieces.length === 0) {
+        setSaving(false)
+        return
+      }
+
+      // Fetch existing highlights once for dedup
       const { data: existingHighlights, error: checkError } = await (supabase
         .from('highlights') as any)
         .select('id, text, html_content')
         .eq('user_id', user.id)
+      if (checkError) console.error('Error checking for duplicates:', checkError)
 
-      if (checkError) {
-        console.error('Error checking for duplicates:', checkError)
-      } else if (existingHighlights && existingHighlights.length > 0) {
-        // Normalize the new highlight's text and HTML
-        const normalizedText = normalizeText(highlightText)
-        const normalizedHtml = normalizeText(highlightHtml)
-        
-        // Check if any existing highlight has the same normalized text or html_content
-        const isDuplicate = existingHighlights.some((h: any) => {
-          const existingText = normalizeText(h.text)
-          const existingHtml = normalizeText(h.html_content)
-          // Check if normalized text matches, or if normalized HTML matches
-          return (normalizedText && (normalizedText === existingText || normalizedText === existingHtml)) ||
-                 (normalizedHtml && (normalizedHtml === existingText || normalizedHtml === existingHtml))
-        })
-        
-        if (isDuplicate) {
-          setSaving(false)
-          alert('Error: Highlight already added.')
-          return
-        }
+      const existingNorms = (existingHighlights || []).map((h: any) => ({
+        text: normalizeText(h.text),
+        html: normalizeText(h.html_content),
+      }))
+
+      // Dedup pieces against existing highlights AND against each other
+      const seen = new Set<string>()
+      const toInsert: { text: string; html: string }[] = []
+      let droppedDupes = 0
+      for (const p of pieces) {
+        const nt = normalizeText(p.text)
+        const nh = normalizeText(p.html)
+        if (!nt) continue
+        if (seen.has(nt)) { droppedDupes++; continue }
+        const isDupe = existingNorms.some((e: { text: string; html: string }) =>
+          (nt && (nt === e.text || nt === e.html)) ||
+          (nh && (nh === e.text || nh === e.html))
+        )
+        if (isDupe) { droppedDupes++; continue }
+        seen.add(nt)
+        toInsert.push(p)
+      }
+
+      if (toInsert.length === 0) {
+        setSaving(false)
+        alert(pieces.length === 1 ? 'Error: Highlight already added.' : 'All highlights were duplicates.')
+        return
       }
 
       // Clear form immediately for better UX
@@ -127,51 +160,50 @@ export default function Home() {
       setHtmlContent('')
       setSelectedCategories([])
 
-      // Generate ID client-side so Notion sync can proceed even if the select
-      // after insert fails due to a mid-request session refresh across tabs
-      const newHighlightId = crypto.randomUUID()
+      // Build rows with client-side IDs so Notion sync can proceed even if the
+      // select after insert fails due to a mid-request session refresh across tabs.
+      const rows = toInsert.map((p) => ({
+        id: crypto.randomUUID(),
+        text: p.text,
+        html_content: p.html || null,
+        resurface_count: 0,
+        average_rating: 0,
+        rating_count: 0,
+        user_id: user.id,
+      }))
 
-      // Save to database
-      const { error } = await (supabase
-        .from('highlights') as any)
-        .insert([
-          {
-            id: newHighlightId,
-            text: highlightText,
-            html_content: highlightHtml,
-            resurface_count: 0,
-            average_rating: 0,
-            rating_count: 0,
-            user_id: user.id,
-          },
-        ])
-
+      const { error } = await (supabase.from('highlights') as any).insert(rows)
       if (error) throw error
 
       // Add categories in background (non-blocking)
       if (selectedCats.length > 0) {
-        const categoryLinks = selectedCats.map((catId) => ({
-          highlight_id: newHighlightId,
-          category_id: catId,
-        }))
+        const categoryLinks = rows.flatMap((r) =>
+          selectedCats.map((catId) => ({ highlight_id: r.id, category_id: catId }))
+        )
         ;(supabase.from('highlight_categories') as any).insert(categoryLinks).catch((err: any) => {
           console.error('Error adding categories:', err)
         })
       }
 
-      // Add to Notion sync queue via deduplicating API (non-blocking)
-      addToNotionSyncQueue({
-        highlightId: newHighlightId,
-        operationType: 'add',
-        text: highlightText,
-        htmlContent: highlightHtml,
-      }).catch(() => {})
+      // Add each new highlight to the Notion sync queue (non-blocking)
+      for (const r of rows) {
+        addToNotionSyncQueue({
+          highlightId: r.id,
+          operationType: 'add',
+          text: r.text,
+          htmlContent: r.html_content,
+        }).catch(() => {})
+      }
 
-      // Redistribute: place only this new highlight on a remaining day
-      await callRedistribute([newHighlightId])
+      // Redistribute: place the new highlights on remaining days
+      await callRedistribute(rows.map((r) => r.id))
 
       setSaveSuccess(true)
       setTimeout(() => setSaveSuccess(false), 2000)
+      if (droppedDupes > 0) {
+        // Best-effort notice when some — but not all — pieces were skipped
+        console.warn(`Skipped ${droppedDupes} duplicate highlight(s) during bulk insert`)
+      }
     } catch (error) {
       console.error('Error adding highlight:', error)
       // Restore form on error
@@ -196,8 +228,11 @@ export default function Home() {
           </div>
 
           {/* Quick Add — Typeform-style open form */}
-          <form onSubmit={handleSubmit} className="mb-14 sm:mb-16">
-            <div className="glass-card p-6 sm:p-8">
+          <form
+            onSubmit={handleSubmit}
+            className={fullscreen ? 'fixed inset-0 z-50 flex flex-col p-4 sm:p-6 bg-white dark:bg-gray-900' : 'mb-14 sm:mb-16'}
+          >
+            <div className={fullscreen ? 'flex-1 flex flex-col min-h-0 p-4 sm:p-6' : 'glass-card p-6 sm:p-8'}>
               <RichTextEditor
                 value={text}
                 htmlValue={htmlContent}
@@ -206,9 +241,11 @@ export default function Home() {
                   setHtmlContent(newHtml)
                 }}
                 placeholder="What do you want to remember?"
+                fullscreen={fullscreen}
+                onToggleFullscreen={() => setFullscreen((v) => !v)}
               />
-              
-              <div className="flex flex-col sm:flex-row sm:items-center gap-3 mt-6">
+
+              <div className={`flex flex-col sm:flex-row sm:items-center gap-3 ${fullscreen ? 'mt-4' : 'mt-6'}`}>
                 <div className="flex-1 flex flex-wrap gap-2">
                   {categories.map((cat) => (
                     <button

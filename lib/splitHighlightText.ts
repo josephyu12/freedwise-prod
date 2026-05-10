@@ -132,6 +132,91 @@ export function parseIntoParagraphs(
 }
 
 /**
+ * Split rich-text composer output into multiple highlights using blank lines
+ * as separators. Mirrors Notion import semantics: a single empty block
+ * (a <p>/<div> with no text, even if it contains a <br>) marks a highlight
+ * boundary. Consecutive empties collapse — multiple blank lines === one separator.
+ *
+ * Returns a single-entry array if there are no blank-line separators, so callers
+ * can always iterate the result as the list of highlights to create.
+ */
+export function splitHtmlByBlankLines(
+  htmlContent: string | null | undefined,
+  plainText: string
+): { text: string; html: string }[] {
+  const source = (htmlContent || '').trim()
+  const fallbackText = (plainText || '').trim()
+
+  if (!source && !fallbackText) return []
+
+  // SSR / no rich block structure: split plain text on blank lines
+  if (typeof DOMParser === 'undefined' || !/<(p|div|ul|ol|li|h[1-6]|blockquote|pre|br)\b/i.test(source)) {
+    const text = (source ? source.replace(/<[^>]*>/g, '') : fallbackText).trim()
+    const pieces = text.split(/\n\s*\n+/).map((s) => s.trim()).filter(Boolean)
+    if (pieces.length <= 1) {
+      return text ? [{ text, html: source || text }] : []
+    }
+    return pieces.map((t) => ({ text: t, html: t }))
+  }
+
+  const parser = new DOMParser()
+  const doc = parser.parseFromString(`<body>${source}</body>`, 'text/html')
+  const body = doc.body
+
+  const SEPARATOR_TAGS = new Set(['p', 'div', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'blockquote'])
+
+  const groups: { html: string; text: string }[] = []
+  let currentHtml = ''
+  let currentText: string[] = []
+
+  const flush = () => {
+    const text = currentText.join('\n').trim()
+    if (text) groups.push({ html: currentHtml.trim(), text })
+    currentHtml = ''
+    currentText = []
+  }
+
+  for (const node of Array.from(body.childNodes)) {
+    if (node.nodeType === Node.TEXT_NODE) {
+      const txt = node.textContent || ''
+      if (txt.trim()) {
+        currentHtml += txt
+        currentText.push(txt.trim())
+      }
+      continue
+    }
+    if (node.nodeType !== Node.ELEMENT_NODE) continue
+
+    const el = node as Element
+    const tag = el.tagName.toLowerCase()
+    const text = (el.textContent || '').trim()
+
+    // Empty separator block — flush current group
+    if (SEPARATOR_TAGS.has(tag) && text === '') {
+      flush()
+      continue
+    }
+
+    // <br> at the top level is a soft break, not a separator
+    if (tag === 'br') {
+      currentHtml += '<br>'
+      continue
+    }
+
+    currentHtml += (el as HTMLElement).outerHTML
+    if (text) currentText.push(text)
+  }
+  flush()
+
+  if (groups.length === 0) {
+    const text = (body.textContent || '').trim()
+    return text ? [{ text, html: source }] : []
+  }
+
+  return groups
+}
+
+/**
  * Group paragraphs according to where split points are placed.
  * splitPoints is a Set of indices — a split at index `i` means
  * there's a cut between paragraph[i] and paragraph[i+1].
