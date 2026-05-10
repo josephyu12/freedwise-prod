@@ -475,6 +475,27 @@ select.input-boxed-elegant {
   white-space: pre-line;
 }
 
+/* Notion-style spacing between paragraphs/blocks inside a highlight card.
+   Covers <p> (Notion import), <div> (Chrome contenteditable Enter), and
+   <br> (Firefox / pasted content). */
+.highlight-content p,
+.highlight-content > div {
+  margin: 0.85em 0;
+}
+.highlight-content > p:first-child,
+.highlight-content > div:first-child {
+  margin-top: 0;
+}
+.highlight-content > p:last-child,
+.highlight-content > div:last-child {
+  margin-bottom: 0;
+}
+.highlight-content br {
+  content: "";
+  display: block;
+  margin-top: 0.6em;
+}
+
 @media (prefers-color-scheme: dark) {
   .highlight-content,
   .highlight-content * {
