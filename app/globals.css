@@ -479,15 +479,13 @@ select.input-boxed-elegant {
    Covers <p> (Notion import), <div> (Chrome contenteditable Enter), and
    <br> (Firefox / pasted content). */
 .highlight-content p,
-.highlight-content > div {
+.highlight-content div {
   margin: 0.85em 0;
 }
-.highlight-content > p:first-child,
-.highlight-content > div:first-child {
+.highlight-content > *:first-child {
   margin-top: 0;
 }
-.highlight-content > p:last-child,
-.highlight-content > div:last-child {
+.highlight-content > *:last-child {
   margin-bottom: 0;
 }
 .highlight-content br {
