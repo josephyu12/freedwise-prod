@@ -497,16 +497,16 @@ export default function HighlightsPage() {
         })
       }
 
-      // Redistribute daily assignments (await so the new highlights are placed before we show success)
-      await callRedistribute(rows.map((r) => r.id))
-      // Refresh highlights after redistribution to show assigned date
-      loadHighlights()
-
       setSaveSuccess(true)
       setTimeout(() => setSaveSuccess(false), 2000)
       if (droppedDupes > 0) {
         console.warn(`Skipped ${droppedDupes} duplicate highlight(s) during bulk insert`)
       }
+
+      // Redistribute + refresh in the background so the UI doesn't block on a slow API
+      callRedistribute(rows.map((r) => r.id))
+        .catch(() => {})
+        .then(() => loadHighlights())
     } catch (error) {
       console.error('Error adding highlight:', error)
       // Restore form on error
@@ -1085,7 +1085,7 @@ export default function HighlightsPage() {
             onSubmit={handleSubmit}
             className={
               fullscreen
-                ? 'fixed inset-0 z-50 flex flex-col p-4 sm:p-6 bg-white dark:bg-gray-900'
+                ? 'fixed inset-0 z-50 flex flex-col p-4 sm:p-6 bg-white dark:bg-gray-900 fullscreen-zoom-in'
                 : 'mb-6 sm:mb-8 bg-white dark:bg-gray-800 p-4 sm:p-6 rounded-xl shadow-lg border border-gray-200 dark:border-gray-700'
             }
           >

@@ -195,11 +195,11 @@ export default function Home() {
         }).catch(() => {})
       }
 
-      // Redistribute: place the new highlights on remaining days
-      await callRedistribute(rows.map((r) => r.id))
-
       setSaveSuccess(true)
       setTimeout(() => setSaveSuccess(false), 2000)
+
+      // Redistribute in the background so the UI doesn't block on a slow API
+      callRedistribute(rows.map((r) => r.id)).catch(() => {})
       if (droppedDupes > 0) {
         // Best-effort notice when some — but not all — pieces were skipped
         console.warn(`Skipped ${droppedDupes} duplicate highlight(s) during bulk insert`)
@@ -230,7 +230,7 @@ export default function Home() {
           {/* Quick Add — Typeform-style open form */}
           <form
             onSubmit={handleSubmit}
-            className={fullscreen ? 'fixed inset-0 z-50 flex flex-col p-4 sm:p-6 bg-white dark:bg-gray-900' : 'mb-14 sm:mb-16'}
+            className={fullscreen ? 'fixed inset-0 z-50 flex flex-col p-4 sm:p-6 bg-white dark:bg-gray-900 fullscreen-zoom-in' : 'mb-14 sm:mb-16'}
           >
             <div className={fullscreen ? 'flex-1 flex flex-col min-h-0 p-4 sm:p-6' : 'glass-card p-6 sm:p-8'}>
               <RichTextEditor
