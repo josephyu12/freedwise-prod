@@ -140,7 +140,7 @@ function ReviewPageContent() {
             highlight_id,
             rating,
             daily_summaries!inner(id),
-            highlight:highlights (
+            highlight:highlights!inner (
               id,
               text,
               html_content,
@@ -154,6 +154,7 @@ function ReviewPageContent() {
           `)
           .eq('daily_summaries.date', today)
           .eq('daily_summaries.user_id', user.id)
+          .eq('highlight.archived', false)
           .order('rating', { ascending: false, nullsFirst: true })
           .order('id', { ascending: true }),
       ])

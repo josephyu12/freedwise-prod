@@ -372,7 +372,7 @@ export default function DailyPage() {
             id,
             highlight_id,
             rating,
-            highlight:highlights (
+            highlight:highlights!inner (
               id,
               text,
               html_content,
@@ -396,6 +396,7 @@ export default function DailyPage() {
             )
           `)
           .eq('daily_summary_id', summaryData.id)
+          .eq('highlight.archived', false)
           .order('rating', { ascending: false, nullsFirst: false })
           .order('id', { ascending: true })
 

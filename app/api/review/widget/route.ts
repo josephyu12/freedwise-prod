@@ -104,16 +104,18 @@ export async function GET(request: NextRequest) {
         `
         id,
         highlight_id,
-        highlight:highlights (
+        highlight:highlights!inner (
           id,
           text,
           html_content,
           source,
-          author
+          author,
+          archived
         )
       `
       )
       .eq('daily_summary_id', summary.id)
+      .eq('highlight.archived', false)
       .is('rating', null)
       .order('id', { ascending: true })
 

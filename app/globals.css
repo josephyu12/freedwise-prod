@@ -469,6 +469,12 @@ select.input-boxed-elegant {
   color: #000000 !important;
 }
 
+/* Preserve newlines in plain-text fallback (when html_content is missing
+   and we render `text` directly, raw \n would otherwise collapse). */
+.highlight-content {
+  white-space: pre-line;
+}
+
 @media (prefers-color-scheme: dark) {
   .highlight-content,
   .highlight-content * {

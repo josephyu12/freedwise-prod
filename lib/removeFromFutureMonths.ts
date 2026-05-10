@@ -6,7 +6,7 @@ export async function removeFromFutureMonths(supabase: SupabaseClient, highlight
   const { data: futureSummaries } = await supabase
     .from('daily_summaries')
     .select('id')
-    .gt('date', today)
+    .gte('date', today)
 
   if (!futureSummaries || futureSummaries.length === 0) return
 
