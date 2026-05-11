@@ -3,14 +3,16 @@
 import { useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 
-const UNSAVED_MESSAGE = 'You have unsaved changes. Are you sure you want to leave?'
+const DEFAULT_MESSAGE = 'You have unsaved changes. Are you sure you want to leave?'
 
 /**
  * Registers beforeunload and blocks in-app navigation when there are unsaved changes
  * in a highlight entry/edit block. Call with hasUnsavedChanges true when the user
  * has typed in a highlight field and not yet saved.
+ *
+ * @param message Optional confirm-dialog text shown when intercepting internal link clicks.
  */
-export function useUnsavedChanges(hasUnsavedChanges: boolean) {
+export function useUnsavedChanges(hasUnsavedChanges: boolean, message: string = DEFAULT_MESSAGE) {
   const router = useRouter()
 
   // Browser refresh/close/navigate to external site
@@ -35,7 +37,7 @@ export function useUnsavedChanges(hasUnsavedChanges: boolean) {
         if (url.origin !== window.location.origin) return
         if (url.pathname === window.location.pathname && url.search === window.location.search) return
         e.preventDefault()
-        if (window.confirm(UNSAVED_MESSAGE)) {
+        if (window.confirm(message)) {
           router.push(url.pathname + url.search + url.hash)
         }
       } catch {
@@ -44,5 +46,5 @@ export function useUnsavedChanges(hasUnsavedChanges: boolean) {
     }
     document.addEventListener('click', onClick, true)
     return () => document.removeEventListener('click', onClick, true)
-  }, [hasUnsavedChanges, router])
+  }, [hasUnsavedChanges, router, message])
 }

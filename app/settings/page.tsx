@@ -401,13 +401,42 @@ export default function SettingsPage() {
 
             {settings.enabled && settings.notion_api_key && settings.notion_page_id && (
               <div className="mt-6 pt-6 border-t border-gray-200 dark:border-gray-700">
+                <div className="rounded-lg border-2 border-amber-300 dark:border-amber-500/40 bg-amber-50 dark:bg-amber-900/15 p-4 mb-4">
+                  <div className="flex items-start gap-3">
+                    <svg
+                      className="w-5 h-5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5"
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={1.8}
+                        d="M12 9v2m0 4h.01M5.07 19h13.86c1.54 0 2.5-1.67 1.73-3L13.73 4a2 2 0 00-3.46 0L3.34 16c-.77 1.33.19 3 1.73 3z"
+                      />
+                    </svg>
+                    <div>
+                      <h3 className="text-sm font-semibold text-amber-900 dark:text-amber-200">
+                        Sync to Notion is manual — you have to press the button below
+                      </h3>
+                      <p className="text-xs mt-1.5 text-amber-800 dark:text-amber-300/90 leading-relaxed">
+                        Adding, editing, and deleting highlights in Freedwise queues changes locally
+                        but does <strong>not</strong> push them to Notion on its own. Press
+                        <strong> Sync Notion</strong> below whenever you want your Notion page
+                        updated. The pending count on the button shows how many changes are waiting.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
                 <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
                   <div>
                     <h3 className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>
-                      Manual sync
+                      Run sync now
                     </h3>
                     <p className="text-xs mt-1" style={{ color: 'var(--text-tertiary)' }}>
-                      Edits and new highlights are queued automatically. Click below to push them to Notion.
+                      Keep this tab open while the sync runs.
                     </p>
                   </div>
                   <NotionSyncButton />
