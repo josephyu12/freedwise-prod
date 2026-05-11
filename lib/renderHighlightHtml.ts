@@ -1,29 +1,33 @@
 // Block-level tags that imply the content is already structured into paragraphs.
-const HAS_BLOCK_TAG = /<(p|div|ul|ol|li|h[1-6]|blockquote|pre|table|br)\b/i
+// Intentionally excludes <br> — we normalize <br> to `\n` before this check so
+// it participates in paragraph splitting like a regular newline.
+const HAS_BLOCK_TAG = /<(p|div|ul|ol|li|h[1-6]|blockquote|pre|table)\b/i
 
 // Paragraph-like blocks whose internal `\n` characters should still produce
 // paragraph breaks (so a `<p>foo\nbar</p>` renders as two visually-separated
 // paragraphs instead of one paragraph with a single line break).
 const PARA_BLOCK_SPLIT = /<(p|div)\b([^>]*)>([\s\S]*?)<\/\1>/gi
 
+const BR_TAG = /<br\s*\/?>/gi
+
 /**
  * Build the HTML string for rendering a highlight card.
  *
- * Some highlights are stored as plain text with raw `\n` characters (e.g.
- * legacy entries, or paths that bypass the rich-text editor). Others are
- * stored as a single `<p>` (or `<div>`) wrapper with `\n`-separated lines
- * inside. When either is passed straight into `dangerouslySetInnerHTML`,
- * the newlines render as a single line break with no paragraph margin, so
- * the visual paragraphs run together. This helper normalizes both cases
- * so the `.highlight-content p` margin gives Notion-style spacing
- * everywhere.
+ * Highlights arrive in inconsistent shapes: plain text with raw `\n`, a single
+ * `<p>` (or `<div>`) wrapper with `\n`-separated lines inside, or `<br>`-
+ * separated runs from older imports and pasted content. Rendered as-is, all of
+ * those collapse paragraphs together. This helper normalizes them so the
+ * `.highlight-content p` margin gives Notion-style spacing everywhere.
  */
 export function renderHighlightHtml(
   htmlContent: string | null | undefined,
   text: string | null | undefined
 ): string {
-  const source = (htmlContent?.trim() || text?.trim() || '')
+  let source = (htmlContent?.trim() || text?.trim() || '')
   if (!source) return ''
+
+  // Treat <br> like a newline so it participates in paragraph splitting below.
+  source = source.replace(BR_TAG, '\n')
 
   if (!HAS_BLOCK_TAG.test(source)) {
     const paragraphs = source
