@@ -421,7 +421,7 @@ export default function ImportPage() {
                       className="p-3 bg-white dark:bg-gray-800 rounded border border-gray-200 dark:border-gray-700"
                     >
                       <div
-                        className="highlight-preview text-base max-w-none"
+                        className="highlight-content highlight-preview text-base max-w-none"
                         dangerouslySetInnerHTML={{ __html: highlight.html }}
                       />
                     </div>
