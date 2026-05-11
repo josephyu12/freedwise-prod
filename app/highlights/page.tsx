@@ -153,6 +153,11 @@ export default function HighlightsPage() {
 
       // Get all data first (we need to filter by review status, which requires all highlights)
       // Supabase has a default limit of 1000, so we need to explicitly request more or fetch in batches
+      // The previous version of this query embedded `daily_assignments` for every
+      // highlight (one row per (highlight, day)). With a few thousand highlights
+      // that became megabytes of joined rows and pushed page load past 30s.
+      // We now fetch only what's needed for the list view, and pull current-month
+      // assignments in a single small follow-up query below.
       let query = supabase
         .from('highlights')
         .select(`
@@ -173,14 +178,6 @@ export default function HighlightsPage() {
             id,
             month_year,
             created_at
-          ),
-          daily_assignments:daily_summary_highlights (
-            id,
-            daily_summary:daily_summaries (
-              id,
-              date
-            ),
-            rating
           )
         `, { count: 'exact' })
         .eq('user_id', user.id)
@@ -224,67 +221,49 @@ export default function HighlightsPage() {
       const year = now.getFullYear()
       const month = now.getMonth() + 1
       const currentMonth = `${year}-${String(month).padStart(2, '0')}`
+      const currentMonthStart = `${year}-${String(month).padStart(2, '0')}-01`
+      const currentMonthEnd = `${year}-${String(month).padStart(2, '0')}-${String(new Date(year, month, 0).getDate()).padStart(2, '0')}`
+
+      // Small focused query: only this month's daily_summaries + their assignments.
+      // Replaces the heavy nested join from the previous version of loadHighlights.
+      const currentAssignments = new Map<string, { date: string; rating: 'low' | 'med' | 'high' | null }>()
+      try {
+        const { data: monthSummaries } = await (supabase
+          .from('daily_summaries') as any)
+          .select('date, daily_summary_highlights(highlight_id, rating)')
+          .eq('user_id', user.id)
+          .gte('date', currentMonthStart)
+          .lte('date', currentMonthEnd)
+        for (const ds of (monthSummaries || []) as Array<{ date: string; daily_summary_highlights: Array<{ highlight_id: string; rating: 'low' | 'med' | 'high' | null }> }>) {
+          for (const dsh of ds.daily_summary_highlights || []) {
+            currentAssignments.set(dsh.highlight_id, { date: ds.date, rating: dsh.rating })
+          }
+        }
+      } catch (e) {
+        console.warn('Failed to load current-month assignments:', e)
+      }
 
       let processedHighlights = (data || []).map((h: any) => {
         // Ensure months_reviewed is an array and properly formatted
-        const monthsReviewedFromTable = Array.isArray(h.months_reviewed)
+        const monthsReviewed = (Array.isArray(h.months_reviewed)
           ? h.months_reviewed.map((mr: any) => ({
               id: mr.id,
               month_year: mr.month_year || (typeof mr === 'string' ? mr : null),
-              created_at: mr.created_at
+              created_at: mr.created_at,
             }))
           : []
+        )
+          .filter((mr: { month_year: string | null }) => !!mr.month_year)
+          .sort((a: { month_year: string }, b: { month_year: string }) => a.month_year.localeCompare(b.month_year))
 
-        // Also derive reviewed months from rated daily_assignments — handles cases
-        // where the rating saved but the highlight_months_reviewed insert failed (lost signal).
-        const monthsReviewedFromRatings: { id: string; month_year: string; created_at: string | null }[] = []
-        if (h.daily_assignments && Array.isArray(h.daily_assignments)) {
-          for (const da of h.daily_assignments) {
-            const assignmentDate = da?.daily_summary?.date
-            if (!assignmentDate || da.rating == null) continue
-            const monthYear = String(assignmentDate).split('T')[0].slice(0, 7)
-            monthsReviewedFromRatings.push({
-              id: `derived-${monthYear}`,
-              month_year: monthYear,
-              created_at: null,
-            })
-          }
-        }
-
-        // Union by month_year (table entries take precedence so we keep their real id/created_at)
-        const monthsReviewedMap = new Map<string, { id: string; month_year: string; created_at: string | null }>()
-        for (const mr of monthsReviewedFromRatings) {
-          if (mr.month_year) monthsReviewedMap.set(mr.month_year, mr)
-        }
-        for (const mr of monthsReviewedFromTable) {
-          if (mr.month_year) monthsReviewedMap.set(mr.month_year, mr)
-        }
-        const monthsReviewed = Array.from(monthsReviewedMap.values())
-          .sort((a, b) => a.month_year.localeCompare(b.month_year))
-
-        // Get assigned date for current month and whether this month's assignment has a rating
-        let assignedDate: string | null = null
-        let hasRatingThisMonth = false
-        if (h.daily_assignments && Array.isArray(h.daily_assignments) && h.daily_assignments.length > 0) {
-          const currentMonthStart = `${year}-${String(month).padStart(2, '0')}-01`
-          const currentMonthEnd = `${year}-${String(month).padStart(2, '0')}-${String(new Date(year, month, 0).getDate()).padStart(2, '0')}`
-
-          const currentMonthAssignment = h.daily_assignments.find((da: any) => {
-            const assignmentDate = da.daily_summary?.date
-            if (!assignmentDate) return false
-            return assignmentDate >= currentMonthStart && assignmentDate <= currentMonthEnd
-          })
-
-          if (currentMonthAssignment?.daily_summary?.date) {
-            assignedDate = currentMonthAssignment.daily_summary.date
-            // Consider reviewed if they have a rating for this month's assignment (source of truth alongside highlight_months_reviewed)
-            hasRatingThisMonth = currentMonthAssignment.rating != null
-          }
-        }
+        // Current month's assignment (date + rating) comes from the small follow-up query above
+        const currentAssignment = currentAssignments.get(h.id)
+        const assignedDate = currentAssignment?.date || null
+        const hasRatingThisMonth = currentAssignment?.rating != null
 
         const reviewedForCurrentMonth =
           hasRatingThisMonth ||
-          monthsReviewed.some((mr) => mr.month_year === currentMonth)
+          monthsReviewed.some((mr: { month_year: string }) => mr.month_year === currentMonth)
 
         return {
           ...h,
@@ -424,17 +403,20 @@ export default function HighlightsPage() {
         return
       }
 
-      // Fetch existing highlights once for dedup
+      // Fetch existing highlights once for dedup. Only `text` — html_content
+      // can be huge per row and isn't needed once text is normalized.
       const { data: existingHighlights, error: checkError } = await (supabase
         .from('highlights') as any)
-        .select('id, text, html_content')
+        .select('id, text')
         .eq('user_id', user.id)
       if (checkError) console.error('Error checking for duplicates:', checkError)
 
-      const existingNorms = (existingHighlights || []).map((h: any) => ({
-        text: normalizeText(h.text),
-        html: normalizeText(h.html_content),
-      }))
+      // Build a Set of normalized existing texts for O(1) lookup
+      const existingSet = new Set<string>()
+      for (const h of (existingHighlights || [])) {
+        const n = normalizeText((h as { text: string }).text)
+        if (n) existingSet.add(n)
+      }
 
       // Dedup pieces against existing highlights and against each other
       const seen = new Set<string>()
@@ -442,14 +424,8 @@ export default function HighlightsPage() {
       let droppedDupes = 0
       for (const p of pieces) {
         const nt = normalizeText(p.text)
-        const nh = normalizeText(p.html)
         if (!nt) continue
-        if (seen.has(nt)) { droppedDupes++; continue }
-        const isDupe = existingNorms.some((e: { text: string; html: string }) =>
-          (nt && (nt === e.text || nt === e.html)) ||
-          (nh && (nh === e.text || nh === e.html))
-        )
-        if (isDupe) { droppedDupes++; continue }
+        if (seen.has(nt) || existingSet.has(nt)) { droppedDupes++; continue }
         seen.add(nt)
         toInsert.push(p)
       }
@@ -490,12 +466,16 @@ export default function HighlightsPage() {
         })
       }
 
-      // Add each new highlight to the Notion sync queue (non-blocking)
-      for (const r of rows) {
+      // Queue each new highlight for Notion, then trigger sync directly so we
+      // don't wait the helper's 2s debounce.
+      const queuePromises = rows.map((r) =>
         addToSyncQueue(r.id, 'add', r.text, r.html_content).catch((err: any) => {
           console.error('Error adding to sync queue:', err)
         })
-      }
+      )
+      Promise.all(queuePromises).then(() => {
+        fetch('/api/notion/sync', { method: 'POST' }).catch(() => {})
+      })
 
       setSaveSuccess(true)
       setTimeout(() => setSaveSuccess(false), 2000)

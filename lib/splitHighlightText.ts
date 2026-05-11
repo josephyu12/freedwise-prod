@@ -137,6 +137,10 @@ export function parseIntoParagraphs(
  * (a <p>/<div> with no text, even if it contains a <br>) marks a highlight
  * boundary. Consecutive empties collapse — multiple blank lines === one separator.
  *
+ * Also normalizes browser contentEditable noise: top-level <div> wrappers (which
+ * Chrome emits on every Enter) are unwrapped into clean <p> paragraphs so the
+ * stored html_content is semantic, not "testing<div>more</div>".
+ *
  * Returns a single-entry array if there are no blank-line separators, so callers
  * can always iterate the result as the list of highlights to create.
  */
@@ -149,14 +153,20 @@ export function splitHtmlByBlankLines(
 
   if (!source && !fallbackText) return []
 
-  // SSR / no rich block structure: split plain text on blank lines
+  const escapeHtml = (s: string) =>
+    s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+
+  // SSR / no rich block structure: split plain text on blank lines.
+  // Wrap each piece in <p> so the stored HTML stays semantic.
   if (typeof DOMParser === 'undefined' || !/<(p|div|ul|ol|li|h[1-6]|blockquote|pre|br)\b/i.test(source)) {
     const text = (source ? source.replace(/<[^>]*>/g, '') : fallbackText).trim()
     const pieces = text.split(/\n\s*\n+/).map((s) => s.trim()).filter(Boolean)
-    if (pieces.length <= 1) {
-      return text ? [{ text, html: source || text }] : []
+    if (pieces.length === 0) return []
+    if (pieces.length === 1) {
+      // Preserve any inline formatting (b/i/u/etc.) the user added
+      return [{ text: pieces[0], html: source || escapeHtml(pieces[0]) }]
     }
-    return pieces.map((t) => ({ text: t, html: t }))
+    return pieces.map((t) => ({ text: t, html: `<p>${escapeHtml(t)}</p>` }))
   }
 
   const parser = new DOMParser()
@@ -164,24 +174,36 @@ export function splitHtmlByBlankLines(
   const body = doc.body
 
   const SEPARATOR_TAGS = new Set(['p', 'div', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'blockquote'])
+  const LIST_TAGS = new Set(['ul', 'ol'])
+  const PRESERVE_TAGS = new Set(['ul', 'ol', 'pre', 'blockquote', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6'])
 
-  const groups: { html: string; text: string }[] = []
-  let currentHtml = ''
-  let currentText: string[] = []
+  type Para = { html: string; text: string; wrapped: boolean }
+  const groups: Para[][] = []
+  let currentGroup: Para[] = []
+  let paraHtml = ''
+  let paraText = ''
 
-  const flush = () => {
-    const text = currentText.join('\n').trim()
-    if (text) groups.push({ html: currentHtml.trim(), text })
-    currentHtml = ''
-    currentText = []
+  const flushPara = () => {
+    const text = paraText.replace(/\s+/g, ' ').trim()
+    if (text || paraHtml.trim()) {
+      currentGroup.push({ html: paraHtml, text, wrapped: false })
+    }
+    paraHtml = ''
+    paraText = ''
+  }
+
+  const flushGroup = () => {
+    flushPara()
+    if (currentGroup.length > 0) groups.push(currentGroup)
+    currentGroup = []
   }
 
   for (const node of Array.from(body.childNodes)) {
     if (node.nodeType === Node.TEXT_NODE) {
       const txt = node.textContent || ''
-      if (txt.trim()) {
-        currentHtml += txt
-        currentText.push(txt.trim())
+      if (txt) {
+        paraHtml += escapeHtml(txt)
+        paraText += txt
       }
       continue
     }
@@ -189,31 +211,59 @@ export function splitHtmlByBlankLines(
 
     const el = node as Element
     const tag = el.tagName.toLowerCase()
-    const text = (el.textContent || '').trim()
+    const elText = (el.textContent || '').trim()
 
-    // Empty separator block — flush current group
-    if (SEPARATOR_TAGS.has(tag) && text === '') {
-      flush()
-      continue
-    }
-
-    // <br> at the top level is a soft break, not a separator
     if (tag === 'br') {
-      currentHtml += '<br>'
+      paraHtml += '<br>'
       continue
     }
 
-    currentHtml += (el as HTMLElement).outerHTML
-    if (text) currentText.push(text)
+    if (SEPARATOR_TAGS.has(tag)) {
+      // Empty block (e.g. <div><br></div>) = highlight separator
+      if (elText === '') {
+        flushGroup()
+        continue
+      }
+      // Non-empty top-level block: emit as its own paragraph.
+      flushPara()
+      paraHtml = el.innerHTML
+      paraText = el.textContent || ''
+      currentGroup.push({ html: paraHtml, text: paraText.replace(/\s+/g, ' ').trim(), wrapped: false })
+      paraHtml = ''
+      paraText = ''
+      continue
+    }
+
+    if (LIST_TAGS.has(tag) || PRESERVE_TAGS.has(tag)) {
+      flushPara()
+      currentGroup.push({
+        html: (el as HTMLElement).outerHTML,
+        text: (el.textContent || '').replace(/\s+/g, ' ').trim(),
+        wrapped: true,
+      })
+      continue
+    }
+
+    // Inline element — fold into the current paragraph
+    paraHtml += (el as HTMLElement).outerHTML
+    paraText += el.textContent || ''
   }
-  flush()
+  flushGroup()
 
   if (groups.length === 0) {
     const text = (body.textContent || '').trim()
-    return text ? [{ text, html: source }] : []
+    return text ? [{ text, html: `<p>${escapeHtml(text)}</p>` }] : []
   }
 
   return groups
+    .map((paragraphs) => {
+      const html = paragraphs
+        .map((p) => (p.wrapped ? p.html : `<p>${p.html}</p>`))
+        .join('')
+      const text = paragraphs.map((p) => p.text).filter(Boolean).join('\n')
+      return { html, text }
+    })
+    .filter((g) => g.text.length > 0)
 }
 
 /**

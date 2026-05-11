@@ -119,17 +119,20 @@ export default function Home() {
         return
       }
 
-      // Fetch existing highlights once for dedup
+      // Fetch existing highlights once for dedup. Only `text` — html_content
+      // can be huge per row and isn't needed once text is normalized.
       const { data: existingHighlights, error: checkError } = await (supabase
         .from('highlights') as any)
-        .select('id, text, html_content')
+        .select('id, text')
         .eq('user_id', user.id)
       if (checkError) console.error('Error checking for duplicates:', checkError)
 
-      const existingNorms = (existingHighlights || []).map((h: any) => ({
-        text: normalizeText(h.text),
-        html: normalizeText(h.html_content),
-      }))
+      // Build a Set of normalized existing texts for O(1) lookup
+      const existingSet = new Set<string>()
+      for (const h of (existingHighlights || [])) {
+        const n = normalizeText((h as { text: string }).text)
+        if (n) existingSet.add(n)
+      }
 
       // Dedup pieces against existing highlights AND against each other
       const seen = new Set<string>()
@@ -137,14 +140,8 @@ export default function Home() {
       let droppedDupes = 0
       for (const p of pieces) {
         const nt = normalizeText(p.text)
-        const nh = normalizeText(p.html)
         if (!nt) continue
-        if (seen.has(nt)) { droppedDupes++; continue }
-        const isDupe = existingNorms.some((e: { text: string; html: string }) =>
-          (nt && (nt === e.text || nt === e.html)) ||
-          (nh && (nh === e.text || nh === e.html))
-        )
-        if (isDupe) { droppedDupes++; continue }
+        if (seen.has(nt) || existingSet.has(nt)) { droppedDupes++; continue }
         seen.add(nt)
         toInsert.push(p)
       }
@@ -185,15 +182,19 @@ export default function Home() {
         })
       }
 
-      // Add each new highlight to the Notion sync queue (non-blocking)
-      for (const r of rows) {
+      // Queue each new highlight for Notion, then trigger sync directly so we
+      // don't wait the helper's 2s debounce.
+      const queuePromises = rows.map((r) =>
         addToNotionSyncQueue({
           highlightId: r.id,
           operationType: 'add',
           text: r.text,
           htmlContent: r.html_content,
         }).catch(() => {})
-      }
+      )
+      Promise.all(queuePromises).then(() => {
+        fetch('/api/notion/sync', { method: 'POST' }).catch(() => {})
+      })
 
       setSaveSuccess(true)
       setTimeout(() => setSaveSuccess(false), 2000)
