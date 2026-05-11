@@ -166,7 +166,7 @@ export default function AppHeader() {
           ))}
         </nav>
         <div className="mobile-nav-auth">
-          <AuthButton />
+          <AuthButton dropdownDirection="up" />
         </div>
       </div>
     </>

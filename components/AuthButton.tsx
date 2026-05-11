@@ -5,7 +5,13 @@ import { createClient } from '@/lib/supabase/client'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 
-export default function AuthButton() {
+type AuthButtonProps = {
+  // 'down' for the desktop header (default); 'up' for the mobile drawer
+  // where the button is pinned to the bottom of a side panel.
+  dropdownDirection?: 'up' | 'down'
+}
+
+export default function AuthButton({ dropdownDirection = 'down' }: AuthButtonProps = {}) {
   const [user, setUser] = useState<any>(null)
   const [loading, setLoading] = useState(true)
   const [showDropdown, setShowDropdown] = useState(false)
@@ -93,7 +99,7 @@ export default function AuthButton() {
       </button>
       
       {showDropdown && (
-        <div className="dropdown-animate-in absolute right-0 bottom-full mb-2 w-56 bg-white dark:bg-gray-800 rounded-xl shadow-lg border border-gray-200/80 dark:border-gray-700/80 py-2 z-50 backdrop-blur-xl">
+        <div className={`dropdown-animate-in absolute right-0 ${dropdownDirection === 'up' ? 'bottom-full mb-2' : 'top-full mt-2'} w-56 bg-white dark:bg-gray-800 rounded-xl shadow-lg border border-gray-200/80 dark:border-gray-700/80 py-2 z-50 backdrop-blur-xl`}>
           {/* Email display on mobile */}
           <div className="px-4 py-2 sm:hidden">
             <p className="text-xs text-gray-500 dark:text-gray-400 truncate">{email}</p>

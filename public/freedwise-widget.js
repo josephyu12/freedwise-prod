@@ -42,6 +42,15 @@ const COLORS = {
   textDark: new Color('#e2e8f0'),
   textMuted: new Color('#475569'),
   textMutedDark: new Color('#94a3b8'),
+  red: new Color('#fee2e2'),
+  redText: new Color('#b91c1c'),
+  redBorder: new Color('#fca5a5'),
+  yellow: new Color('#fef9c3'),
+  yellowText: new Color('#a16207'),
+  yellowBorder: new Color('#fde047'),
+  green: new Color('#dcfce7'),
+  greenText: new Color('#15803d'),
+  greenBorder: new Color('#86efac'),
   blue: new Color('#6366f1'),
 }
 
@@ -310,8 +319,77 @@ function renderHomeScreen(widget, family, h, total, reviewed, isDark) {
 
   widget.addSpacer()
 
-  // Tap opens today's review page so rating is one tap away
-  widget.url = `${APP_URL}/daily`
+  // Rating buttons — skip on the small family (too cramped for three tap targets).
+  if (family !== 'small') {
+    addRatingButtons(widget, h, family === 'medium')
+  }
+
+  // Fallback tap opens the review page at this highlight
+  widget.url = `${APP_URL}/review?id=${h.summaryHighlightId}`
+}
+
+function addRatingButtons(parent, h, compact) {
+  const rateUrl = (rating) =>
+    `${APP_URL}/review?rate=${rating}&id=${h.summaryHighlightId}`
+
+  const padY = compact ? 8 : 12
+  const padX = compact ? 16 : 24
+  const fontSize = compact ? 14 : 16
+  const gap = compact ? 8 : 12
+
+  const btnStack = parent.addStack()
+  btnStack.layoutHorizontally()
+  btnStack.centerAlignContent()
+
+  btnStack.addSpacer()
+
+  const lowBtn = btnStack.addStack()
+  lowBtn.layoutHorizontally()
+  lowBtn.centerAlignContent()
+  lowBtn.setPadding(padY, padX, padY, padX)
+  lowBtn.cornerRadius = 12
+  lowBtn.backgroundColor = COLORS.red
+  lowBtn.borderColor = COLORS.redBorder
+  lowBtn.borderWidth = 2
+  lowBtn.url = rateUrl('low')
+  const lowLabel = lowBtn.addText('Low')
+  lowLabel.font = Font.semiboldSystemFont(fontSize)
+  lowLabel.textColor = COLORS.redText
+  lowLabel.centerAlignText()
+
+  btnStack.addSpacer(gap)
+
+  const medBtn = btnStack.addStack()
+  medBtn.layoutHorizontally()
+  medBtn.centerAlignContent()
+  medBtn.setPadding(padY, padX, padY, padX)
+  medBtn.cornerRadius = 12
+  medBtn.backgroundColor = COLORS.yellow
+  medBtn.borderColor = COLORS.yellowBorder
+  medBtn.borderWidth = 2
+  medBtn.url = rateUrl('med')
+  const medLabel = medBtn.addText('Med')
+  medLabel.font = Font.semiboldSystemFont(fontSize)
+  medLabel.textColor = COLORS.yellowText
+  medLabel.centerAlignText()
+
+  btnStack.addSpacer(gap)
+
+  const highBtn = btnStack.addStack()
+  highBtn.layoutHorizontally()
+  highBtn.centerAlignContent()
+  highBtn.setPadding(padY, padX, padY, padX)
+  highBtn.cornerRadius = 12
+  highBtn.backgroundColor = COLORS.green
+  highBtn.borderColor = COLORS.greenBorder
+  highBtn.borderWidth = 2
+  highBtn.url = rateUrl('high')
+  const highLabel = highBtn.addText('High')
+  highLabel.font = Font.semiboldSystemFont(fontSize)
+  highLabel.textColor = COLORS.greenText
+  highLabel.centerAlignText()
+
+  btnStack.addSpacer()
 }
 
 // ─── Lock Screen accessory widgets ──────────────────────────
@@ -332,7 +410,7 @@ function renderAccessoryRectangular(widget, h, total, reviewed) {
   footer.font = Font.systemFont(10)
   footer.textOpacity = 0.7
 
-  widget.url = `${APP_URL}/daily`
+  widget.url = `${APP_URL}/review?id=${h.summaryHighlightId}`
 }
 
 function renderAccessoryInline(widget, h) {
@@ -340,7 +418,7 @@ function renderAccessoryInline(widget, h) {
   const highlightText = stripHtml(h.htmlContent || h.text)
   const t = widget.addText(`📖 ${truncate(highlightText, 60)}`)
   t.font = Font.systemFont(12)
-  widget.url = `${APP_URL}/daily`
+  widget.url = `${APP_URL}/review?id=${h.summaryHighlightId}`
 }
 
 function renderAccessoryCircular(widget, total, reviewed) {
@@ -359,7 +437,7 @@ function renderAccessoryCircular(widget, total, reviewed) {
   count.font = Font.boldSystemFont(20)
   count.centerAlignText()
 
-  widget.url = `${APP_URL}/daily`
+  widget.url = `${APP_URL}/review`
 }
 
 // ─── Setup / error states ───────────────────────────────────
@@ -430,7 +508,7 @@ function renderError(family, message, url, isDark) {
 function renderAllDone(family, total, reviewed, isDark) {
   if (isAccessory(family)) {
     const w = makeAccessoryMessage(family, `All done · ${reviewed}/${total}`)
-    w.url = `${APP_URL}/daily`
+    w.url = `${APP_URL}/review`
     return w
   }
 
@@ -458,7 +536,7 @@ function renderAllDone(family, total, reviewed, isDark) {
   stats.centerAlignText()
 
   widget.addSpacer()
-  widget.url = `${APP_URL}/daily`
+  widget.url = `${APP_URL}/review`
   return widget
 }
 
@@ -484,13 +562,13 @@ async function createWidget() {
   const data = await loadBatch(token)
 
   if (data && data._debug) {
-    const w = renderError(family, `Debug: ${data._debug}`, `${APP_URL}/daily`, isDark)
+    const w = renderError(family, `Debug: ${data._debug}`, `${APP_URL}/review`, isDark)
     setRefreshHint(w)
     return w
   }
 
   if (!data) {
-    const w = renderError(family, 'Could not load highlights', `${APP_URL}/daily`, isDark)
+    const w = renderError(family, 'Could not load highlights', `${APP_URL}/review`, isDark)
     setRefreshHint(w)
     return w
   }
@@ -502,7 +580,7 @@ async function createWidget() {
   }
 
   if (data.error) {
-    const w = renderError(family, 'Could not load highlights', `${APP_URL}/daily`, isDark)
+    const w = renderError(family, 'Could not load highlights', `${APP_URL}/review`, isDark)
     setRefreshHint(w)
     return w
   }
