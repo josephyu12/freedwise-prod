@@ -40,6 +40,7 @@ export default function HighlightsPage() {
   const [updatingNotion, setUpdatingNotion] = useState(false)
   const [saving, setSaving] = useState(false)
   const [saveSuccess, setSaveSuccess] = useState(false)
+  const [dupeNotice, setDupeNotice] = useState<string | null>(null)
   const [pinnedHighlightIds, setPinnedHighlightIds] = useState<Set<string>>(new Set())
   const [pinDialogOpen, setPinDialogOpen] = useState(false)
   const [pendingPinHighlightId, setPendingPinHighlightId] = useState<string | null>(null)
@@ -159,6 +160,10 @@ export default function HighlightsPage() {
       // that became megabytes of joined rows and pushed page load past 30s.
       // We now fetch only what's needed for the list view, and pull current-month
       // assignments in a single small follow-up query below.
+      // Note: we used to pass { count: 'exact' } here. Postgres has to run a
+      // sequential scan to satisfy that, and we override the total with the
+      // client-filtered count anyway (see setTotalHighlights below), so it
+      // was pure cost.
       let query = supabase
         .from('highlights')
         .select(`
@@ -180,7 +185,7 @@ export default function HighlightsPage() {
             month_year,
             created_at
           )
-        `, { count: 'exact' })
+        `)
         .eq('user_id', user.id)
 
       // Filter by archived status
@@ -379,122 +384,136 @@ export default function HighlightsPage() {
     const highlightHtml = htmlContent || null
     const selectedCats = [...selectedCategories]
 
-    try {
-      setSaving(true)
-      setSaveSuccess(false)
-      
-      // Get authenticated user
-      const { data: { user }, error: userError } = await supabase.auth.getUser()
-      if (userError || !user) {
-        alert('You must be logged in to add highlights')
-        setSaving(false)
-        return
-      }
-
-      // Normalize text for dedup comparison
-      const normalizeText = (t: string | null): string => {
-        if (!t) return ''
-        return t.replace(/<[^>]*>/g, '').trim().toLowerCase().replace(/\s+/g, ' ')
-      }
-
-      // Split a single submission into multiple highlights on blank-line separators
-      const pieces = splitHtmlByBlankLines(highlightHtml, highlightText)
-      if (pieces.length === 0) {
-        setSaving(false)
-        return
-      }
-
-      // Fetch existing highlights once for dedup. Only `text` — html_content
-      // can be huge per row and isn't needed once text is normalized.
-      const { data: existingHighlights, error: checkError } = await (supabase
-        .from('highlights') as any)
-        .select('id, text')
-        .eq('user_id', user.id)
-      if (checkError) console.error('Error checking for duplicates:', checkError)
-
-      // Build a Set of normalized existing texts for O(1) lookup
-      const existingSet = new Set<string>()
-      for (const h of (existingHighlights || [])) {
-        const n = normalizeText((h as { text: string }).text)
-        if (n) existingSet.add(n)
-      }
-
-      // Dedup pieces against existing highlights and against each other
-      const seen = new Set<string>()
-      const toInsert: { text: string; html: string }[] = []
-      let droppedDupes = 0
-      for (const p of pieces) {
-        const nt = normalizeText(p.text)
-        if (!nt) continue
-        if (seen.has(nt) || existingSet.has(nt)) { droppedDupes++; continue }
-        seen.add(nt)
-        toInsert.push(p)
-      }
-
-      if (toInsert.length === 0) {
-        setSaving(false)
-        alert(pieces.length === 1 ? 'Error: Highlight already added.' : 'All highlights were duplicates.')
-        return
-      }
-
-      // Clear form immediately for better UX
-      setText('')
-      setHtmlContent('')
-      setSelectedCategories([])
-
-      // Build rows with client-side IDs so Notion sync can proceed even if the
-      // select after insert fails due to a mid-request session refresh across tabs.
-      const rows = toInsert.map((p) => ({
-        id: crypto.randomUUID(),
-        text: p.text,
-        html_content: p.html || null,
-        resurface_count: 0,
-        average_rating: 0,
-        rating_count: 0,
-        user_id: user.id,
-      }))
-
-      const { error } = await (supabase.from('highlights') as any).insert(rows)
-      if (error) throw error
-
-      // Add categories (non-blocking)
-      if (selectedCats.length > 0) {
-        const categoryLinks = rows.flatMap((r) =>
-          selectedCats.map((catId) => ({ highlight_id: r.id, category_id: catId }))
-        )
-        ;(supabase.from('highlight_categories') as any).insert(categoryLinks).catch((err: any) => {
-          console.error('Error adding categories:', err)
-        })
-      }
-
-      // Queue each new highlight for Notion. Outbound sync is manual now —
-      // the user drains the queue with the "Sync to Notion" button below.
-      for (const r of rows) {
-        addToSyncQueue(r.id, 'add', r.text, r.html_content).catch((err: any) => {
-          console.error('Error adding to sync queue:', err)
-        })
-      }
-
-      setSaveSuccess(true)
-      setTimeout(() => setSaveSuccess(false), 2000)
-      if (droppedDupes > 0) {
-        console.warn(`Skipped ${droppedDupes} duplicate highlight(s) during bulk insert`)
-      }
-
-      // Redistribute + refresh in the background so the UI doesn't block on a slow API
-      callRedistribute(rows.map((r) => r.id))
-        .catch(() => {})
-        .then(() => loadHighlights())
-    } catch (error) {
-      console.error('Error adding highlight:', error)
-      // Restore form on error
-      setText(highlightText)
-      setHtmlContent(highlightHtml || '')
-      setSelectedCategories(selectedCats)
-      alert('Failed to add highlight. Please check your Supabase configuration.')
-    } finally {
-      setSaving(false)
+    // Get authenticated user up front — needed for user_id on rows.
+    const { data: { user }, error: userError } = await supabase.auth.getUser()
+    if (userError || !user) {
+      alert('You must be logged in to add highlights')
+      return
     }
+
+    // Split a single submission into multiple highlights on blank-line separators
+    const pieces = splitHtmlByBlankLines(highlightHtml, highlightText)
+    if (pieces.length === 0) return
+
+    // Build rows with client-side IDs so the optimistic UI and any background
+    // writes (categories, redistribute) can reference them before the insert
+    // round-trips. Dedup is intentionally NOT done against the DB here — that
+    // round-trip dominated the perceived save latency. Users can spot and
+    // delete accidental duplicates from this same view.
+    const nowIso = new Date().toISOString()
+    const rows = pieces.map((p) => ({
+      id: crypto.randomUUID(),
+      text: p.text,
+      html_content: p.html || null,
+      resurface_count: 0,
+      average_rating: 0,
+      rating_count: 0,
+      user_id: user.id,
+      archived: false as const,
+      created_at: nowIso,
+    }))
+
+    // Build the optimistic Highlight objects (categories looked up locally
+    // from already-loaded `categories` state).
+    const catLookup = new Map(categories.map((c) => [c.id, c]))
+    const selectedCategoryObjects = selectedCats
+      .map((id) => catLookup.get(id))
+      .filter((c): c is Category => !!c)
+
+    const optimisticHighlights = rows.map((r) => ({
+      ...r,
+      source: null,
+      author: null,
+      categories: selectedCategoryObjects,
+      linked_highlights: [],
+      months_reviewed: [],
+      assigned_date: null,
+      reviewedForCurrentMonth: false,
+    })) as unknown as Highlight[]
+
+    // Apply optimistic UI immediately: prepend new rows, bump count, clear the form.
+    setHighlights((prev) => [...optimisticHighlights, ...prev])
+    setTotalHighlights((prev) => prev + rows.length)
+    setText('')
+    setHtmlContent('')
+    setSelectedCategories([])
+    setSaveSuccess(true)
+    setTimeout(() => setSaveSuccess(false), 1500)
+
+    // Fire the real writes in the background. Keep `saving` true only as long
+    // as the form was being submitted — the user can keep typing the next one.
+    setSaving(true)
+
+    ;(async () => {
+      try {
+        // Postgres-side dedup: the unique constraint on (user_id, text_hash)
+        // makes this an `INSERT ... ON CONFLICT DO NOTHING RETURNING id`.
+        // Rows that collide with an existing highlight are silently dropped;
+        // we detect them by diffing the returned IDs against what we sent.
+        const { data: insertedRows, error: insertError } = await (supabase
+          .from('highlights') as any)
+          .upsert(rows, {
+            onConflict: 'user_id,text_hash',
+            ignoreDuplicates: true,
+          })
+          .select('id')
+        if (insertError) throw insertError
+
+        const insertedIds = new Set(
+          ((insertedRows || []) as Array<{ id: string }>).map((r) => r.id)
+        )
+        const droppedRows = rows.filter((r) => !insertedIds.has(r.id))
+
+        if (droppedRows.length > 0) {
+          // Roll the dropped optimistic rows back out of the list and warn softly.
+          const droppedIds = new Set(droppedRows.map((r) => r.id))
+          setHighlights((prev) => prev.filter((h) => !droppedIds.has(h.id)))
+          setTotalHighlights((prev) => Math.max(0, prev - droppedRows.length))
+          setDupeNotice(
+            droppedRows.length === rows.length
+              ? rows.length === 1
+                ? 'Already added — duplicate skipped.'
+                : `All ${rows.length} were duplicates — nothing new added.`
+              : `${droppedRows.length} duplicate${droppedRows.length === 1 ? '' : 's'} skipped.`
+          )
+          window.setTimeout(() => setDupeNotice(null), 4000)
+        }
+
+        const insertedSourceRows = rows.filter((r) => insertedIds.has(r.id))
+
+        // Categories — only for rows that actually inserted.
+        if (selectedCats.length > 0 && insertedSourceRows.length > 0) {
+          const categoryLinks = insertedSourceRows.flatMap((r) =>
+            selectedCats.map((catId) => ({ highlight_id: r.id, category_id: catId }))
+          )
+          ;(supabase.from('highlight_categories') as any)
+            .insert(categoryLinks)
+            .catch((err: any) => console.error('Error adding categories:', err))
+        }
+
+        // Notion queue + redistribute, again only for the rows that landed.
+        for (const r of insertedSourceRows) {
+          addToSyncQueue(r.id, 'add', r.text, r.html_content).catch((err: any) =>
+            console.error('Error adding to sync queue:', err)
+          )
+        }
+        if (insertedSourceRows.length > 0) {
+          callRedistribute(insertedSourceRows.map((r) => r.id)).catch(() => {})
+        }
+      } catch (error) {
+        console.error('Error adding highlight:', error)
+        const failedIds = new Set(rows.map((r) => r.id))
+        setHighlights((prev) => prev.filter((h) => !failedIds.has(h.id)))
+        setTotalHighlights((prev) => Math.max(0, prev - rows.length))
+        // Restore form so the user can retry without losing what they typed
+        setText(highlightText)
+        setHtmlContent(highlightHtml || '')
+        setSelectedCategories(selectedCats)
+        alert('Failed to add highlight. Please check your Supabase configuration.')
+      } finally {
+        setSaving(false)
+      }
+    })()
   }
 
   const handlePin = async (highlightId: string) => {
@@ -590,37 +609,38 @@ export default function HighlightsPage() {
   const handleDelete = async (id: string) => {
     if (!confirm('Are you sure you want to delete this highlight?')) return
 
-    try {
-      // Get highlight data before deleting (needed for sync queue)
-      const highlightToDelete = highlights.find((h) => h.id === id)
-      const text = highlightToDelete?.text || null
-      const htmlContent = highlightToDelete?.html_content || null
+    const highlightToDelete = highlights.find((h) => h.id === id)
+    if (!highlightToDelete) return
+    const text = highlightToDelete.text || null
+    const htmlContent = highlightToDelete.html_content || null
 
-      // Add to Notion sync queue BEFORE deleting (if configured)
-      await addToSyncQueue(
-        id,
-        'delete',
-        text,
-        htmlContent
-      )
+    // Optimistic removal — pull the row from the list right away.
+    setHighlights((prev) => prev.filter((h) => h.id !== id))
+    setTotalHighlights((prev) => Math.max(0, prev - 1))
 
-      // Delete from database (CASCADE removes it from daily_summary_highlights, so it won't appear in next month's daily reviews)
-      const { error } = await (supabase
-        .from('highlights') as any)
-        .delete()
-        .eq('id', id)
+    // Queue the Notion delete (manual sync drains it later) without blocking.
+    addToSyncQueue(id, 'delete', text, htmlContent).catch((err) =>
+      console.error('Error queueing Notion delete:', err)
+    )
 
-      if (error) throw error
+    ;(async () => {
+      try {
+        const { error } = await (supabase
+          .from('highlights') as any)
+          .delete()
+          .eq('id', id)
+        if (error) throw error
 
-      // Redistribute remaining highlights across future days so next month's daily reviews stay consistent
-      await callRedistribute()
-
-      // Reload highlights to refresh count and list
-      await loadHighlights()
-    } catch (error) {
-      console.error('Error deleting highlight:', error)
-      alert('Failed to delete highlight. Please try again.')
-    }
+        // Redistribute remaining highlights so future daily reviews stay consistent.
+        callRedistribute().catch(() => {})
+      } catch (error) {
+        console.error('Error deleting highlight:', error)
+        // Revert the optimistic delete if the DB delete failed.
+        setHighlights((prev) => [highlightToDelete, ...prev])
+        setTotalHighlights((prev) => prev + 1)
+        alert('Failed to delete highlight. Please try again.')
+      }
+    })()
   }
 
 
@@ -643,105 +663,108 @@ export default function HighlightsPage() {
   const handleSaveEdit = async () => {
     if (!editingId || !editText.trim()) return
 
-    try {
-      setUpdatingNotion(true)
+    const id = editingId
+    const newText = editText.trim()
+    const newHtml = editHtmlContent.trim() || null
+    const newCategoryIds = [...editCategories]
 
-      // Get original highlight data before updating (needed for sync queue)
-      const originalHighlight = highlights.find((h) => h.id === editingId)
-      const originalText = originalHighlight?.text || null
-      const originalHtmlContent = originalHighlight?.html_content || null
+    const originalHighlight = highlights.find((h) => h.id === id)
+    if (!originalHighlight) return
+    const originalText = originalHighlight.text || null
+    const originalHtmlContent = originalHighlight.html_content || null
+    const originalCategories = originalHighlight.categories || []
+    const textChanged =
+      newText !== (originalText || '') ||
+      newHtml !== (originalHtmlContent || null)
 
-      // Check for duplicate highlights (excluding current one)
-      const { data: { user } } = await supabase.auth.getUser()
-      if (user) {
-        const { data: existingHighlights, error: checkError } = await (supabase
-          .from('highlights') as any)
-          .select('id, text, html_content')
-          .eq('user_id', user.id)
-          .neq('id', editingId)
+    // Look up new category objects from local state so the optimistic row
+    // shows the right pills immediately.
+    const catLookup = new Map(categories.map((c) => [c.id, c]))
+    const newCategoryObjects = newCategoryIds
+      .map((cid) => catLookup.get(cid))
+      .filter((c): c is Category => !!c)
 
-        if (checkError) {
-          console.error('Error checking for duplicates:', checkError)
-        } else if (existingHighlights && existingHighlights.length > 0) {
-          // Helper function to normalize text (strip HTML tags, trim, lowercase, normalize whitespace)
-          const normalizeText = (text: string | null): string => {
-            if (!text) return ''
-            // Strip HTML tags first
-            const plainText = text.replace(/<[^>]*>/g, '')
-            // Trim, lowercase, and normalize whitespace
-            return plainText.trim().toLowerCase().replace(/\s+/g, ' ')
-          }
-          
-          // Normalize the edited text and HTML
-          const normalizedEditText = normalizeText(editText)
-          const normalizedEditHtml = normalizeText(editHtmlContent)
-          
-          // Check if any other highlight has the same normalized text or html_content
-          const isDuplicate = existingHighlights.some((h: any) => {
-            const existingText = normalizeText(h.text)
-            const existingHtml = normalizeText(h.html_content)
-            // Check if normalized text matches, or if normalized HTML matches
-            return (normalizedEditText && (normalizedEditText === existingText || normalizedEditText === existingHtml)) ||
-                   (normalizedEditHtml && (normalizedEditHtml === existingText || normalizedEditHtml === existingHtml))
-          })
-          
-          if (isDuplicate) {
-            setUpdatingNotion(false)
-            alert('Error: Your edits make this highlight the same as another highlight.')
-            return
-          }
+    // Apply the edit locally and close the editor right away.
+    setHighlights((prev) =>
+      prev.map((h) =>
+        h.id === id
+          ? {
+              ...h,
+              text: newText,
+              html_content: newHtml ?? undefined,
+              categories: newCategoryObjects,
+            }
+          : h
+      )
+    )
+    handleCancelEdit()
+
+    setUpdatingNotion(true)
+
+    ;(async () => {
+      try {
+        // Run the row update and the category swap in parallel — the row
+        // update is the bottleneck and there's no ordering dependency.
+        const updateRow = (supabase.from('highlights') as any)
+          .update({ text: newText, html_content: newHtml })
+          .eq('id', id)
+
+        const deleteCats = (supabase.from('highlight_categories') as any)
+          .delete()
+          .eq('highlight_id', id)
+
+        const [updateResult, deleteResult] = await Promise.all([updateRow, deleteCats])
+        if (updateResult.error) throw updateResult.error
+        if (deleteResult.error) throw deleteResult.error
+
+        if (newCategoryIds.length > 0) {
+          const categoryLinks = newCategoryIds.map((cid) => ({
+            highlight_id: id,
+            category_id: cid,
+          }))
+          const { error: insertError } = await (supabase
+            .from('highlight_categories') as any)
+            .insert(categoryLinks)
+          if (insertError) throw insertError
         }
-      }
 
-      // Update in database
-      const { error: updateError } = await (supabase
-        .from('highlights') as any)
-        .update({
-          text: editText.trim(),
-          html_content: editHtmlContent.trim() || null,
-        })
-        .eq('id', editingId)
-
-      if (updateError) throw updateError
-
-      // Update categories
-      // First, remove existing categories
-      await (supabase
-        .from('highlight_categories') as any)
-        .delete()
-        .eq('highlight_id', editingId)
-
-      // Then add new ones
-      if (editCategories.length > 0) {
-        const categoryLinks = editCategories.map((catId) => ({
-          highlight_id: editingId,
-          category_id: catId,
-        }))
-        await (supabase.from('highlight_categories') as any).insert(categoryLinks)
-      }
-
-      // Add to Notion sync queue only if text/HTML actually changed (skip for category-only edits)
-      const textChanged = editText.trim() !== (originalText || '') ||
-        (editHtmlContent.trim() || null) !== (originalHtmlContent || null)
-      if (!skipNotionSync && textChanged) {
-        await addToSyncQueue(
-          editingId,
-          'update',
-          editText.trim(),
-          editHtmlContent.trim() || null,
-          originalText,
-          originalHtmlContent
+        if (!skipNotionSync && textChanged) {
+          addToSyncQueue(
+            id,
+            'update',
+            newText,
+            newHtml,
+            originalText,
+            originalHtmlContent
+          ).catch((err) => console.error('Error queueing Notion update:', err))
+        }
+      } catch (error: any) {
+        console.error('Error updating highlight:', error)
+        // Revert optimistic edit on failure.
+        setHighlights((prev) =>
+          prev.map((h) =>
+            h.id === id
+              ? {
+                  ...h,
+                  text: originalText || '',
+                  html_content: originalHtmlContent ?? undefined,
+                  categories: originalCategories,
+                }
+              : h
+          )
         )
+        // Postgres unique-violation = 23505. Surface as the soft dupe notice
+        // rather than a generic alert.
+        if (error?.code === '23505') {
+          setDupeNotice('Edit collides with another highlight — change reverted.')
+          window.setTimeout(() => setDupeNotice(null), 4000)
+        } else {
+          alert('Failed to update highlight. Please try again.')
+        }
+      } finally {
+        setUpdatingNotion(false)
       }
-
-      await loadHighlights()
-      handleCancelEdit()
-    } catch (error) {
-      console.error('Error updating highlight:', error)
-      alert('Failed to update highlight. Please try again.')
-    } finally {
-      setUpdatingNotion(false)
-    }
+    })()
   }
 
   // ─── Split ────────────────────────────────────────────────
@@ -1175,6 +1198,28 @@ export default function HighlightsPage() {
               </div>
             </div>
           </form>
+
+          {dupeNotice && (
+            <div
+              role="status"
+              className="mb-4 flex items-start gap-3 rounded-lg border border-amber-300 dark:border-amber-500/40 bg-amber-50 dark:bg-amber-900/15 px-4 py-3 text-sm text-amber-900 dark:text-amber-200"
+            >
+              <svg
+                className="w-4 h-4 mt-0.5 shrink-0 text-amber-600 dark:text-amber-400"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={1.8}
+                  d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+                />
+              </svg>
+              <span>{dupeNotice}</span>
+            </div>
+          )}
 
           <div className="space-y-4">
             <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">

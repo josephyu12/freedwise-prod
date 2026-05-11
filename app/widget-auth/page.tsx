@@ -125,16 +125,12 @@ export default function WidgetAuthPage() {
           <h3 className="text-sm font-semibold text-blue-800 dark:text-blue-300 mb-2">Setup Steps</h3>
           <ol className="text-xs text-blue-700 dark:text-blue-400 space-y-1 list-decimal list-inside">
             <li>Install Scriptable from the App Store</li>
-            <li>Create a new script, paste the widget code from <code className="bg-blue-100 dark:bg-blue-900/50 px-1 rounded">/freedwise-widget.js</code></li>
+            <li>Create a new script, paste the widget code</li>
             <li>Paste token above as <code className="bg-blue-100 dark:bg-blue-900/50 px-1 rounded">WIDGET_TOKEN</code></li>
             <li>Run script once (tap Play button)</li>
             <li><strong>Clear token from script</strong> (stored securely in Keychain)</li>
-            <li>Add a Scriptable widget — Home Screen (small/medium/large) or Lock Screen (rectangular, inline, or circular)</li>
-            <li>Tap the widget any time to open today&apos;s review</li>
+            <li>Add a Large Scriptable widget to your home screen, or a Lock Screen accessory (rectangular, inline, or circular)</li>
           </ol>
-          <p className="text-xs text-blue-700 dark:text-blue-400 mt-3">
-            The widget pre-fetches ~10 unrated highlights and rotates among them so each glance is more likely to land on something new.
-          </p>
         </div>
 
         <div className="mt-4 text-center">

@@ -44,11 +44,20 @@ These migrations can be applied individually to update existing databases:
    - Includes a one-time backfill (these fields were never written by app code prior to this migration)
    - **Date:** 2026-05-10
 
-7. **`migration_fix_last_resurfaced_tz.sql`** (Latest)
+7. **`migration_fix_last_resurfaced_tz.sql`**
    - Corrects `last_resurfaced` values that the prior backfill anchored at midnight UTC
    - Re-anchors at noon UTC so `toLocaleDateString()` renders the right calendar day in negative-offset timezones (ET, etc.)
    - Idempotent; only touches rows that look like the bad midnight-UTC cast
    - **Date:** 2026-05-10
+
+8. **`migration_dedupe_text_unique.sql`** (Latest)
+   - Adds a generated `text_hash` column (md5 of normalized text) and a unique
+     constraint on `(user_id, text_hash)` so the database enforces "no duplicate
+     highlights per user."
+   - Removes pre-existing duplicates first (keeping the oldest per user/text).
+   - Lets the app `.upsert(..., { ignoreDuplicates: true })` without a pre-insert
+     dedup fetch, which used to dominate save latency.
+   - **Date:** 2026-05-11
 
 ## Migration Order
 
@@ -62,6 +71,7 @@ If applying migrations incrementally, use this order:
 6. `migration_make_highlight_id_nullable_in_sync_queue.sql`
 7. `migration_resurface_stats.sql`
 8. `migration_fix_last_resurfaced_tz.sql`
+9. `migration_dedupe_text_unique.sql`
 
 ## Usage
 
@@ -81,6 +91,7 @@ If applying migrations incrementally, use this order:
 \i migration_make_highlight_id_nullable_in_sync_queue.sql
 \i migration_resurface_stats.sql
 \i migration_fix_last_resurfaced_tz.sql
+\i migration_dedupe_text_unique.sql
 ```
 
 ## Notes

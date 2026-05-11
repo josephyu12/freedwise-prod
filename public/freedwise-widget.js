@@ -1,11 +1,7 @@
 // Freedwise Quick Review Widget for Scriptable (iOS)
 //
-// Supports Home Screen widgets (small / medium / large) and Lock Screen
-// accessory widgets (accessoryRectangular / accessoryInline / accessoryCircular).
-//
-// The widget pre-fetches a batch of unrated highlights and rotates through
-// them between iOS-scheduled refreshes so each glance is more likely to land
-// on something new.
+// Supports Home Screen widgets (Large) and Lock Screen accessory widgets
+// (accessoryRectangular, accessoryInline, accessoryCircular).
 
 // NOTE: The Scriptable method is fundamentally unable to support proper rich text formatting.
 // If you would like a true widget that is able to fully format text, make an iOS app
@@ -16,11 +12,11 @@
 // 3. Open freedwise.vercel.app/widget-auth in Safari to get your token
 // 4. Paste the token below as WIDGET_TOKEN (temporarily)
 // 5. Run the script ONCE by tapping the Play button (not as widget)
-// 6. After seeing "Token stored securely", CLEAR the token from line 28 below
+// 6. After seeing "Token stored securely", CLEAR the token from line 22 below
 // 7. Add a Scriptable widget to your home screen OR lock screen
 // 8. Long-press the widget > Edit Widget > choose this script
 //
-// Tap the widget to open today's review in the app.
+// The widget shows your next unrated highlight with Low/Med/High buttons.
 // To revoke access, go to Settings in the Freedwise app.
 
 // ============ CONFIGURATION ============
@@ -29,11 +25,6 @@ const WIDGET_TOKEN = '' // <-- Paste token here temporarily, then CLEAR after fi
 // =======================================
 
 const KEYCHAIN_KEY = 'freedwise_widget_token'
-const BATCH_CACHE_FILE = 'freedwise_widget_batch.json'
-const BATCH_SIZE = 10
-const BATCH_TTL_MS = 30 * 60 * 1000 // 30 min — re-fetch the batch this often
-const ROTATION_MS = 5 * 60 * 1000   // pick a different highlight every 5 min slot
-const REFRESH_HINT_MS = 5 * 60 * 1000 // hint iOS to re-run the script soon
 
 const COLORS = {
   bg: new Color('#f8fafc'),
@@ -52,18 +43,24 @@ const COLORS = {
   greenText: new Color('#15803d'),
   greenBorder: new Color('#86efac'),
   blue: new Color('#6366f1'),
+  progress: new Color('#e2e8f0'),
+  progressDark: new Color('#2a3041'),
 }
 
 // ─── Token Management ───────────────────────────────────────
 
 function getToken() {
+  // First check Keychain
   if (Keychain.contains(KEYCHAIN_KEY)) {
     return Keychain.get(KEYCHAIN_KEY)
   }
+
+  // If token is pasted in script, move it to Keychain
   if (WIDGET_TOKEN && WIDGET_TOKEN.length > 10) {
     Keychain.set(KEYCHAIN_KEY, WIDGET_TOKEN)
     return WIDGET_TOKEN
   }
+
   return null
 }
 
@@ -73,51 +70,17 @@ function clearToken() {
   }
 }
 
-// ─── Batch cache (so rotation works between iOS refreshes) ──
-
-function cachePath() {
-  const fm = FileManager.local()
-  return fm.joinPath(fm.cacheDirectory(), BATCH_CACHE_FILE)
-}
-
-function readCachedBatch() {
-  try {
-    const fm = FileManager.local()
-    const p = cachePath()
-    if (!fm.fileExists(p)) return null
-    const raw = fm.readString(p)
-    const parsed = JSON.parse(raw)
-    if (!parsed || !parsed.fetchedAt || !Array.isArray(parsed.highlights)) return null
-    if (Date.now() - parsed.fetchedAt > BATCH_TTL_MS) return null
-    if (parsed.date !== todayString()) return null
-    return parsed
-  } catch {
-    return null
-  }
-}
-
-function writeCachedBatch(payload) {
-  try {
-    const fm = FileManager.local()
-    fm.writeString(cachePath(), JSON.stringify(payload))
-  } catch {
-    // best-effort
-  }
-}
-
 // ─── API call ───────────────────────────────────────────────
 
-function todayString() {
+async function fetchWidgetData(token) {
+  // Get today's date in local timezone
   const now = new Date()
   const year = now.getFullYear()
   const month = String(now.getMonth() + 1).padStart(2, '0')
   const day = String(now.getDate()).padStart(2, '0')
-  return `${year}-${month}-${day}`
-}
+  const today = `${year}-${month}-${day}`
 
-async function fetchWidgetData(token) {
-  const today = todayString()
-  const url = `${APP_URL}/api/review/widget?token=${encodeURIComponent(token)}&date=${today}&count=${BATCH_SIZE}`
+  const url = `${APP_URL}/api/review/widget?token=${encodeURIComponent(token)}&date=${today}`
 
   try {
     const req = new Request(url)
@@ -125,6 +88,7 @@ async function fetchWidgetData(token) {
     const res = await req.loadJSON()
 
     if (res.tokenExpired) {
+      // Token was revoked - clear from Keychain
       clearToken()
       return { tokenExpired: true }
     }
@@ -135,47 +99,6 @@ async function fetchWidgetData(token) {
   }
 }
 
-// Returns { highlights, total, reviewed, allDone } using cache when possible.
-async function loadBatch(token) {
-  const cached = readCachedBatch()
-  if (cached) {
-    return {
-      highlights: cached.highlights,
-      total: cached.total,
-      reviewed: cached.reviewed,
-      allDone: cached.allDone,
-      fromCache: true,
-    }
-  }
-
-  const data = await fetchWidgetData(token)
-  if (!data || data._debug || data.tokenExpired || data.error) {
-    return data
-  }
-
-  const payload = {
-    date: todayString(),
-    fetchedAt: Date.now(),
-    highlights: Array.isArray(data.highlights)
-      ? data.highlights
-      : (data.highlight ? [data.highlight] : []),
-    total: data.total || 0,
-    reviewed: data.reviewed || 0,
-    allDone: !!data.allDone,
-  }
-  writeCachedBatch(payload)
-  return { ...payload, fromCache: false }
-}
-
-// Pick which highlight to display: rotates per ROTATION_MS slot.
-// Deterministic within a slot so successive script runs in the same slot
-// show the same item (no flicker), but advances on slot boundaries.
-function pickRotationIndex(count) {
-  if (count <= 1) return 0
-  const slot = Math.floor(Date.now() / ROTATION_MS)
-  return ((slot % count) + count) % count
-}
-
 // ─── Helpers ────────────────────────────────────────────────
 
 function stripHtml(html) {
@@ -184,6 +107,7 @@ function stripHtml(html) {
   let text = html
   let nestLevel = 0
 
+  // Process HTML in a single pass, tracking nesting as we go
   text = text.replace(/<(\/?)(?:ul|ol|li)[^>]*>/gi, (match, isClosing) => {
     const tag = match.toLowerCase().match(/<\/?(\w+)/)[1]
 
@@ -199,13 +123,15 @@ function stripHtml(html) {
       if (isClosing === '/') {
         return '\n'
       } else {
-        if (nestLevel > 1) return '  ◦ '
-        return '• '
+        // Add bullet based on current nesting level (no leading newline)
+        if (nestLevel > 1) return '  ◦ ' // Nested bullet with indent
+        return '• ' // Top-level bullet
       }
     }
     return ''
   })
 
+  // Handle other block elements
   text = text
     .replace(/<br\s*\/?>/gi, '\n')
     .replace(/<\/p>/gi, '\n')
@@ -213,8 +139,10 @@ function stripHtml(html) {
     .replace(/<div[^>]*>/gi, '\n')
     .replace(/<\/div>/gi, '')
 
+  // Remove remaining HTML tags
   text = text.replace(/<[^>]*>/g, '')
 
+  // Decode HTML entities
   text = text
     .replace(/&amp;/g, '&')
     .replace(/&lt;/g, '<')
@@ -224,9 +152,10 @@ function stripHtml(html) {
     .replace(/&middot;/g, '·')
     .replace(/&bull;/g, '•')
 
+  // Clean up whitespace
   text = text
     .replace(/\n{3,}/g, '\n\n')
-    .replace(/^\n+/, '')
+    .replace(/^\n+/, '') // Remove leading newlines
     .trim()
 
   return text
@@ -234,6 +163,7 @@ function stripHtml(html) {
 
 function truncate(text, maxLen) {
   if (text.length <= maxLen) return text
+  // Find last complete word within limit
   const truncated = text.substring(0, maxLen - 1)
   const lastSpace = truncated.lastIndexOf(' ')
   if (lastSpace > maxLen * 0.7) {
@@ -242,160 +172,15 @@ function truncate(text, maxLen) {
   return truncated + '…'
 }
 
-// ─── Status widgets (setup / error / done) ──────────────────
-
 function isAccessory(family) {
   return family === 'accessoryRectangular' ||
          family === 'accessoryInline' ||
          family === 'accessoryCircular'
 }
 
-function setRefreshHint(widget) {
-  widget.refreshAfterDate = new Date(Date.now() + REFRESH_HINT_MS)
-}
-
-function makeAccessoryMessage(family, msg) {
-  const widget = new ListWidget()
-  if (family === 'accessoryInline') {
-    const t = widget.addText(msg)
-    t.font = Font.systemFont(12)
-    return widget
-  }
-  widget.addSpacer()
-  const t = widget.addText(msg)
-  t.font = Font.mediumSystemFont(13)
-  t.centerAlignText()
-  t.lineLimit = 3
-  widget.addSpacer()
-  return widget
-}
-
-// ─── Home Screen widget ─────────────────────────────────────
-
-function renderHomeScreen(widget, family, h, total, reviewed, isDark) {
-  widget.backgroundColor = isDark ? COLORS.bgDark : COLORS.bg
-  widget.setPadding(20, 20, 20, 20)
-
-  // Header row: title + progress
-  const headerStack = widget.addStack()
-  headerStack.layoutHorizontally()
-  headerStack.centerAlignContent()
-
-  const title = headerStack.addText('Freedwise')
-  title.font = Font.boldSystemFont(15)
-  title.textColor = COLORS.blue
-
-  headerStack.addSpacer()
-
-  const progress = headerStack.addText(`${reviewed}/${total}`)
-  progress.font = Font.mediumSystemFont(13)
-  progress.textColor = isDark ? COLORS.textMutedDark : COLORS.textMuted
-
-  widget.addSpacer(12)
-
-  const highlightText = stripHtml(h.htmlContent || h.text)
-
-  // Body — limit length and lines per family so layout doesn't blow up
-  const limits = family === 'small'
-    ? { chars: 220, lines: 8, fontSize: 13 }
-    : family === 'medium'
-    ? { chars: 380, lines: 7, fontSize: 14 }
-    : { chars: 700, lines: 12, fontSize: 17 } // large
-
-  const body = widget.addText(truncate(highlightText, limits.chars))
-  body.font = Font.regularSystemFont(limits.fontSize)
-  body.textColor = isDark ? COLORS.textDark : COLORS.text
-  body.lineLimit = limits.lines
-
-  if (h.source || h.author) {
-    widget.addSpacer(8)
-    const meta = widget.addText(
-      [h.author, h.source].filter(Boolean).join(' · ')
-    )
-    meta.font = Font.italicSystemFont(12)
-    meta.textColor = isDark ? COLORS.textMutedDark : COLORS.textMuted
-    meta.lineLimit = 1
-  }
-
-  widget.addSpacer()
-
-  // Rating buttons — skip on the small family (too cramped for three tap targets).
-  if (family !== 'small') {
-    addRatingButtons(widget, h, family === 'medium')
-  }
-
-  // Fallback tap opens the review page at this highlight
-  widget.url = `${APP_URL}/review?id=${h.summaryHighlightId}`
-}
-
-function addRatingButtons(parent, h, compact) {
-  const rateUrl = (rating) =>
-    `${APP_URL}/review?rate=${rating}&id=${h.summaryHighlightId}`
-
-  const padY = compact ? 8 : 12
-  const padX = compact ? 16 : 24
-  const fontSize = compact ? 14 : 16
-  const gap = compact ? 8 : 12
-
-  const btnStack = parent.addStack()
-  btnStack.layoutHorizontally()
-  btnStack.centerAlignContent()
-
-  btnStack.addSpacer()
-
-  const lowBtn = btnStack.addStack()
-  lowBtn.layoutHorizontally()
-  lowBtn.centerAlignContent()
-  lowBtn.setPadding(padY, padX, padY, padX)
-  lowBtn.cornerRadius = 12
-  lowBtn.backgroundColor = COLORS.red
-  lowBtn.borderColor = COLORS.redBorder
-  lowBtn.borderWidth = 2
-  lowBtn.url = rateUrl('low')
-  const lowLabel = lowBtn.addText('Low')
-  lowLabel.font = Font.semiboldSystemFont(fontSize)
-  lowLabel.textColor = COLORS.redText
-  lowLabel.centerAlignText()
-
-  btnStack.addSpacer(gap)
-
-  const medBtn = btnStack.addStack()
-  medBtn.layoutHorizontally()
-  medBtn.centerAlignContent()
-  medBtn.setPadding(padY, padX, padY, padX)
-  medBtn.cornerRadius = 12
-  medBtn.backgroundColor = COLORS.yellow
-  medBtn.borderColor = COLORS.yellowBorder
-  medBtn.borderWidth = 2
-  medBtn.url = rateUrl('med')
-  const medLabel = medBtn.addText('Med')
-  medLabel.font = Font.semiboldSystemFont(fontSize)
-  medLabel.textColor = COLORS.yellowText
-  medLabel.centerAlignText()
-
-  btnStack.addSpacer(gap)
-
-  const highBtn = btnStack.addStack()
-  highBtn.layoutHorizontally()
-  highBtn.centerAlignContent()
-  highBtn.setPadding(padY, padX, padY, padX)
-  highBtn.cornerRadius = 12
-  highBtn.backgroundColor = COLORS.green
-  highBtn.borderColor = COLORS.greenBorder
-  highBtn.borderWidth = 2
-  highBtn.url = rateUrl('high')
-  const highLabel = highBtn.addText('High')
-  highLabel.font = Font.semiboldSystemFont(fontSize)
-  highLabel.textColor = COLORS.greenText
-  highLabel.centerAlignText()
-
-  btnStack.addSpacer()
-}
-
-// ─── Lock Screen accessory widgets ──────────────────────────
+// ─── Lock Screen renderers ──────────────────────────────────
 
 function renderAccessoryRectangular(widget, h, total, reviewed) {
-  // Lock Screen widgets are monochrome and tiny — keep it minimal.
   widget.setPadding(2, 4, 2, 4)
 
   const title = widget.addText('Freedwise')
@@ -414,7 +199,6 @@ function renderAccessoryRectangular(widget, h, total, reviewed) {
 }
 
 function renderAccessoryInline(widget, h) {
-  // Single line of text on the lock screen above the clock.
   const highlightText = stripHtml(h.htmlContent || h.text)
   const t = widget.addText(`📖 ${truncate(highlightText, 60)}`)
   t.font = Font.systemFont(12)
@@ -422,7 +206,6 @@ function renderAccessoryInline(widget, h) {
 }
 
 function renderAccessoryCircular(widget, total, reviewed) {
-  // Small circle — just show progress count.
   widget.setPadding(0, 0, 0, 0)
   const stack = widget.addStack()
   stack.layoutVertically()
@@ -440,173 +223,293 @@ function renderAccessoryCircular(widget, total, reviewed) {
   widget.url = `${APP_URL}/review`
 }
 
-// ─── Setup / error states ───────────────────────────────────
-
-function renderSetupNeeded(family, isDark) {
-  if (isAccessory(family)) {
-    const w = makeAccessoryMessage(family, 'Tap to set up')
-    w.url = `${APP_URL}/widget-auth`
-    return w
+function makeAccessoryMessage(family, msg) {
+  const widget = new ListWidget()
+  if (family === 'accessoryInline') {
+    const t = widget.addText(msg)
+    t.font = Font.systemFont(12)
+    return widget
   }
-
-  const widget = new ListWidget()
-  widget.backgroundColor = isDark ? COLORS.bgDark : COLORS.bg
-  widget.setPadding(20, 20, 20, 20)
   widget.addSpacer()
-  const title = widget.addText('Widget Setup')
-  title.font = Font.boldSystemFont(16)
-  title.textColor = isDark ? COLORS.textDark : COLORS.text
-  title.centerAlignText()
-  widget.addSpacer(12)
-  const msg = widget.addText('1. Get token from /widget-auth\n2. Paste in script as WIDGET_TOKEN\n3. Run script once (tap Play)\n4. Clear token from script')
-  msg.font = Font.systemFont(13)
-  msg.textColor = isDark ? COLORS.textMutedDark : COLORS.textMuted
-  msg.centerAlignText()
-  widget.addSpacer()
-  widget.url = `${APP_URL}/widget-auth`
-  return widget
-}
-
-function renderTokenStoredReminder(isDark) {
-  const widget = new ListWidget()
-  widget.backgroundColor = isDark ? COLORS.bgDark : COLORS.bg
-  widget.setPadding(20, 20, 20, 20)
-  widget.addSpacer()
-  const title = widget.addText('✓ Token Stored Securely')
-  title.font = Font.boldSystemFont(18)
-  title.textColor = COLORS.blue
-  title.centerAlignText()
-  widget.addSpacer(12)
-  const msg = widget.addText('Now CLEAR the WIDGET_TOKEN from line 28 in your script.\n\nThe token is stored in Keychain and no longer needs to be in the script.')
-  msg.font = Font.systemFont(14)
-  msg.textColor = isDark ? COLORS.textDark : COLORS.text
-  msg.centerAlignText()
+  const t = widget.addText(msg)
+  t.font = Font.mediumSystemFont(13)
+  t.centerAlignText()
+  t.lineLimit = 3
   widget.addSpacer()
   return widget
 }
 
-function renderError(family, message, url, isDark) {
-  if (isAccessory(family)) {
-    const w = makeAccessoryMessage(family, 'Tap to open')
-    w.url = url || APP_URL
-    return w
-  }
-
-  const widget = new ListWidget()
-  widget.backgroundColor = isDark ? COLORS.bgDark : COLORS.bg
-  widget.setPadding(20, 20, 20, 20)
-  widget.addSpacer()
-  const msg = widget.addText(message)
-  msg.font = Font.mediumSystemFont(16)
-  msg.textColor = isDark ? COLORS.textDark : COLORS.text
-  msg.centerAlignText()
-  widget.addSpacer()
-  widget.url = url || APP_URL
-  return widget
-}
-
-function renderAllDone(family, total, reviewed, isDark) {
-  if (isAccessory(family)) {
-    const w = makeAccessoryMessage(family, `All done · ${reviewed}/${total}`)
-    w.url = `${APP_URL}/review`
-    return w
-  }
-
-  const widget = new ListWidget()
-  widget.backgroundColor = isDark ? COLORS.bgDark : COLORS.bg
-  widget.setPadding(20, 20, 20, 20)
-
-  const header = widget.addText('Freedwise')
-  header.font = Font.boldSystemFont(15)
-  header.textColor = COLORS.blue
-  header.centerAlignText()
-
-  widget.addSpacer()
-
-  const done = widget.addText('All done for today! 🎉')
-  done.font = Font.mediumSystemFont(20)
-  done.textColor = isDark ? COLORS.textDark : COLORS.text
-  done.centerAlignText()
-
-  widget.addSpacer(8)
-
-  const stats = widget.addText(`${reviewed}/${total} reviewed`)
-  stats.font = Font.regularSystemFont(15)
-  stats.textColor = isDark ? COLORS.textMutedDark : COLORS.textMuted
-  stats.centerAlignText()
-
-  widget.addSpacer()
-  widget.url = `${APP_URL}/review`
-  return widget
-}
-
-// ─── Entrypoint ─────────────────────────────────────────────
+// ─── Widget ─────────────────────────────────────────────────
 
 async function createWidget() {
   const family = config.widgetFamily || 'large'
-  const isDark = Device.isUsingDarkAppearance()
   const widget = new ListWidget()
-  setRefreshHint(widget)
+  const isDark = Device.isUsingDarkAppearance()
+  widget.backgroundColor = isDark ? COLORS.bgDark : COLORS.bg
+  widget.setPadding(20, 20, 20, 20)
 
   const token = getToken()
+
+  // Show setup instructions if no token
   if (!token) {
-    const w = renderSetupNeeded(family, isDark)
-    setRefreshHint(w)
-    return w
+    if (isAccessory(family)) {
+      const w = makeAccessoryMessage(family, 'Tap to set up')
+      w.url = `${APP_URL}/widget-auth`
+      return w
+    }
+    widget.addSpacer()
+    const title = widget.addText('Widget Setup')
+    title.font = Font.boldSystemFont(16)
+    title.textColor = isDark ? COLORS.textDark : COLORS.text
+    title.centerAlignText()
+    widget.addSpacer(12)
+
+    const msg = widget.addText('1. Get token from /widget-auth\n2. Paste in script as WIDGET_TOKEN\n3. Run script once (tap Play)\n4. Clear token from script')
+    msg.font = Font.systemFont(13)
+    msg.textColor = isDark ? COLORS.textMutedDark : COLORS.textMuted
+    msg.centerAlignText()
+    widget.addSpacer()
+    widget.url = `${APP_URL}/widget-auth`
+    return widget
   }
 
+  // If running manually (not as widget) and token is still in script, show reminder
   if (!config.runsInWidget && WIDGET_TOKEN && WIDGET_TOKEN.length > 10) {
-    return renderTokenStoredReminder(isDark)
+    widget.addSpacer()
+    const title = widget.addText('✓ Token Stored Securely')
+    title.font = Font.boldSystemFont(18)
+    title.textColor = COLORS.blue
+    title.centerAlignText()
+    widget.addSpacer(12)
+
+    const msg = widget.addText('Now CLEAR the WIDGET_TOKEN from line 22 in your script.\n\nThe token is stored in Keychain and no longer needs to be in the script.')
+    msg.font = Font.systemFont(14)
+    msg.textColor = isDark ? COLORS.textDark : COLORS.text
+    msg.centerAlignText()
+    widget.addSpacer()
+    return widget
   }
 
-  const data = await loadBatch(token)
+  const data = await fetchWidgetData(token)
 
+  // Debug: show raw response info
   if (data && data._debug) {
-    const w = renderError(family, `Debug: ${data._debug}`, `${APP_URL}/review`, isDark)
-    setRefreshHint(w)
-    return w
+    if (isAccessory(family)) {
+      const w = makeAccessoryMessage(family, 'Tap to open')
+      w.url = `${APP_URL}/review`
+      return w
+    }
+    widget.addSpacer()
+    const msg = widget.addText(`Debug: ${data._debug}`)
+    msg.font = Font.mediumSystemFont(13)
+    msg.textColor = isDark ? COLORS.textDark : COLORS.text
+    msg.centerAlignText()
+    widget.addSpacer()
+    widget.url = `${APP_URL}/review`
+    return widget
   }
 
   if (!data) {
-    const w = renderError(family, 'Could not load highlights', `${APP_URL}/review`, isDark)
-    setRefreshHint(w)
-    return w
+    if (isAccessory(family)) {
+      const w = makeAccessoryMessage(family, 'Tap to open')
+      w.url = `${APP_URL}/review`
+      return w
+    }
+    widget.addSpacer()
+    const msg = widget.addText('Could not load highlights')
+    msg.font = Font.mediumSystemFont(16)
+    msg.textColor = isDark ? COLORS.textDark : COLORS.text
+    msg.centerAlignText()
+    widget.addSpacer()
+    widget.url = `${APP_URL}/review`
+    return widget
   }
 
   if (data.tokenExpired) {
-    const w = renderError(family, 'Token revoked.\nGet a new one at /widget-auth', `${APP_URL}/widget-auth`, isDark)
-    setRefreshHint(w)
-    return w
+    if (isAccessory(family)) {
+      const w = makeAccessoryMessage(family, 'Tap to re-auth')
+      w.url = `${APP_URL}/widget-auth`
+      return w
+    }
+    widget.addSpacer()
+    const msg = widget.addText('Token revoked.\nGet a new one at /widget-auth')
+    msg.font = Font.mediumSystemFont(15)
+    msg.textColor = isDark ? COLORS.textDark : COLORS.text
+    msg.centerAlignText()
+    widget.addSpacer()
+    widget.url = `${APP_URL}/widget-auth`
+    return widget
   }
 
   if (data.error) {
-    const w = renderError(family, 'Could not load highlights', `${APP_URL}/review`, isDark)
-    setRefreshHint(w)
-    return w
+    if (isAccessory(family)) {
+      const w = makeAccessoryMessage(family, 'Tap to open')
+      w.url = `${APP_URL}/review`
+      return w
+    }
+    widget.addSpacer()
+    const msg = widget.addText('Could not load highlights')
+    msg.font = Font.mediumSystemFont(16)
+    msg.textColor = isDark ? COLORS.textDark : COLORS.text
+    msg.centerAlignText()
+    widget.addSpacer()
+    widget.url = `${APP_URL}/review`
+    return widget
   }
 
-  const highlights = Array.isArray(data.highlights) ? data.highlights : []
-  const total = data.total || 0
-  const reviewed = data.reviewed || 0
+  // All done state
+  if (data.allDone || !data.highlight) {
+    if (isAccessory(family)) {
+      const w = makeAccessoryMessage(family, `All done · ${data.reviewed}/${data.total}`)
+      w.url = `${APP_URL}/review`
+      return w
+    }
+    const header = widget.addText('Freedwise')
+    header.font = Font.boldSystemFont(15)
+    header.textColor = COLORS.blue
+    header.centerAlignText()
 
-  if (data.allDone || highlights.length === 0) {
-    const w = renderAllDone(family, total, reviewed, isDark)
-    setRefreshHint(w)
-    return w
+    widget.addSpacer()
+
+    const done = widget.addText('All done for today! 🎉')
+    done.font = Font.mediumSystemFont(20)
+    done.textColor = isDark ? COLORS.textDark : COLORS.text
+    done.centerAlignText()
+
+    widget.addSpacer(8)
+
+    const stats = widget.addText(`${data.reviewed}/${data.total} reviewed`)
+    stats.font = Font.regularSystemFont(15)
+    stats.textColor = isDark ? COLORS.textMutedDark : COLORS.textMuted
+    stats.centerAlignText()
+
+    widget.addSpacer()
+
+    widget.url = `${APP_URL}/review`
+    return widget
   }
 
-  const idx = pickRotationIndex(highlights.length)
-  const h = highlights[idx]
+  const h = data.highlight
 
+  // Lock Screen variants — render minimally and return early.
   if (family === 'accessoryRectangular') {
-    renderAccessoryRectangular(widget, h, total, reviewed)
-  } else if (family === 'accessoryInline') {
-    renderAccessoryInline(widget, h)
-  } else if (family === 'accessoryCircular') {
-    renderAccessoryCircular(widget, total, reviewed)
-  } else {
-    renderHomeScreen(widget, family, h, total, reviewed, isDark)
+    const w = new ListWidget()
+    renderAccessoryRectangular(w, h, data.total, data.reviewed)
+    return w
   }
+  if (family === 'accessoryInline') {
+    const w = new ListWidget()
+    renderAccessoryInline(w, h)
+    return w
+  }
+  if (family === 'accessoryCircular') {
+    const w = new ListWidget()
+    renderAccessoryCircular(w, data.total, data.reviewed)
+    return w
+  }
+
+  // ─── Home Screen (Large) layout — original ────────────────
+  const highlightText = stripHtml(h.htmlContent || h.text)
+
+  // Header row: title + progress
+  const headerStack = widget.addStack()
+  headerStack.layoutHorizontally()
+  headerStack.centerAlignContent()
+
+  const title = headerStack.addText('Freedwise')
+  title.font = Font.boldSystemFont(15)
+  title.textColor = COLORS.blue
+
+  headerStack.addSpacer()
+
+  const progress = headerStack.addText(`${data.reviewed}/${data.total}`)
+  progress.font = Font.mediumSystemFont(13)
+  progress.textColor = isDark ? COLORS.textMutedDark : COLORS.textMuted
+
+  widget.addSpacer(12)
+
+  // Highlight text - allow more lines, better wrapping
+  const body = widget.addText(highlightText)
+  body.font = Font.regularSystemFont(17)
+  body.textColor = isDark ? COLORS.textDark : COLORS.text
+  body.lineLimit = 12
+
+  // Source / author
+  if (h.source || h.author) {
+    widget.addSpacer(8)
+    const meta = widget.addText(
+      [h.author, h.source].filter(Boolean).join(' · ')
+    )
+    meta.font = Font.italicSystemFont(13)
+    meta.textColor = isDark ? COLORS.textMutedDark : COLORS.textMuted
+    meta.lineLimit = 1
+  }
+
+  widget.addSpacer()
+
+  // Rating buttons row - centered
+  const btnStack = widget.addStack()
+  btnStack.layoutHorizontally()
+  btnStack.centerAlignContent()
+
+  const rateUrl = (rating) =>
+    `${APP_URL}/review?rate=${rating}&id=${h.summaryHighlightId}`
+
+  btnStack.addSpacer()
+
+  // Low button
+  const lowBtn = btnStack.addStack()
+  lowBtn.layoutHorizontally()
+  lowBtn.centerAlignContent()
+  lowBtn.setPadding(12, 24, 12, 24)
+  lowBtn.cornerRadius = 12
+  lowBtn.backgroundColor = COLORS.red
+  lowBtn.borderColor = COLORS.redBorder
+  lowBtn.borderWidth = 2
+  lowBtn.url = rateUrl('low')
+  const lowLabel = lowBtn.addText('Low')
+  lowLabel.font = Font.semiboldSystemFont(16)
+  lowLabel.textColor = COLORS.redText
+  lowLabel.centerAlignText()
+
+  btnStack.addSpacer(12)
+
+  // Med button
+  const medBtn = btnStack.addStack()
+  medBtn.layoutHorizontally()
+  medBtn.centerAlignContent()
+  medBtn.setPadding(12, 24, 12, 24)
+  medBtn.cornerRadius = 12
+  medBtn.backgroundColor = COLORS.yellow
+  medBtn.borderColor = COLORS.yellowBorder
+  medBtn.borderWidth = 2
+  medBtn.url = rateUrl('med')
+  const medLabel = medBtn.addText('Med')
+  medLabel.font = Font.semiboldSystemFont(16)
+  medLabel.textColor = COLORS.yellowText
+  medLabel.centerAlignText()
+
+  btnStack.addSpacer(12)
+
+  // High button
+  const highBtn = btnStack.addStack()
+  highBtn.layoutHorizontally()
+  highBtn.centerAlignContent()
+  highBtn.setPadding(12, 24, 12, 24)
+  highBtn.cornerRadius = 12
+  highBtn.backgroundColor = COLORS.green
+  highBtn.borderColor = COLORS.greenBorder
+  highBtn.borderWidth = 2
+  highBtn.url = rateUrl('high')
+  const highLabel = highBtn.addText('High')
+  highLabel.font = Font.semiboldSystemFont(16)
+  highLabel.textColor = COLORS.greenText
+  highLabel.centerAlignText()
+
+  btnStack.addSpacer()
+
+  // Fallback tap opens review page at this highlight
+  widget.url = `${APP_URL}/review?id=${h.summaryHighlightId}`
 
   return widget
 }
@@ -617,10 +520,11 @@ if (config.runsInWidget) {
   Script.setWidget(widget)
 } else {
   const family = config.widgetFamily || 'large'
-  if (family === 'small') widget.presentSmall()
-  else if (family === 'medium') widget.presentMedium()
-  else if (family === 'accessoryRectangular' || family === 'accessoryInline' || family === 'accessoryCircular') widget.presentSmall()
-  else widget.presentLarge()
+  if (family === 'accessoryRectangular' || family === 'accessoryInline' || family === 'accessoryCircular') {
+    widget.presentSmall()
+  } else {
+    widget.presentLarge()
+  }
 }
 
 Script.complete()
