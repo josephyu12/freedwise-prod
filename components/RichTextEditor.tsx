@@ -91,46 +91,58 @@ export default function RichTextEditor({ value, htmlValue, onChange, placeholder
       }
     }
     
-    // For list commands, toggle correctly: if user is already in a list of the
-    // SAME type as requested, toggle it off; if they're in the OTHER list type,
-    // switch to the requested type (single execCommand handles the conversion).
+    // List commands: do this manually rather than via execCommand. Chrome's
+    // execCommand('insertUnorderedList') on a <li> that contains a <p> and
+    // trailing <br> (the state produced by the new fullscreen editor + Shift+Enter)
+    // sometimes mutates adjacent lists — turning a sibling <ul> into <ol>. Manual
+    // DOM manipulation avoids that.
     if (command === 'insertUnorderedList' || command === 'insertOrderedList') {
+      const targetTag = command === 'insertUnorderedList' ? 'UL' : 'OL'
       const selection = window.getSelection()
       const range = selection && selection.rangeCount > 0 ? selection.getRangeAt(0) : null
-      const container = range?.commonAncestorContainer
-      const listElement = container
-        ? (container.nodeType === Node.ELEMENT_NODE
-            ? (container as Element).closest('ul, ol')
-            : container.parentElement?.closest('ul, ol'))
+      const startContainer = range?.startContainer
+      const currentLi = startContainer
+        ? (startContainer.nodeType === Node.ELEMENT_NODE
+            ? (startContainer as Element).closest('li')
+            : startContainer.parentElement?.closest('li')) as HTMLLIElement | null
         : null
-      const currentType = listElement?.tagName === 'UL'
-        ? 'insertUnorderedList'
-        : listElement?.tagName === 'OL'
-          ? 'insertOrderedList'
-          : null
+      const parentList = currentLi?.parentElement as HTMLElement | null
+      const parentIsList = parentList && (parentList.tagName === 'UL' || parentList.tagName === 'OL')
 
-      if (currentType === command) {
-        // Same type — toggle off (one call only; calling both flips ul→ol)
-        document.execCommand(command, false)
-      } else {
-        // Either not in a list, or in the other type — one call creates/converts
-        const success = document.execCommand(command, false)
-        if (!success && range && selection) {
-          // Fallback: manually create list (rare, only if execCommand fails)
-          const text = selection.toString() || 'List item'
-          const listTag = command === 'insertUnorderedList' ? 'ul' : 'ol'
-          const list = document.createElement(listTag)
-          const li = document.createElement('li')
-          li.textContent = text
-          list.appendChild(li)
-          range.deleteContents()
-          range.insertNode(list)
+      if (currentLi && parentList && parentIsList && selection && range) {
+        if (parentList.tagName === targetTag) {
+          // Already in a list of the requested type — create a nested sub-bullet
+          // at the cursor. Reuse an existing nested list of the same type if one
+          // exists at the end of this <li>, otherwise create one.
+          let nestedList = Array.from(currentLi.children).find(
+            (c) => c.tagName === targetTag
+          ) as HTMLElement | undefined
+          if (!nestedList) {
+            nestedList = document.createElement(targetTag.toLowerCase())
+            currentLi.appendChild(nestedList)
+          }
+          const newLi = document.createElement('li')
+          nestedList.appendChild(newLi)
+          const newRange = document.createRange()
+          newRange.setStart(newLi, 0)
+          newRange.collapse(true)
           selection.removeAllRanges()
-          selection.addRange(range)
+          selection.addRange(newRange)
+        } else {
+          // Different list type — convert the parent list in place. This only
+          // touches the immediate parent; sibling lists are untouched, so you
+          // can't accidentally flip a neighboring <ul> into <ol>.
+          const newList = document.createElement(targetTag.toLowerCase())
+          while (parentList.firstChild) {
+            newList.appendChild(parentList.firstChild)
+          }
+          parentList.replaceWith(newList)
         }
+      } else {
+        // Not in a list — let the browser create one at the cursor.
+        document.execCommand(command, false)
       }
     } else {
-      // For other commands, use standard execCommand
       document.execCommand(command, false, value)
     }
     
