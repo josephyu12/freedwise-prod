@@ -9,6 +9,7 @@ import PinDialog from '@/components/PinDialog'
 import { useUnsavedChanges } from '@/hooks/useUnsavedChanges'
 import { Pin, PinOff } from 'lucide-react'
 import { addToNotionSyncQueue } from '@/lib/notionSyncQueue'
+import NotionSyncButton from '@/components/NotionSyncButton'
 import { callRedistribute } from '@/lib/redistribute'
 import { parseIntoParagraphs, groupParagraphsByDividers, ParagraphBlock, splitHtmlByBlankLines } from '@/lib/splitHighlightText'
 import { renderHighlightHtml } from '@/lib/renderHighlightHtml'
@@ -466,16 +467,13 @@ export default function HighlightsPage() {
         })
       }
 
-      // Queue each new highlight for Notion, then trigger sync directly so we
-      // don't wait the helper's 2s debounce.
-      const queuePromises = rows.map((r) =>
+      // Queue each new highlight for Notion. Outbound sync is manual now —
+      // the user drains the queue with the "Sync to Notion" button below.
+      for (const r of rows) {
         addToSyncQueue(r.id, 'add', r.text, r.html_content).catch((err: any) => {
           console.error('Error adding to sync queue:', err)
         })
-      )
-      Promise.all(queuePromises).then(() => {
-        fetch('/api/notion/sync', { method: 'POST' }).catch(() => {})
-      })
+      }
 
       setSaveSuccess(true)
       setTimeout(() => setSaveSuccess(false), 2000)
@@ -879,6 +877,7 @@ export default function HighlightsPage() {
                 {showArchived ? 'Archived Highlights' : 'My Highlights'}
               </h1>
               <div className="flex flex-wrap items-center gap-2">
+                <NotionSyncButton />
                 <button
                   onClick={() => setShowArchived(!showArchived)}
                   className={`flex items-center gap-2 px-3.5 py-2 rounded-full transition-all text-sm font-medium ${

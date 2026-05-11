@@ -36,11 +36,17 @@ function verifyWidgetToken(token: string): string | null {
 }
 
 // GET: Single endpoint for the Scriptable widget
-// Accepts a signed widget token, verifies it, fetches the next highlight
+// Accepts a signed widget token, verifies it, fetches a batch of unrated highlights
+// so the widget can rotate through them between iOS-scheduled refreshes.
 export async function GET(request: NextRequest) {
   try {
     const token = request.nextUrl.searchParams.get('token')
     const dateParam = request.nextUrl.searchParams.get('date')
+    const countParam = request.nextUrl.searchParams.get('count')
+    const requestedCount = Math.min(
+      Math.max(parseInt(countParam || '10', 10) || 10, 1),
+      30
+    )
 
     if (!token) {
       return NextResponse.json({ error: 'Missing token' }, { status: 400 })
@@ -77,6 +83,7 @@ export async function GET(request: NextRequest) {
     if (!summaryData) {
       return NextResponse.json({
         highlight: null,
+        highlights: [],
         total: 0,
         reviewed: 0,
       })
@@ -124,30 +131,34 @@ export async function GET(request: NextRequest) {
     if (!unratedHighlights || unratedHighlights.length === 0) {
       return NextResponse.json({
         highlight: null,
+        highlights: [],
         total,
         reviewed,
         allDone: true,
       })
     }
 
-    // Pick the shortest highlight by text length
-    const shortest = (unratedHighlights as any[]).reduce(
-      (shortest, current) => {
-        const shortestLen = shortest.highlight?.text?.length || Infinity
-        const currentLen = current.highlight?.text?.length || Infinity
-        return currentLen < shortestLen ? current : shortest
-      }
-    )
+    // Sort by text length ascending (shorter highlights fit the widget better),
+    // then take the first `requestedCount`. The widget rotates among these.
+    const sorted = (unratedHighlights as any[]).slice().sort((a, b) => {
+      const lenA = a.highlight?.text?.length || 0
+      const lenB = b.highlight?.text?.length || 0
+      return lenA - lenB
+    })
+
+    const batch = sorted.slice(0, requestedCount).map((row) => ({
+      summaryHighlightId: row.id,
+      highlightId: row.highlight_id,
+      text: row.highlight?.text || '',
+      htmlContent: row.highlight?.html_content || null,
+      source: row.highlight?.source || null,
+      author: row.highlight?.author || null,
+    }))
 
     return NextResponse.json({
-      highlight: {
-        summaryHighlightId: shortest.id,
-        highlightId: shortest.highlight_id,
-        text: shortest.highlight?.text || '',
-        htmlContent: shortest.highlight?.html_content || null,
-        source: shortest.highlight?.source || null,
-        author: shortest.highlight?.author || null,
-      },
+      // `highlight` kept for backward compat with older widget scripts
+      highlight: batch[0],
+      highlights: batch,
       total,
       reviewed,
       allDone: false,

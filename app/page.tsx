@@ -182,19 +182,16 @@ export default function Home() {
         })
       }
 
-      // Queue each new highlight for Notion, then trigger sync directly so we
-      // don't wait the helper's 2s debounce.
-      const queuePromises = rows.map((r) =>
+      // Queue each new highlight for Notion. The user drains the queue
+      // manually from the "Sync to Notion" button on /highlights.
+      for (const r of rows) {
         addToNotionSyncQueue({
           highlightId: r.id,
           operationType: 'add',
           text: r.text,
           htmlContent: r.html_content,
         }).catch(() => {})
-      )
-      Promise.all(queuePromises).then(() => {
-        fetch('/api/notion/sync', { method: 'POST' }).catch(() => {})
-      })
+      }
 
       setSaveSuccess(true)
       setTimeout(() => setSaveSuccess(false), 2000)

@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { useRouter } from 'next/navigation'
+import NotionSyncButton from '@/components/NotionSyncButton'
 
 interface NotionSettings {
   id?: string
@@ -397,6 +398,22 @@ export default function SettingsPage() {
                 )}
               </div>
             </form>
+
+            {settings.enabled && settings.notion_api_key && settings.notion_page_id && (
+              <div className="mt-6 pt-6 border-t border-gray-200 dark:border-gray-700">
+                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                  <div>
+                    <h3 className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>
+                      Manual sync
+                    </h3>
+                    <p className="text-xs mt-1" style={{ color: 'var(--text-tertiary)' }}>
+                      Edits and new highlights are queued automatically. Click below to push them to Notion.
+                    </p>
+                  </div>
+                  <NotionSyncButton />
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Last month reviewed */}

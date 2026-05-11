@@ -4,7 +4,6 @@ import './globals.css'
 import AppHeader from '@/components/AppHeader'
 
 const inter = Inter({ subsets: ['latin'], display: 'swap' })
-import NotionSyncProcessor from '@/components/NotionSyncProcessor'
 import Link from 'next/link'
 
 export const metadata: Metadata = {
@@ -33,7 +32,6 @@ export default function RootLayout({
       </head>
       <body className={`${inter.className} flex flex-col min-h-screen`}>
         <AppHeader />
-        <NotionSyncProcessor />
         <div className="flex-1">
           {children}
         </div>
