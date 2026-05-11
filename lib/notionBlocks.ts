@@ -429,8 +429,25 @@ export function htmlToNotionBlocks(html: string): any[] {
 
   contentBlocks.sort((a, b) => a.index - b.index)
 
+  // Drop blocks nested inside another contentBlock (e.g. <p> inside a <ul>'s <li>) so the
+  // inner content isn't emitted twice — once as part of the parent, once as a standalone block.
+  // Keep <ul>/<ol> nested inside <p>/<div> so the "<p> contains only a list" case
+  // (handled below by isOnlyTopLevelList) still emits the list.
+  const filteredContentBlocks = contentBlocks.filter((block) => {
+    const container = contentBlocks.find((c) =>
+      c !== block &&
+      c.index <= block.index &&
+      c.index + c.fullMatch.length >= block.index + block.fullMatch.length
+    )
+    if (!container) return true
+    return (
+      (block.type === 'ul' || block.type === 'ol') &&
+      (container.type === 'p' || container.type === 'div')
+    )
+  })
+
   let lastIndex = 0
-  for (const block of contentBlocks) {
+  for (const block of filteredContentBlocks) {
     if (block.index > lastIndex) {
       const textBefore = html.substring(lastIndex, block.index).trim()
       if (textBefore) {
@@ -682,11 +699,27 @@ export function htmlToBlockText(html: string): string {
   }
   contentBlocks.sort((a, b) => a.index - b.index)
 
+  // Mirror htmlToNotionBlocks: drop blocks nested inside another contentBlock so block-order
+  // text matches the blocks Notion actually receives. Keep <ul>/<ol> nested inside <p>/<div>
+  // to mirror the "only-a-list" break-out in htmlToNotionBlocks.
+  const filteredContentBlocks = contentBlocks.filter((block) => {
+    const container = contentBlocks.find((c) =>
+      c !== block &&
+      c.index <= block.index &&
+      c.index + c.fullMatch.length >= block.index + block.fullMatch.length
+    )
+    if (!container) return true
+    return (
+      (block.type === 'ul' || block.type === 'ol') &&
+      (container.type === 'p' || container.type === 'div')
+    )
+  })
+
   const parts: string[] = []
   let lastIndex = 0
   const lineSplitRegex = /(?:<\s*br\s*\/?\s*>|<\/div>\s*<div[^>]*>|<\/p>\s*<p[^>]*>|\n)/gi
 
-  for (const block of contentBlocks) {
+  for (const block of filteredContentBlocks) {
     if (block.index > lastIndex) {
       const textBefore = html.substring(lastIndex, block.index).trim()
       if (textBefore) {
