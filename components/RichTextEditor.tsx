@@ -91,76 +91,43 @@ export default function RichTextEditor({ value, htmlValue, onChange, placeholder
       }
     }
     
-    // For list commands, use a more reliable approach
-    if (command === 'insertUnorderedList') {
+    // For list commands, toggle correctly: if user is already in a list of the
+    // SAME type as requested, toggle it off; if they're in the OTHER list type,
+    // switch to the requested type (single execCommand handles the conversion).
+    if (command === 'insertUnorderedList' || command === 'insertOrderedList') {
       const selection = window.getSelection()
-      if (selection && selection.rangeCount > 0) {
-        const range = selection.getRangeAt(0)
-        const container = range.commonAncestorContainer
-        
-        // Check if we're already in a list
-        const listElement = container.nodeType === Node.ELEMENT_NODE
-          ? (container as Element).closest('ul, ol')
-          : container.parentElement?.closest('ul, ol')
-        
-        if (listElement) {
-          // Toggle off if already in a list
-          document.execCommand('insertUnorderedList', false)
-          document.execCommand('insertOrderedList', false)
-        } else {
-          // Create new list
-          const success = document.execCommand('insertUnorderedList', false)
-          if (!success) {
-            // Fallback: manually create list
-            const text = selection.toString() || 'List item'
-            const ul = document.createElement('ul')
-            const li = document.createElement('li')
-            li.textContent = text
-            ul.appendChild(li)
-            range.deleteContents()
-            range.insertNode(ul)
-            selection.removeAllRanges()
-            selection.addRange(range)
-          }
-        }
+      const range = selection && selection.rangeCount > 0 ? selection.getRangeAt(0) : null
+      const container = range?.commonAncestorContainer
+      const listElement = container
+        ? (container.nodeType === Node.ELEMENT_NODE
+            ? (container as Element).closest('ul, ol')
+            : container.parentElement?.closest('ul, ol'))
+        : null
+      const currentType = listElement?.tagName === 'UL'
+        ? 'insertUnorderedList'
+        : listElement?.tagName === 'OL'
+          ? 'insertOrderedList'
+          : null
+
+      if (currentType === command) {
+        // Same type — toggle off (one call only; calling both flips ul→ol)
+        document.execCommand(command, false)
       } else {
-        // No selection, create list at cursor
-        document.execCommand('insertUnorderedList', false)
-      }
-    } else if (command === 'insertOrderedList') {
-      const selection = window.getSelection()
-      if (selection && selection.rangeCount > 0) {
-        const range = selection.getRangeAt(0)
-        const container = range.commonAncestorContainer
-        
-        // Check if we're already in a list
-        const listElement = container.nodeType === Node.ELEMENT_NODE
-          ? (container as Element).closest('ul, ol')
-          : container.parentElement?.closest('ul, ol')
-        
-        if (listElement) {
-          // Toggle off if already in a list
-          document.execCommand('insertUnorderedList', false)
-          document.execCommand('insertOrderedList', false)
-        } else {
-          // Create new list
-          const success = document.execCommand('insertOrderedList', false)
-          if (!success) {
-            // Fallback: manually create list
-            const text = selection.toString() || 'List item'
-            const ol = document.createElement('ol')
-            const li = document.createElement('li')
-            li.textContent = text
-            ol.appendChild(li)
-            range.deleteContents()
-            range.insertNode(ol)
-            selection.removeAllRanges()
-            selection.addRange(range)
-          }
+        // Either not in a list, or in the other type — one call creates/converts
+        const success = document.execCommand(command, false)
+        if (!success && range && selection) {
+          // Fallback: manually create list (rare, only if execCommand fails)
+          const text = selection.toString() || 'List item'
+          const listTag = command === 'insertUnorderedList' ? 'ul' : 'ol'
+          const list = document.createElement(listTag)
+          const li = document.createElement('li')
+          li.textContent = text
+          list.appendChild(li)
+          range.deleteContents()
+          range.insertNode(list)
+          selection.removeAllRanges()
+          selection.addRange(range)
         }
-      } else {
-        // No selection, create list at cursor
-        document.execCommand('insertOrderedList', false)
       }
     } else {
       // For other commands, use standard execCommand
@@ -335,30 +302,10 @@ export default function RichTextEditor({ value, htmlValue, onChange, placeholder
       }
     }
     
-    // Handle Enter key in lists
-    if (e.key === 'Enter' && editorRef.current) {
-      const selection = window.getSelection()
-      if (selection && selection.rangeCount > 0) {
-        const range = selection.getRangeAt(0)
-        const container = range.commonAncestorContainer
-        const listElement = container.nodeType === Node.ELEMENT_NODE
-          ? (container as Element).closest('ul, ol')
-          : container.parentElement?.closest('ul, ol')
-        
-        if (listElement && e.shiftKey) {
-          // Shift+Enter: exit list
-          e.preventDefault()
-          const br = document.createElement('br')
-          range.deleteContents()
-          range.insertNode(br)
-          range.setStartAfter(br)
-          selection.removeAllRanges()
-          selection.addRange(range)
-          handleInput()
-        }
-        // Normal Enter in list will create new list item (browser default)
-      }
-    }
+    // Enter/Shift+Enter use the browser's native behavior. A previous custom
+    // Shift+Enter override left the range in an inverted state, which made the
+    // browser reflow <ul> into <ol> on the next keystroke (especially with the
+    // new editor's <p>-inside-<li> structure).
   }
 
   const toolbar = (
