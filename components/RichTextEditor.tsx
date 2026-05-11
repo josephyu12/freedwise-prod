@@ -328,7 +328,7 @@ export default function RichTextEditor({ value, htmlValue, onChange, placeholder
     >
         <button
           type="button"
-          onMouseDown={(e) => { e.preventDefault(); execCommand('bold') }}
+          onPointerDown={(e) => { e.preventDefault(); execCommand('bold') }}
           className="w-8 h-8 flex items-center justify-center text-sm font-bold text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
           title="Bold"
         >
@@ -336,7 +336,7 @@ export default function RichTextEditor({ value, htmlValue, onChange, placeholder
         </button>
         <button
           type="button"
-          onMouseDown={(e) => { e.preventDefault(); execCommand('italic') }}
+          onPointerDown={(e) => { e.preventDefault(); execCommand('italic') }}
           className="w-8 h-8 flex items-center justify-center text-sm italic text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
           title="Italic"
         >
@@ -344,7 +344,7 @@ export default function RichTextEditor({ value, htmlValue, onChange, placeholder
         </button>
         <button
           type="button"
-          onMouseDown={(e) => { e.preventDefault(); execCommand('underline') }}
+          onPointerDown={(e) => { e.preventDefault(); execCommand('underline') }}
           className="w-8 h-8 flex items-center justify-center text-sm underline text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
           title="Underline"
         >
@@ -352,7 +352,7 @@ export default function RichTextEditor({ value, htmlValue, onChange, placeholder
         </button>
         <button
           type="button"
-          onMouseDown={(e) => { e.preventDefault(); execCommand('strikeThrough') }}
+          onPointerDown={(e) => { e.preventDefault(); execCommand('strikeThrough') }}
           className="w-8 h-8 flex items-center justify-center text-sm line-through text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
           title="Strikethrough"
         >
@@ -361,7 +361,7 @@ export default function RichTextEditor({ value, htmlValue, onChange, placeholder
         <div className="w-px h-5 bg-gray-200 dark:bg-gray-700 mx-1" />
         <button
           type="button"
-          onMouseDown={(e) => { e.preventDefault(); execCommand('insertUnorderedList') }}
+          onPointerDown={(e) => { e.preventDefault(); execCommand('insertUnorderedList') }}
           className="w-8 h-8 flex items-center justify-center text-sm text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
           title="Bullet List"
         >
@@ -369,7 +369,7 @@ export default function RichTextEditor({ value, htmlValue, onChange, placeholder
         </button>
         <button
           type="button"
-          onMouseDown={(e) => { e.preventDefault(); execCommand('insertOrderedList') }}
+          onPointerDown={(e) => { e.preventDefault(); execCommand('insertOrderedList') }}
           className="w-8 h-8 flex items-center justify-center text-sm text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
           title="Numbered List"
         >
@@ -378,7 +378,7 @@ export default function RichTextEditor({ value, htmlValue, onChange, placeholder
         <div className="w-px h-5 bg-gray-200 dark:bg-gray-700 mx-1" />
         <button
           type="button"
-          onMouseDown={(e) => { e.preventDefault(); indentList() }}
+          onPointerDown={(e) => { e.preventDefault(); indentList() }}
           className="w-8 h-8 flex items-center justify-center text-sm text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
           title="Indent (Tab)"
         >
@@ -386,7 +386,7 @@ export default function RichTextEditor({ value, htmlValue, onChange, placeholder
         </button>
         <button
           type="button"
-          onMouseDown={(e) => { e.preventDefault(); outdentList() }}
+          onPointerDown={(e) => { e.preventDefault(); outdentList() }}
           className="w-8 h-8 flex items-center justify-center text-sm text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
           title="Outdent (Shift+Tab)"
         >
@@ -401,7 +401,7 @@ export default function RichTextEditor({ value, htmlValue, onChange, placeholder
         {onToggleFullscreen && (
           <button
             type="button"
-            onMouseDown={(e) => { e.preventDefault(); onToggleFullscreen() }}
+            onPointerDown={(e) => { e.preventDefault(); onToggleFullscreen() }}
             className="ml-auto sm:ml-2 w-8 h-8 flex items-center justify-center text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
             title={fullscreen ? 'Minimize (Esc)' : 'Fullscreen'}
             aria-label={fullscreen ? 'Minimize editor' : 'Expand editor to fullscreen'}
