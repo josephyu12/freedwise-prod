@@ -448,21 +448,19 @@ export default function RichTextEditor({ value, htmlValue, onChange, placeholder
     />
   )
 
-  if (fullscreen) {
-    return (
-      <div className="relative flex flex-col flex-1 min-h-0">
-        {toolbar}
-        {accent}
-        {editor}
-      </div>
-    )
-  }
-
+  // Keep children in a stable DOM/JSX order (toolbar, accent, editor) and flip
+  // visual order via flex-direction. If the contentEditable's position in the
+  // tree changed between modes, React would remount it and any unsaved typing
+  // would be lost on fullscreen toggle.
   return (
-    <div className="relative">
-      {editor}
-      {accent}
+    <div
+      className={`relative flex ${
+        fullscreen ? 'flex-col flex-1 min-h-0' : 'flex-col-reverse'
+      }`}
+    >
       {toolbar}
+      {accent}
+      {editor}
     </div>
   )
 }
