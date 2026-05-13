@@ -223,6 +223,46 @@ function renderAccessoryCircular(widget, total, reviewed) {
   widget.url = `${APP_URL}/review`
 }
 
+function renderAccessoryRectangularDone(widget, total, reviewed) {
+  widget.setPadding(2, 4, 2, 4)
+
+  const title = widget.addText('Freedwise')
+  title.font = Font.boldSystemFont(11)
+
+  const body = widget.addText('All done for today 🎉')
+  body.font = Font.systemFont(12)
+  body.lineLimit = 1
+
+  const footer = widget.addText(`${reviewed}/${total} reviewed`)
+  footer.font = Font.systemFont(10)
+  footer.textOpacity = 0.7
+
+  widget.url = `${APP_URL}/review`
+}
+
+function renderAccessoryInlineDone(widget) {
+  const t = widget.addText('📖 Freedwise · All done today')
+  t.font = Font.systemFont(12)
+  widget.url = `${APP_URL}/review`
+}
+
+function renderAccessoryCircularDone(widget) {
+  widget.setPadding(0, 0, 0, 0)
+  const stack = widget.addStack()
+  stack.layoutVertically()
+  stack.centerAlignContent()
+
+  const label = stack.addText('FW')
+  label.font = Font.boldSystemFont(9)
+  label.centerAlignText()
+
+  const check = stack.addText('✓')
+  check.font = Font.boldSystemFont(22)
+  check.centerAlignText()
+
+  widget.url = `${APP_URL}/review`
+}
+
 function makeAccessoryMessage(family, msg) {
   const widget = new ListWidget()
   if (family === 'accessoryInline') {
@@ -359,9 +399,19 @@ async function createWidget() {
 
   // All done state
   if (data.allDone || !data.highlight) {
-    if (isAccessory(family)) {
-      const w = makeAccessoryMessage(family, `All done · ${data.reviewed}/${data.total}`)
-      w.url = `${APP_URL}/review`
+    if (family === 'accessoryRectangular') {
+      const w = new ListWidget()
+      renderAccessoryRectangularDone(w, data.total, data.reviewed)
+      return w
+    }
+    if (family === 'accessoryInline') {
+      const w = new ListWidget()
+      renderAccessoryInlineDone(w)
+      return w
+    }
+    if (family === 'accessoryCircular') {
+      const w = new ListWidget()
+      renderAccessoryCircularDone(w)
       return w
     }
     const header = widget.addText('Freedwise')
