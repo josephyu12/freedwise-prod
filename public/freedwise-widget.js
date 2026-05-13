@@ -180,10 +180,24 @@ function isAccessory(family) {
 
 // ─── Lock Screen renderers ──────────────────────────────────
 
-function renderAccessoryRectangular(widget, h, total, reviewed) {
+function formatShortDate(isoDate) {
+  if (!isoDate) return ''
+  const parts = isoDate.split('-')
+  if (parts.length !== 3) return ''
+  const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+  const m = parseInt(parts[1], 10)
+  const d = parseInt(parts[2], 10)
+  if (isNaN(m) || isNaN(d) || m < 1 || m > 12) return ''
+  return `${monthNames[m - 1]} ${d}`
+}
+
+function renderAccessoryRectangular(widget, h, total, reviewed, catchUpDate) {
   widget.setPadding(2, 4, 2, 4)
 
-  const title = widget.addText('Freedwise')
+  const titleText = catchUpDate
+    ? `Freedwise · ${formatShortDate(catchUpDate)}`
+    : 'Freedwise'
+  const title = widget.addText(titleText)
   title.font = Font.boldSystemFont(11)
 
   const highlightText = stripHtml(h.htmlContent || h.text)
@@ -191,16 +205,20 @@ function renderAccessoryRectangular(widget, h, total, reviewed) {
   body.font = Font.systemFont(12)
   body.lineLimit = 2
 
-  const footer = widget.addText(`${reviewed}/${total} today`)
+  const footerText = catchUpDate
+    ? `Catching up · ${reviewed}/${total} today`
+    : `${reviewed}/${total} today`
+  const footer = widget.addText(footerText)
   footer.font = Font.systemFont(10)
   footer.textOpacity = 0.7
 
   widget.url = `${APP_URL}/review?id=${h.summaryHighlightId}`
 }
 
-function renderAccessoryInline(widget, h) {
+function renderAccessoryInline(widget, h, catchUpDate) {
   const highlightText = stripHtml(h.htmlContent || h.text)
-  const t = widget.addText(`📖 ${truncate(highlightText, 60)}`)
+  const prefix = catchUpDate ? `📖 ${formatShortDate(catchUpDate)} · ` : '📖 '
+  const t = widget.addText(`${prefix}${truncate(highlightText, 60)}`)
   t.font = Font.systemFont(12)
   widget.url = `${APP_URL}/review?id=${h.summaryHighlightId}`
 }
@@ -440,16 +458,17 @@ async function createWidget() {
   }
 
   const h = data.highlight
+  const catchUpDate = data.catchUpDate || null
 
   // Lock Screen variants — render minimally and return early.
   if (family === 'accessoryRectangular') {
     const w = new ListWidget()
-    renderAccessoryRectangular(w, h, data.total, data.reviewed)
+    renderAccessoryRectangular(w, h, data.total, data.reviewed, catchUpDate)
     return w
   }
   if (family === 'accessoryInline') {
     const w = new ListWidget()
-    renderAccessoryInline(w, h)
+    renderAccessoryInline(w, h, catchUpDate)
     return w
   }
   if (family === 'accessoryCircular') {
@@ -475,6 +494,13 @@ async function createWidget() {
   const progress = headerStack.addText(`${data.reviewed}/${data.total}`)
   progress.font = Font.mediumSystemFont(13)
   progress.textColor = isDark ? COLORS.textMutedDark : COLORS.textMuted
+
+  if (catchUpDate) {
+    widget.addSpacer(4)
+    const catchUpLabel = widget.addText(`Catching up · ${formatShortDate(catchUpDate)}`)
+    catchUpLabel.font = Font.mediumSystemFont(12)
+    catchUpLabel.textColor = isDark ? COLORS.textMutedDark : COLORS.textMuted
+  }
 
   widget.addSpacer(12)
 

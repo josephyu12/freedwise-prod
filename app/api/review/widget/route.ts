@@ -122,11 +122,71 @@ export async function GET(request: NextRequest) {
     if (nextError) throw nextError
 
     if (!unratedHighlights || unratedHighlights.length === 0) {
+      // Today is done — look for unrated highlights from earlier in the month
+      const firstOfMonth = `${today.substring(0, 8)}01`
+
+      const { data: catchUp, error: catchUpError } = await supabase
+        .from('daily_summary_highlights')
+        .select(
+          `
+          id,
+          highlight_id,
+          daily_summary:daily_summaries!inner (
+            id,
+            date,
+            user_id
+          ),
+          highlight:highlights!inner (
+            id,
+            text,
+            html_content,
+            source,
+            author,
+            archived
+          )
+        `
+        )
+        .eq('daily_summary.user_id', userId)
+        .gte('daily_summary.date', firstOfMonth)
+        .lt('daily_summary.date', today)
+        .eq('highlight.archived', false)
+        .is('rating', null)
+
+      if (catchUpError) throw catchUpError
+
+      if (!catchUp || catchUp.length === 0) {
+        return NextResponse.json({
+          highlight: null,
+          total,
+          reviewed,
+          allDone: true,
+        })
+      }
+
+      // Oldest date first, then shortest text within that date
+      const sorted = (catchUp as any[]).slice().sort((a, b) => {
+        const dateA = a.daily_summary?.date || ''
+        const dateB = b.daily_summary?.date || ''
+        if (dateA !== dateB) return dateA < dateB ? -1 : 1
+        const lenA = a.highlight?.text?.length || Infinity
+        const lenB = b.highlight?.text?.length || Infinity
+        return lenA - lenB
+      })
+      const pick = sorted[0]
+
       return NextResponse.json({
-        highlight: null,
+        highlight: {
+          summaryHighlightId: pick.id,
+          highlightId: pick.highlight_id,
+          text: pick.highlight?.text || '',
+          htmlContent: pick.highlight?.html_content || null,
+          source: pick.highlight?.source || null,
+          author: pick.highlight?.author || null,
+        },
         total,
         reviewed,
-        allDone: true,
+        allDone: false,
+        catchUpDate: pick.daily_summary?.date || null,
       })
     }
 

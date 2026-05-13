@@ -28,6 +28,7 @@ interface ReviewHighlight {
   daily_summary_id: string
   highlight_id: string
   rating: 'low' | 'med' | 'high' | null
+  date: string
   highlight: {
     id: string
     text: string
@@ -140,7 +141,7 @@ function ReviewPageContent() {
             id,
             highlight_id,
             rating,
-            daily_summaries!inner(id),
+            daily_summaries!inner(id, date),
             highlight:highlights!inner (
               id,
               text,
@@ -153,7 +154,8 @@ function ReviewPageContent() {
               )
             )
           `)
-          .eq('daily_summaries.date', today)
+          .gte('daily_summaries.date', `${today.substring(0, 8)}01`)
+          .lte('daily_summaries.date', today)
           .eq('daily_summaries.user_id', user.id)
           .eq('highlight.archived', false)
           .order('rating', { ascending: false, nullsFirst: true })
@@ -172,11 +174,12 @@ function ReviewPageContent() {
         return
       }
 
-      const processed: ReviewHighlight[] = (hlResult.data || []).map((sh: any) => ({
+      const allRows: ReviewHighlight[] = (hlResult.data || []).map((sh: any) => ({
         id: sh.id,
         daily_summary_id: sh.daily_summaries?.id || '',
         highlight_id: sh.highlight_id,
         rating: sh.rating,
+        date: sh.daily_summaries?.date || '',
         highlight: sh.highlight
           ? {
               ...sh.highlight,
@@ -185,12 +188,26 @@ function ReviewPageContent() {
           : null,
       }))
 
-      // Sort by text length (shortest first) for faster reviewing
-      processed.sort((a, b) => {
-        const aLen = a.highlight?.text?.length || 0
-        const bLen = b.highlight?.text?.length || 0
-        return aLen - bLen
-      })
+      // Today's highlights: keep both rated + unrated, sort by text length
+      const todayRows = allRows
+        .filter((h) => h.date === today)
+        .sort((a, b) => {
+          const aLen = a.highlight?.text?.length || 0
+          const bLen = b.highlight?.text?.length || 0
+          return aLen - bLen
+        })
+
+      // Catch-up: only unrated from earlier days, oldest first then shortest
+      const catchUpRows = allRows
+        .filter((h) => h.date !== today && h.rating === null)
+        .sort((a, b) => {
+          if (a.date !== b.date) return a.date < b.date ? -1 : 1
+          const aLen = a.highlight?.text?.length || 0
+          const bLen = b.highlight?.text?.length || 0
+          return aLen - bLen
+        })
+
+      const processed = [...todayRows, ...catchUpRows]
 
       setHighlights(processed)
 
@@ -388,14 +405,21 @@ function ReviewPageContent() {
     }
   }
 
-  const ratedCount = useMemo(
-    () => highlights.filter((h) => h.rating !== null).length,
-    [highlights]
+  const todayHighlights = useMemo(
+    () => highlights.filter((h) => h.date === today),
+    [highlights, today]
   )
 
-  const allDone = highlights.length > 0 && ratedCount === highlights.length
+  const ratedCount = useMemo(
+    () => todayHighlights.filter((h) => h.rating !== null).length,
+    [todayHighlights]
+  )
+
+  const allDone =
+    highlights.length > 0 && highlights.every((h) => h.rating !== null)
 
   const current = highlights[currentIndex] || null
+  const isCatchUp = current ? current.date !== today : false
 
   const handleRate = async (rating: 'low' | 'med' | 'high') => {
     if (!current || ratingInProgress) return
@@ -1025,7 +1049,9 @@ function ReviewPageContent() {
           All Done!
         </h2>
         <p className="text-gray-600 dark:text-gray-300 mb-6 text-center">
-          You reviewed all {highlights.length} highlights for today.
+          {highlights.length === todayHighlights.length
+            ? `You reviewed all ${todayHighlights.length} highlights for today.`
+            : `You're all caught up — ${todayHighlights.length} today plus ${highlights.length - todayHighlights.length} from earlier this month.`}
         </p>
         <div className="flex gap-3">
           <Link
@@ -1053,7 +1079,7 @@ function ReviewPageContent() {
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 safe-area-top">
         <div className="text-sm font-medium text-gray-700 dark:text-gray-300">
-          {ratedCount} / {highlights.length} reviewed
+          {ratedCount} / {todayHighlights.length} reviewed
         </div>
         <Link
           href="/daily"
@@ -1068,7 +1094,13 @@ function ReviewPageContent() {
         <div className="w-full h-1.5 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
           <div
             className="h-full bg-blue-500 rounded-full transition-all duration-500 ease-out"
-            style={{ width: `${(ratedCount / highlights.length) * 100}%` }}
+            style={{
+              width: `${
+                todayHighlights.length === 0
+                  ? 0
+                  : (ratedCount / todayHighlights.length) * 100
+              }%`,
+            }}
           />
         </div>
       </div>
@@ -1081,6 +1113,11 @@ function ReviewPageContent() {
             <div className={`bg-white dark:bg-gray-800 rounded-2xl shadow-xl p-6 mb-4 ${
               current.highlight.archived ? 'opacity-60 border-2 border-orange-300 dark:border-orange-700' : ''
             }`}>
+              {isCatchUp && (
+                <div className="mb-2 px-2 py-1 bg-indigo-100 dark:bg-indigo-900 text-indigo-800 dark:text-indigo-200 rounded text-xs font-semibold inline-block">
+                  Catching up · {format(new Date(`${current.date}T00:00:00`), 'MMM d')}
+                </div>
+              )}
               {current.highlight.archived && (
                 <div className="mb-2 px-2 py-1 bg-orange-100 dark:bg-orange-900 text-orange-800 dark:text-orange-200 rounded text-xs font-semibold inline-block">
                   Archived
