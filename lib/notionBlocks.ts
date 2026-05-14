@@ -891,7 +891,11 @@ export function findMatchingHighlightBlocks(
   const groups = groupNotionBlocks(blocks)
 
   // ── Pass 1: exact match on full combined text ──
-  for (const group of groups) {
+  // Iterate bottom-up: edits/deletes most often target the most recently added
+  // highlight, which appears near the end of the page. If the same text exists
+  // twice (e.g. a prior failed sync re-appended a copy), the newer one wins.
+  for (let i = groups.length - 1; i >= 0; i--) {
+    const group = groups[i]
     const combined = group.blockTexts.join(' ')
     if (
       combined === normalizedOriginalNoHtml ||
@@ -920,7 +924,10 @@ export function findMatchingHighlightBlocks(
     exact: boolean
   } | null = null
 
-  for (const group of groups) {
+  // Iterate bottom-up so on equal-quality ties, the more recent group wins
+  // (we only replace when strictly better, so the first hit from the bottom holds).
+  for (let i = groups.length - 1; i >= 0; i--) {
+    const group = groups[i]
     const gTexts = group.blockTexts
     if (gTexts.length === 0) continue
 
