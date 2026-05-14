@@ -48,8 +48,14 @@ export default function NotionSyncButton() {
     fetchStatus()
     // Refresh queue count when the tab regains focus so the badge stays current
     const onFocus = () => fetchStatus()
+    // Refresh immediately when something in this tab enqueues a sync item
+    const onQueueUpdated = () => fetchStatus()
     window.addEventListener('focus', onFocus)
-    return () => window.removeEventListener('focus', onFocus)
+    window.addEventListener('notion-sync-queue-updated', onQueueUpdated)
+    return () => {
+      window.removeEventListener('focus', onFocus)
+      window.removeEventListener('notion-sync-queue-updated', onQueueUpdated)
+    }
   }, [fetchStatus])
 
   const drainQueue = useCallback(async () => {

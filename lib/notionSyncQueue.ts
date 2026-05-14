@@ -33,6 +33,9 @@ export async function addToNotionSyncQueue(params: {
       console.warn('Failed to add to sync queue:', (data as { error?: string }).error || res.statusText)
     }
     // 200 with enqueued: false and existing: true means deduplicated — no need to warn
+    if (res.ok && typeof window !== 'undefined') {
+      window.dispatchEvent(new Event('notion-sync-queue-updated'))
+    }
   } catch (e) {
     console.warn('Error adding to sync queue:', e)
   }
