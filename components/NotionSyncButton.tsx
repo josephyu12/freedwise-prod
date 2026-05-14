@@ -217,6 +217,12 @@ function SyncModal({
           navigating away may interrupt items that haven&apos;t been written yet.
         </p>
 
+        <SyncProgressBar
+          processed={processed}
+          failed={failed}
+          outstanding={outstanding}
+        />
+
         <div className="bg-gray-50 dark:bg-gray-900/40 rounded-lg p-4 mb-4 border border-gray-200 dark:border-gray-700">
           <div className="flex items-baseline justify-between text-sm">
             <span className="text-gray-500 dark:text-gray-400">Synced</span>
@@ -245,6 +251,47 @@ function SyncModal({
         <p className="text-xs text-gray-500 dark:text-gray-400">
           Each Notion write is rate-limited, so a large queue can take a minute or two.
         </p>
+      </div>
+    </div>
+  )
+}
+
+function SyncProgressBar({
+  processed,
+  failed,
+  outstanding,
+}: {
+  processed: number
+  failed: number
+  outstanding: number
+}) {
+  const done = processed + failed
+  // `outstanding` is the queue snapshot when sync started. If it's somehow zero
+  // (stale fetch), fall back to `done` so the bar still moves rather than sitting
+  // at 100% from the first frame.
+  const total = Math.max(outstanding, done, 1)
+  const isIndeterminate = outstanding === 0 && done === 0
+  const pct = isIndeterminate ? 0 : Math.min(100, Math.round((done / total) * 100))
+
+  return (
+    <div className="mb-4">
+      <div className="flex items-baseline justify-between text-xs text-gray-500 dark:text-gray-400 mb-1.5 tabular-nums">
+        <span>{isIndeterminate ? 'Starting…' : `${done} of ${total}`}</span>
+        <span>{isIndeterminate ? '' : `${pct}%`}</span>
+      </div>
+      <div className="h-2 w-full rounded-full bg-gray-200 dark:bg-gray-700 overflow-hidden">
+        {isIndeterminate ? (
+          <div className="h-full w-1/3 rounded-full bg-indigo-500 animate-pulse" />
+        ) : (
+          <div
+            className="h-full rounded-full bg-indigo-500 transition-all duration-300 ease-out"
+            style={{ width: `${pct}%` }}
+            role="progressbar"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={pct}
+          />
+        )}
       </div>
     </div>
   )
