@@ -7,7 +7,14 @@
  */
 export type NotionSyncOperation = 'add' | 'update' | 'delete'
 
-export async function addToNotionSyncQueue(params: {
+// Per-highlight serialization: ensures rapid sequences like add → delete arrive at
+// the server in the order they were issued. Without this, a fire-and-forget add
+// followed by a fire-and-forget delete can race; if delete arrives first, the
+// cancel-pending-add logic finds nothing and the delete is enqueued as a no-op
+// that fails on sync (because the add never made it to Notion).
+const inFlightByHighlight = new Map<string, Promise<unknown>>()
+
+async function sendQueueRequest(params: {
   highlightId: string | null
   operationType: NotionSyncOperation
   text?: string | null
@@ -32,11 +39,43 @@ export async function addToNotionSyncQueue(params: {
     if (!res.ok && res.status >= 500) {
       console.warn('Failed to add to sync queue:', (data as { error?: string }).error || res.statusText)
     }
-    // 200 with enqueued: false and existing: true means deduplicated — no need to warn
     if (res.ok && typeof window !== 'undefined') {
       window.dispatchEvent(new Event('notion-sync-queue-updated'))
     }
   } catch (e) {
     console.warn('Error adding to sync queue:', e)
   }
+}
+
+export async function addToNotionSyncQueue(params: {
+  highlightId: string | null
+  operationType: NotionSyncOperation
+  text?: string | null
+  htmlContent?: string | null
+  originalText?: string | null
+  originalHtmlContent?: string | null
+}): Promise<void> {
+  // No highlightId scope (e.g., legacy callers) — just fire.
+  if (!params.highlightId) {
+    return sendQueueRequest(params)
+  }
+
+  const key = params.highlightId
+  const previous = inFlightByHighlight.get(key)
+  const next = (async () => {
+    if (previous) {
+      // Don't propagate previous failures — we still want to send our own request.
+      await previous.catch(() => {})
+    }
+    await sendQueueRequest(params)
+  })()
+
+  inFlightByHighlight.set(key, next)
+  next.finally(() => {
+    if (inFlightByHighlight.get(key) === next) {
+      inFlightByHighlight.delete(key)
+    }
+  })
+
+  return next
 }
