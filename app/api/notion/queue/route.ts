@@ -52,6 +52,46 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ enqueued: false, message: 'Notion integration not configured' })
     }
 
+    // Delete-after-add short-circuit: if the user added a highlight then deleted it
+    // before the `add` ever synced, nothing made it to Notion — cancel the pending
+    // add and any pending updates for it, and skip enqueueing the delete entirely.
+    // Saves a round-trip and avoids "Highlight not found in Notion page" failures.
+    //
+    // Only safe to cancel updates when we are ALSO cancelling the add. If the add
+    // already synced (completed/processing/retrying), pending updates are what bring
+    // Notion to the state the delete payload expects — leave them alone.
+    if (operationType === 'delete' && highlightId) {
+      const { data: pendingOps } = await (supabase
+        .from('notion_sync_queue') as any)
+        .select('id, operation_type, retry_count')
+        .eq('user_id', user.id)
+        .eq('highlight_id', highlightId)
+        .eq('status', 'pending')
+
+      const cancellableAdd = (pendingOps || []).find(
+        (op: any) => op.operation_type === 'add' && op.retry_count === 0
+      )
+
+      if (cancellableAdd) {
+        const toCancelIds = (pendingOps || [])
+          .filter((op: any) =>
+            (op.operation_type === 'add' || op.operation_type === 'update') && op.retry_count === 0
+          )
+          .map((op: any) => op.id)
+
+        await (supabase
+          .from('notion_sync_queue') as any)
+          .delete()
+          .in('id', toCancelIds)
+
+        return NextResponse.json({
+          enqueued: false,
+          cancelled: toCancelIds.length,
+          message: 'Cancelled pending add; nothing to delete in Notion',
+        })
+      }
+    }
+
     // Deduplicate: if there is already a pending item for this highlight + operation,
     // update it with the latest content so the newest edit wins. If the existing item
     // is already processing (mid-flight), insert a new entry so the second edit isn't lost.

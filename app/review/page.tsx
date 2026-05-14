@@ -103,7 +103,7 @@ function ReviewPageContent() {
     originalHtmlContent?: string | null
   ) => {
     await addToNotionSyncQueue({
-      highlightId: operationType === 'delete' ? null : highlightId,
+      highlightId,
       operationType,
       text: text ?? null,
       htmlContent: htmlContent ?? null,
