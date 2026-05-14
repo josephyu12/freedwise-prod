@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useRef, useState, useCallback } from 'react'
 import { useUnsavedChanges } from '@/hooks/useUnsavedChanges'
 
 type QueueStatus = {
@@ -266,11 +266,17 @@ function SyncProgressBar({
   outstanding: number
 }) {
   const done = processed + failed
-  // `outstanding` is the queue snapshot when sync started. If it's somehow zero
-  // (stale fetch), fall back to `done` so the bar still moves rather than sitting
-  // at 100% from the first frame.
-  const total = Math.max(outstanding, done, 1)
-  const isIndeterminate = outstanding === 0 && done === 0
+  // Ratchet the denominator upward only. The queue can shrink mid-sync when a
+  // delete triggers the cancel-pending-add path (removes 1 row, skips enqueue),
+  // which would otherwise make the displayed total drop from "0 of 2" to "0 of 1".
+  // The modal unmounts between syncs, so the ref resets naturally per run.
+  const maxTotalRef = useRef(1)
+  const candidate = Math.max(outstanding, done, 1)
+  if (candidate > maxTotalRef.current) {
+    maxTotalRef.current = candidate
+  }
+  const total = maxTotalRef.current
+  const isIndeterminate = outstanding === 0 && done === 0 && maxTotalRef.current === 1
   const pct = isIndeterminate ? 0 : Math.min(100, Math.round((done / total) * 100))
 
   return (
