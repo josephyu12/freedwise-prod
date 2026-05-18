@@ -407,6 +407,15 @@ select.input-boxed-elegant {
   margin-bottom: 0.25em;
 }
 
+/* On touch devices, :hover sticks after a tap until you tap elsewhere — making
+   the toolbar buttons look permanently "active." Suppress the hover background
+   so the B/I/U buttons don't look stuck-on after being tapped. */
+@media (hover: none) {
+  .rich-text-toolbar button:hover {
+    background-color: transparent;
+  }
+}
+
 /* Prose styles for rich text display */
 .prose {
   max-width: 65ch;

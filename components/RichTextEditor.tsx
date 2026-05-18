@@ -91,12 +91,6 @@ export default function RichTextEditor({ value, htmlValue, onChange, placeholder
       }
     }
     
-    // Force semantic tags (<b>/<i>/<u>) instead of inline styles. Without this,
-    // iOS Safari un-bolds by inserting <span style="font-weight: normal"> rather
-    // than unwrapping the <b>; sanitizeHtml then strips the style and collapses
-    // the span, so the text stays bold and tapping B/I/U appears to do nothing.
-    try { document.execCommand('styleWithCSS', false, 'false') } catch (e) {}
-
     // List commands: do this manually rather than via execCommand. Chrome's
     // execCommand('insertUnorderedList') on a <li> that contains a <p> and
     // trailing <br> (the state produced by the new fullscreen editor + Shift+Enter)
@@ -328,7 +322,7 @@ export default function RichTextEditor({ value, htmlValue, onChange, placeholder
 
   const toolbar = (
     <div
-      className={`flex items-center gap-0.5 ${fullscreen ? 'mb-3' : 'mt-3'} transition-all duration-200 ${
+      className={`rich-text-toolbar flex items-center gap-0.5 ${fullscreen ? 'mb-3' : 'mt-3'} transition-all duration-200 ${
         isFocused || fullscreen ? 'opacity-100 translate-y-0' : 'opacity-40 translate-y-0'
       }`}
     >
