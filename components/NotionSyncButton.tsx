@@ -18,7 +18,10 @@ type SyncResult = {
   error?: string
 }
 
-const MAX_DRAIN_PASSES = 8
+// Each pass processes one queue item server-side so the progress bar can tick
+// per-item instead of jumping 0 → 100% after a bulk batch. The loop exits early
+// once `data.total === 0`, so this is just an upper safety bound.
+const MAX_DRAIN_PASSES = 500
 
 export default function NotionSyncButton() {
   const [status, setStatus] = useState<QueueStatus | null>(null)

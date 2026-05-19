@@ -118,21 +118,22 @@ export default function ArchivesPage() {
       const text = highlight.text || null
       const htmlContent = highlight.html_content || null
 
-      // Add to Notion sync queue BEFORE deleting (if configured)
-      await addToSyncQueue(
-        id,
-        'delete',
-        text,
-        htmlContent
-      )
-
-      // Delete from database (CASCADE removes it from daily_summary_highlights, so it won't appear in next month's daily reviews)
+      // Delete from database first (CASCADE removes it from daily_summary_highlights, so it won't appear in next month's daily reviews).
+      // Only enqueue the Notion delete after the DB delete succeeds — otherwise we can
+      // wipe the highlight from Notion while it's still in Supabase.
       const { error } = await (supabase
         .from('highlights') as any)
         .delete()
         .eq('id', id)
 
       if (error) throw error
+
+      await addToSyncQueue(
+        id,
+        'delete',
+        text,
+        htmlContent
+      )
 
       // Redistribute remaining highlights across future days so next month's daily reviews stay consistent
       await fetch('/api/daily/redistribute', { method: 'POST' })

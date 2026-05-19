@@ -1042,21 +1042,22 @@ export default function DailyPage() {
       const text = highlightToDelete?.text || null
       const htmlContent = highlightToDelete?.html_content || null
 
-      // Add to Notion sync queue BEFORE deleting (if configured)
-      await addToSyncQueue(
-        highlightId,
-        'delete',
-        text,
-        htmlContent
-      )
-
-      // Delete from database (CASCADE removes it from daily_summary_highlights, so it won't appear in any day's review)
+      // Delete from database first (CASCADE removes it from daily_summary_highlights, so it won't appear in any day's review).
+      // Only enqueue the Notion delete after the DB delete succeeds — otherwise we can
+      // wipe the highlight from Notion while it's still in Supabase.
       const { error } = await (supabase
         .from('highlights') as any)
         .delete()
         .eq('id', highlightId)
 
       if (error) throw error
+
+      await addToSyncQueue(
+        highlightId,
+        'delete',
+        text,
+        htmlContent
+      )
 
       // Redistribute remaining highlights across future days so next month's daily reviews stay consistent
       await fetch('/api/daily/redistribute', { method: 'POST' })
@@ -1126,9 +1127,10 @@ export default function DailyPage() {
 
       // Update original highlight with first group
       const firstGroup = groups[0]
-      await (supabase.from('highlights') as any)
+      const { error: firstGroupUpdateError } = await (supabase.from('highlights') as any)
         .update({ text: firstGroup.text, html_content: firstGroup.html })
         .eq('id', highlight.id)
+      if (firstGroupUpdateError) throw firstGroupUpdateError
 
       await addToSyncQueue(
         highlight.id, 'update',

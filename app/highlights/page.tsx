@@ -618,11 +618,6 @@ export default function HighlightsPage() {
     setHighlights((prev) => prev.filter((h) => h.id !== id))
     setTotalHighlights((prev) => Math.max(0, prev - 1))
 
-    // Queue the Notion delete (manual sync drains it later) without blocking.
-    addToSyncQueue(id, 'delete', text, htmlContent).catch((err) =>
-      console.error('Error queueing Notion delete:', err)
-    )
-
     ;(async () => {
       try {
         const { error } = await (supabase
@@ -630,6 +625,12 @@ export default function HighlightsPage() {
           .delete()
           .eq('id', id)
         if (error) throw error
+
+        // Only enqueue the Notion delete after the DB delete actually succeeded —
+        // otherwise we can wipe the highlight from Notion while it's still in Supabase.
+        addToSyncQueue(id, 'delete', text, htmlContent).catch((err) =>
+          console.error('Error queueing Notion delete:', err)
+        )
 
         // Redistribute remaining highlights so future daily reviews stay consistent.
         callRedistribute().catch(() => {})
@@ -819,9 +820,10 @@ export default function HighlightsPage() {
 
       // Update original highlight with first group
       const firstGroup = groups[0]
-      await (supabase.from('highlights') as any)
+      const { error: firstGroupUpdateError } = await (supabase.from('highlights') as any)
         .update({ text: firstGroup.text, html_content: firstGroup.html })
         .eq('id', highlight.id)
+      if (firstGroupUpdateError) throw firstGroupUpdateError
 
       await addToSyncQueue(
         highlight.id, 'update',

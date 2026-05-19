@@ -621,12 +621,13 @@ function ReviewPageContent() {
 
       // Update original highlight with first group
       const firstGroup = groups[0]
-      await (supabase.from('highlights') as any)
+      const { error: firstGroupUpdateError } = await (supabase.from('highlights') as any)
         .update({
           text: firstGroup.text,
           html_content: firstGroup.html,
         })
         .eq('id', highlight.id)
+      if (firstGroupUpdateError) throw firstGroupUpdateError
 
       // Sync original to Notion
       await addToSyncQueue(
@@ -739,7 +740,7 @@ function ReviewPageContent() {
       const highlightId = editingId
       const original = current?.highlight
 
-      await (supabase.from('highlights') as any)
+      const { error: updateError } = await (supabase.from('highlights') as any)
         .update({
           text: editText.trim(),
           html_content: editHtmlContent.trim() || null,
@@ -747,6 +748,7 @@ function ReviewPageContent() {
           author: editAuthor.trim() || null,
         })
         .eq('id', highlightId)
+      if (updateError) throw updateError
 
       // Update categories
       await (supabase.from('highlight_categories') as any).delete().eq('highlight_id', highlightId)
@@ -860,9 +862,13 @@ function ReviewPageContent() {
       const h = highlights.find((h) => h.highlight_id === highlightId)
       const text = h?.highlight?.text || null
       const htmlContent = h?.highlight?.html_content || null
-      await addToSyncQueue(highlightId, 'delete', text, htmlContent)
 
-      await (supabase.from('highlights') as any).delete().eq('id', highlightId)
+      // Delete from DB first; only enqueue the Notion delete on success so we can't
+      // wipe the highlight from Notion while the Supabase row still exists.
+      const { error: deleteError } = await (supabase.from('highlights') as any).delete().eq('id', highlightId)
+      if (deleteError) throw deleteError
+
+      await addToSyncQueue(highlightId, 'delete', text, htmlContent)
       callRedistribute() // fire-and-forget
 
       setHighlights((prev) => {
