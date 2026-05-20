@@ -746,6 +746,9 @@ function ReviewPageContent() {
           html_content: editHtmlContent.trim() || null,
           source: editSource.trim() || null,
           author: editAuthor.trim() || null,
+          // "Don't sync to Notion": bump the opt-out marker so the
+          // enqueue_notion_sync DB trigger skips this one edit.
+          ...(skipNotionSync ? { notion_optout_marker: crypto.randomUUID() } : {}),
         })
         .eq('id', highlightId)
       if (updateError) throw updateError

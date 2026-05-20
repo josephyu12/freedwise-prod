@@ -1,20 +1,29 @@
 /**
- * Client helper to enqueue Notion sync operations via the deduplicating API.
- * Use this instead of inserting directly into notion_sync_queue.
+ * Notion sync-queue client helper.
  *
- * Outbound sync is manual now — users drain the queue from the "Sync to Notion"
- * button on /highlights. This helper only enqueues; it does NOT trigger /api/notion/sync.
+ * Enqueueing is NO LONGER done from the client. A database trigger on the
+ * `highlights` table (see supabase/migration_notion_sync_trigger.sql) writes
+ * the matching `notion_sync_queue` row in the SAME transaction as the highlight
+ * insert/update/delete. The queue and the highlights table therefore can never
+ * disagree: there is no separate network call left that can fail independently
+ * of the highlight write.
+ *
+ * This module is kept so existing call sites keep compiling and so the Notion
+ * sync counter in the header refreshes promptly after a change.
+ * `addToNotionSyncQueue` performs NO network request and writes nothing — it
+ * only tells `NotionSyncButton` to re-read the (already-updated) queue count.
  */
 export type NotionSyncOperation = 'add' | 'update' | 'delete'
 
-// Per-highlight serialization: ensures rapid sequences like add → delete arrive at
-// the server in the order they were issued. Without this, a fire-and-forget add
-// followed by a fire-and-forget delete can race; if delete arrives first, the
-// cancel-pending-add logic finds nothing and the delete is enqueued as a no-op
-// that fails on sync (because the add never made it to Notion).
-const inFlightByHighlight = new Map<string, Promise<unknown>>()
-
-async function sendQueueRequest(params: {
+/**
+ * Notify the Notion sync badge that the queue may have changed so it refetches
+ * its count. The queue row itself was already written atomically by the
+ * `enqueue_notion_sync` database trigger. No-op on the server.
+ *
+ * The parameter shape is retained only for backwards compatibility with
+ * existing call sites; the values are intentionally ignored.
+ */
+export async function addToNotionSyncQueue(_params: {
   highlightId: string | null
   operationType: NotionSyncOperation
   text?: string | null
@@ -22,60 +31,7 @@ async function sendQueueRequest(params: {
   originalText?: string | null
   originalHtmlContent?: string | null
 }): Promise<void> {
-  try {
-    const res = await fetch('/api/notion/queue', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        highlightId: params.highlightId,
-        operationType: params.operationType,
-        text: params.text ?? null,
-        htmlContent: params.htmlContent ?? null,
-        originalText: params.originalText ?? null,
-        originalHtmlContent: params.originalHtmlContent ?? null,
-      }),
-    })
-    const data = await res.json().catch(() => ({}))
-    if (!res.ok && res.status >= 500) {
-      console.warn('Failed to add to sync queue:', (data as { error?: string }).error || res.statusText)
-    }
-    if (res.ok && typeof window !== 'undefined') {
-      window.dispatchEvent(new Event('notion-sync-queue-updated'))
-    }
-  } catch (e) {
-    console.warn('Error adding to sync queue:', e)
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new Event('notion-sync-queue-updated'))
   }
-}
-
-export async function addToNotionSyncQueue(params: {
-  highlightId: string | null
-  operationType: NotionSyncOperation
-  text?: string | null
-  htmlContent?: string | null
-  originalText?: string | null
-  originalHtmlContent?: string | null
-}): Promise<void> {
-  // No highlightId scope (e.g., legacy callers) — just fire.
-  if (!params.highlightId) {
-    return sendQueueRequest(params)
-  }
-
-  const key = params.highlightId
-  const previous = inFlightByHighlight.get(key)
-  const next = (async () => {
-    if (previous) {
-      // Don't propagate previous failures — we still want to send our own request.
-      await previous.catch(() => {})
-    }
-    await sendQueueRequest(params)
-  })()
-
-  inFlightByHighlight.set(key, next)
-  next.finally(() => {
-    if (inFlightByHighlight.get(key) === next) {
-      inFlightByHighlight.delete(key)
-    }
-  })
-
-  return next
 }

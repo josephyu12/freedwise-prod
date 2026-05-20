@@ -93,6 +93,8 @@ export type Database = {
           rating_count: number
           archived: boolean | null
           user_id: string | null
+          imported_from_notion: boolean
+          notion_optout_marker: string | null
         }
         Insert: {
           id?: string
@@ -107,6 +109,8 @@ export type Database = {
           rating_count?: number
           archived?: boolean | null
           user_id?: string | null
+          imported_from_notion?: boolean
+          notion_optout_marker?: string | null
         }
         Update: {
           id?: string
@@ -121,6 +125,8 @@ export type Database = {
           rating_count?: number
           archived?: boolean | null
           user_id?: string | null
+          imported_from_notion?: boolean
+          notion_optout_marker?: string | null
         }
       }
       daily_summaries: {

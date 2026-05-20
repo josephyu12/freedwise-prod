@@ -368,7 +368,11 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    // Update existing highlights that changed
+    // Update existing highlights that changed.
+    // NOTE: each of these UPDATEs trips the enqueue_notion_sync DB trigger,
+    // which enqueues an 'update' op. The content came FROM Notion, so the
+    // resulting sync is an idempotent no-op write back to the same page —
+    // harmless, but it does add queue churn if this route is ever scheduled.
     let updatedCount = 0
     for (const update of updatedHighlights) {
       const { error: updateError } = await (supabase
@@ -400,6 +404,9 @@ export async function GET(request: NextRequest) {
         rating_count: 0,
         archived: false,
         user_id: user.id, // Required for RLS policy
+        // Read FROM Notion — already on the page. Flag so the
+        // enqueue_notion_sync DB trigger does not enqueue a duplicate 'add'.
+        imported_from_notion: true,
       }))
 
       const { error: insertError } = await (supabase

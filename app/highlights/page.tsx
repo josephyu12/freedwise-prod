@@ -707,7 +707,13 @@ export default function HighlightsPage() {
         // Run the row update and the category swap in parallel — the row
         // update is the bottleneck and there's no ordering dependency.
         const updateRow = (supabase.from('highlights') as any)
-          .update({ text: newText, html_content: newHtml })
+          .update({
+            text: newText,
+            html_content: newHtml,
+            // "Don't sync to Notion": bump the opt-out marker so the
+            // enqueue_notion_sync DB trigger skips this one edit.
+            ...(skipNotionSync ? { notion_optout_marker: crypto.randomUUID() } : {}),
+          })
           .eq('id', id)
 
         const deleteCats = (supabase.from('highlight_categories') as any)

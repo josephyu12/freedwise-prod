@@ -32,7 +32,12 @@ CREATE TABLE IF NOT EXISTS highlights (
   average_rating DECIMAL(3,2) DEFAULT 0, -- Average of all ratings (1-5 scale)
   rating_count INTEGER DEFAULT 0,
   archived BOOLEAN DEFAULT FALSE,
-  user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE
+  user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE,
+  -- TRUE for highlights read FROM a Notion page (they already exist there).
+  -- The enqueue_notion_sync trigger skips the 'add' for these rows.
+  imported_from_notion BOOLEAN NOT NULL DEFAULT FALSE,
+  -- Per-edit opt-out marker for the "Don't sync to Notion" checkbox.
+  notion_optout_marker TEXT
 );
 
 -- Create daily_summaries table
@@ -184,6 +189,14 @@ BEGIN
     ALTER TABLE notion_sync_queue ALTER COLUMN highlight_id DROP NOT NULL;
   END IF;
 END $$;
+
+-- Flag for highlights imported from Notion (skips the trigger's 'add' enqueue).
+ALTER TABLE highlights
+  ADD COLUMN IF NOT EXISTS imported_from_notion BOOLEAN NOT NULL DEFAULT FALSE;
+
+-- Per-edit opt-out marker for the "Don't sync to Notion" checkbox.
+ALTER TABLE highlights
+  ADD COLUMN IF NOT EXISTS notion_optout_marker TEXT;
 
 -- ============================================================================
 -- 3. CREATE INDEXES
@@ -679,6 +692,149 @@ CREATE TRIGGER update_notion_sync_queue_updated_at
   BEFORE UPDATE ON notion_sync_queue
   FOR EACH ROW
   EXECUTE FUNCTION update_notion_sync_queue_updated_at();
+
+-- ============================================================================
+-- 9. ATOMIC NOTION-SYNC ENQUEUEING (see migration_notion_sync_trigger.sql)
+-- ============================================================================
+-- A highlight change and its notion_sync_queue row are written in ONE
+-- transaction by this trigger, so the two tables can never disagree. This
+-- replaces the old POST /api/notion/queue route. See the standalone migration
+-- file for the full rationale.
+
+CREATE OR REPLACE FUNCTION enqueue_notion_sync()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_user_id     uuid;
+  v_notion_on   boolean;
+  v_existing_id uuid;
+  v_pending_add uuid;
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    v_user_id := OLD.user_id;
+  ELSE
+    v_user_id := NEW.user_id;
+  END IF;
+
+  -- Only enqueue when this user has Notion sync enabled.
+  SELECT TRUE INTO v_notion_on
+  FROM user_notion_settings
+  WHERE user_id = v_user_id AND enabled = TRUE
+  LIMIT 1;
+
+  IF v_notion_on IS NOT TRUE THEN
+    RETURN NULL;
+  END IF;
+
+  -- INSERT -> 'add'
+  IF TG_OP = 'INSERT' THEN
+    IF NEW.imported_from_notion THEN
+      RETURN NULL;  -- already on the Notion page; do not echo back
+    END IF;
+
+    INSERT INTO notion_sync_queue
+      (user_id, highlight_id, operation_type, text, html_content,
+       status, retry_count, max_retries)
+    VALUES
+      (NEW.user_id, NEW.id, 'add', NEW.text, NEW.html_content,
+       'pending', 0, 5);
+
+    RETURN NULL;
+  END IF;
+
+  -- UPDATE -> 'update' (WHEN clause guarantees text/html actually changed)
+  IF TG_OP = 'UPDATE' THEN
+    -- "Don't sync to Notion": this edit bumped the opt-out marker. Honour it.
+    IF NEW.notion_optout_marker IS DISTINCT FROM OLD.notion_optout_marker THEN
+      RETURN NULL;
+    END IF;
+
+    SELECT id INTO v_existing_id
+    FROM notion_sync_queue
+    WHERE user_id        = NEW.user_id
+      AND highlight_id   = NEW.id
+      AND operation_type = 'update'
+      AND status         = 'pending'
+    ORDER BY created_at DESC
+    LIMIT 1;
+
+    IF v_existing_id IS NOT NULL THEN
+      UPDATE notion_sync_queue
+      SET text         = NEW.text,
+          html_content = NEW.html_content
+      WHERE id = v_existing_id;
+    ELSE
+      INSERT INTO notion_sync_queue
+        (user_id, highlight_id, operation_type, text, html_content,
+         original_text, original_html_content,
+         status, retry_count, max_retries)
+      VALUES
+        (NEW.user_id, NEW.id, 'update', NEW.text, NEW.html_content,
+         OLD.text, OLD.html_content,
+         'pending', 0, 5);
+    END IF;
+
+    RETURN NULL;
+  END IF;
+
+  -- DELETE -> 'delete', or cancel a never-synced 'add'
+  IF TG_OP = 'DELETE' THEN
+    SELECT id INTO v_pending_add
+    FROM notion_sync_queue
+    WHERE user_id        = OLD.user_id
+      AND highlight_id   = OLD.id
+      AND operation_type = 'add'
+      AND status         = 'pending'
+      AND retry_count    = 0
+    LIMIT 1;
+
+    IF v_pending_add IS NOT NULL THEN
+      DELETE FROM notion_sync_queue
+      WHERE user_id        = OLD.user_id
+        AND highlight_id   = OLD.id
+        AND operation_type IN ('add', 'update')
+        AND status         = 'pending'
+        AND retry_count    = 0;
+
+      RETURN NULL;
+    END IF;
+
+    INSERT INTO notion_sync_queue
+      (user_id, highlight_id, operation_type, text, html_content,
+       status, retry_count, max_retries)
+    VALUES
+      (OLD.user_id, NULL, 'delete', OLD.text, OLD.html_content,
+       'pending', 0, 5);
+
+    RETURN NULL;
+  END IF;
+
+  RETURN NULL;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS enqueue_notion_sync_insert ON highlights;
+CREATE TRIGGER enqueue_notion_sync_insert
+  AFTER INSERT ON highlights
+  FOR EACH ROW
+  EXECUTE FUNCTION enqueue_notion_sync();
+
+DROP TRIGGER IF EXISTS enqueue_notion_sync_update ON highlights;
+CREATE TRIGGER enqueue_notion_sync_update
+  AFTER UPDATE ON highlights
+  FOR EACH ROW
+  WHEN (OLD.text IS DISTINCT FROM NEW.text
+        OR OLD.html_content IS DISTINCT FROM NEW.html_content)
+  EXECUTE FUNCTION enqueue_notion_sync();
+
+DROP TRIGGER IF EXISTS enqueue_notion_sync_delete ON highlights;
+CREATE TRIGGER enqueue_notion_sync_delete
+  AFTER DELETE ON highlights
+  FOR EACH ROW
+  EXECUTE FUNCTION enqueue_notion_sync();
 
 -- ============================================================================
 -- MIGRATION COMPLETE

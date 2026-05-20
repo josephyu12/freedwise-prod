@@ -214,6 +214,10 @@ export default function ImportPage() {
           average_rating: 0,
           rating_count: 0,
           user_id: user.id, // Required for RLS policy
+          // These highlights are read FROM a Notion page — they already exist
+          // there. Flag them so the enqueue_notion_sync DB trigger does NOT
+          // enqueue an 'add' that would duplicate them back into Notion.
+          imported_from_notion: true,
         }))
 
         const { data: inserted, error: insertError } = await (supabase
