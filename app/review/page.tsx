@@ -58,6 +58,7 @@ function ReviewPageContent() {
   const [loading, setLoading] = useState(true)
   const [ratingInProgress, setRatingInProgress] = useState(false)
   const autoRateProcessed = useRef(false)
+  const highlightContentRef = useRef<HTMLDivElement | null>(null)
   const supabase = createClient()
   const searchParams = useSearchParams()
   const router = useRouter()
@@ -430,6 +431,14 @@ function ReviewPageContent() {
 
   const current = highlights[currentIndex] || null
   const isCatchUp = current ? current.date !== today : false
+
+  // Reset highlight content scroll to top whenever the displayed highlight changes,
+  // so a long, scrolled-down highlight doesn't leave the next one mid-scroll.
+  useEffect(() => {
+    if (highlightContentRef.current) {
+      highlightContentRef.current.scrollTop = 0
+    }
+  }, [current?.id])
 
   const handleRate = async (rating: 'low' | 'med' | 'high') => {
     if (!current || ratingInProgress) return
@@ -1322,6 +1331,7 @@ function ReviewPageContent() {
                   )}
 
                   <div
+                    ref={highlightContentRef}
                     className="highlight-content text-lg leading-relaxed prose dark:prose-invert max-w-none mb-4 overflow-y-auto"
                     style={{ maxHeight: '24em' }}
                     dangerouslySetInnerHTML={{
