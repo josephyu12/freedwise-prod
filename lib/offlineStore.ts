@@ -31,7 +31,16 @@ export interface CachedReviewData {
   cachedAt: number
 }
 
-export type OfflineActionType = 'rate-review' | 'rate-daily'
+export type OfflineActionType =
+  | 'rate-review'
+  | 'rate-daily'
+  | 'edit-highlight'
+  | 'split-highlight'
+  | 'archive-highlight'
+  | 'unarchive-highlight'
+  | 'delete-highlight'
+  | 'pin-highlight'
+  | 'unpin-highlight'
 
 export interface OfflineAction {
   id?: number // auto-incremented by IndexedDB

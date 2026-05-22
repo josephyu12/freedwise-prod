@@ -123,6 +123,37 @@ function ReviewPageContent() {
     })
   }
 
+  // Patch the cached review data so changes made offline survive a reload.
+  const updateCache = async (
+    patch: (cached: {
+      highlights: any[]
+      categories: any[]
+      pinnedHighlightIds: string[]
+    }) => Partial<{
+      highlights: any[]
+      categories: any[]
+      pinnedHighlightIds: string[]
+    }>
+  ) => {
+    try {
+      const cached = await getCachedReviewData()
+      if (!cached) return
+      const next = patch({
+        highlights: cached.highlights || [],
+        categories: cached.categories || [],
+        pinnedHighlightIds: cached.pinnedHighlightIds || [],
+      })
+      await cacheReviewData({
+        highlights: next.highlights ?? cached.highlights,
+        categories: next.categories ?? cached.categories,
+        pinnedHighlightIds: next.pinnedHighlightIds ?? cached.pinnedHighlightIds,
+        cachedAt: Date.now(),
+      })
+    } catch (e) {
+      console.warn('Failed to update offline cache:', e)
+    }
+  }
+
   const loadHighlights = useCallback(async () => {
     setLoading(true)
     setUsingCachedData(false)
@@ -637,9 +668,51 @@ function ReviewPageContent() {
       const highlight = current.highlight
       const originalText = highlight.text
       const originalHtmlContent = highlight.html_content
+      const firstGroup = groups[0]
+      // Pre-generate UUIDs for new highlights so the same IDs work whether we
+      // write to Supabase now (online) or replay later (offline).
+      const newGroups = groups.slice(1).map((g) => ({
+        id: crypto.randomUUID(),
+        text: g.text,
+        html: g.html,
+      }))
+      const categoryIds = (highlight.categories || []).map((cat) => cat.id)
+
+      // Optimistic local + cache update (only first group's text changes;
+      // new highlights appear after replay + reload, mirroring existing online behavior)
+      const applySplitFirstPatch = (h: ReviewHighlight) =>
+        h.highlight_id === highlight.id && h.highlight
+          ? {
+              ...h,
+              highlight: {
+                ...h.highlight,
+                text: firstGroup.text,
+                html_content: firstGroup.html,
+              },
+            }
+          : h
+      setHighlights((prev) => prev.map(applySplitFirstPatch))
+      await updateCache((c) => ({ highlights: c.highlights.map(applySplitFirstPatch) }))
+
+      if (!isOnline) {
+        await enqueueOfflineAction({
+          type: 'split-highlight',
+          params: {
+            originalHighlightId: highlight.id,
+            originalText,
+            originalHtmlContent,
+            firstGroup: { text: firstGroup.text, html: firstGroup.html },
+            newGroups,
+            source: highlight.source || null,
+            author: highlight.author || null,
+            categoryIds,
+          },
+        })
+        handleCancelSplit()
+        return
+      }
 
       // Update original highlight with first group
-      const firstGroup = groups[0]
       const { error: firstGroupUpdateError } = await (supabase.from('highlights') as any)
         .update({
           text: firstGroup.text,
@@ -660,10 +733,10 @@ function ReviewPageContent() {
       if (!user) throw new Error('Not authenticated')
 
       const newHighlightIds: string[] = []
-      for (let i = 1; i < groups.length; i++) {
-        const group = groups[i]
+      for (const group of newGroups) {
         const { data: newHighlight, error } = await (supabase.from('highlights') as any)
           .insert({
+            id: group.id,
             text: group.text,
             html_content: group.html,
             source: highlight.source || null,
@@ -681,10 +754,10 @@ function ReviewPageContent() {
         newHighlightIds.push(newHighlight.id)
 
         // Copy categories
-        if (highlight.categories && highlight.categories.length > 0) {
-          const categoryLinks = highlight.categories.map((cat: any) => ({
+        if (categoryIds.length > 0) {
+          const categoryLinks = categoryIds.map((catId) => ({
             highlight_id: newHighlight.id,
-            category_id: cat.id,
+            category_id: catId,
           }))
           await (supabase.from('highlight_categories') as any).insert(categoryLinks)
         }
@@ -700,22 +773,6 @@ function ReviewPageContent() {
       if (newHighlightIds.length > 0) {
         callRedistribute(newHighlightIds).catch(() => {})
       }
-
-      // Update local state
-      setHighlights((prev) =>
-        prev.map((h) =>
-          h.highlight_id === highlight.id && h.highlight
-            ? {
-                ...h,
-                highlight: {
-                  ...h.highlight,
-                  text: firstGroup.text,
-                  html_content: firstGroup.html,
-                },
-              }
-            : h
-        )
-      )
 
       handleCancelSplit()
     } catch (error) {
@@ -758,13 +815,56 @@ function ReviewPageContent() {
     try {
       const highlightId = editingId
       const original = current?.highlight
+      const text = editText.trim()
+      const htmlContent = editHtmlContent.trim() || null
+      const source = editSource.trim() || null
+      const author = editAuthor.trim() || null
+      const categoryIds = [...editCategories]
+
+      // Optimistic local + cache update (runs whether online or offline)
+      const updatedCategories = categories.filter((c) => categoryIds.includes(c.id))
+      const applyEditPatch = (h: ReviewHighlight) =>
+        h.highlight_id === highlightId && h.highlight
+          ? {
+              ...h,
+              highlight: {
+                ...h.highlight,
+                text,
+                html_content: htmlContent,
+                source,
+                author,
+                categories: updatedCategories,
+              },
+            }
+          : h
+      setHighlights((prev) => prev.map(applyEditPatch))
+      await updateCache((c) => ({ highlights: c.highlights.map(applyEditPatch) }))
+
+      if (!isOnline) {
+        await enqueueOfflineAction({
+          type: 'edit-highlight',
+          params: {
+            highlightId,
+            text,
+            htmlContent,
+            source,
+            author,
+            categoryIds,
+            skipNotionSync,
+            originalText: original?.text || null,
+            originalHtmlContent: original?.html_content || null,
+          },
+        })
+        handleCancelEdit()
+        return
+      }
 
       const { error: updateError } = await (supabase.from('highlights') as any)
         .update({
-          text: editText.trim(),
-          html_content: editHtmlContent.trim() || null,
-          source: editSource.trim() || null,
-          author: editAuthor.trim() || null,
+          text,
+          html_content: htmlContent,
+          source,
+          author,
           // "Don't sync to Notion": bump the opt-out marker so the
           // enqueue_notion_sync DB trigger skips this one edit.
           ...(skipNotionSync ? { notion_optout_marker: crypto.randomUUID() } : {}),
@@ -774,46 +874,45 @@ function ReviewPageContent() {
 
       // Update categories
       await (supabase.from('highlight_categories') as any).delete().eq('highlight_id', highlightId)
-      if (editCategories.length > 0) {
-        const categoryLinks = editCategories.map((catId) => ({
+      if (categoryIds.length > 0) {
+        const categoryLinks = categoryIds.map((catId) => ({
           highlight_id: highlightId, category_id: catId,
         }))
         await (supabase.from('highlight_categories') as any).insert(categoryLinks)
       }
 
       // Notion sync — only if text/HTML actually changed (skip for category/source/author-only edits)
-      const textChanged = editText.trim() !== (original?.text || '') ||
-        (editHtmlContent.trim() || null) !== (original?.html_content || null)
+      const textChanged = text !== (original?.text || '') ||
+        htmlContent !== (original?.html_content || null)
       if (!skipNotionSync && textChanged) {
         await addToSyncQueue(
           highlightId, 'update',
-          editText.trim(), editHtmlContent.trim() || null,
+          text, htmlContent,
           original?.text || null, original?.html_content || null
         )
       }
-
-      // Update local state instead of reloading
-      const updatedCategories = categories.filter((c) => editCategories.includes(c.id))
-      setHighlights((prev) =>
-        prev.map((h) =>
-          h.highlight_id === highlightId && h.highlight
-            ? {
-                ...h,
-                highlight: {
-                  ...h.highlight,
-                  text: editText.trim(),
-                  html_content: editHtmlContent.trim() || null,
-                  source: editSource.trim() || null,
-                  author: editAuthor.trim() || null,
-                  categories: updatedCategories,
-                },
-              }
-            : h
-        )
-      )
       handleCancelEdit()
     } catch (error) {
-      console.error('Error saving edit:', error)
+      console.error('Error saving edit (falling back to offline queue):', error)
+      try {
+        await enqueueOfflineAction({
+          type: 'edit-highlight',
+          params: {
+            highlightId: editingId,
+            text: editText.trim(),
+            htmlContent: editHtmlContent.trim() || null,
+            source: editSource.trim() || null,
+            author: editAuthor.trim() || null,
+            categoryIds: [...editCategories],
+            skipNotionSync,
+            originalText: current?.highlight?.text || null,
+            originalHtmlContent: current?.highlight?.html_content || null,
+          },
+        })
+        handleCancelEdit()
+      } catch (queueError) {
+        console.error('Failed to queue offline edit:', queueError)
+      }
     } finally {
       setUpdatingNotion(false)
     }
@@ -842,37 +941,60 @@ function ReviewPageContent() {
 
   const handleArchiveHighlight = async (highlightId: string) => {
     if (!confirm('Are you sure you want to archive this highlight?')) return
+
+    // Optimistic local + cache update
+    const applyArchivePatch = (h: ReviewHighlight) =>
+      h.highlight_id === highlightId && h.highlight
+        ? { ...h, highlight: { ...h.highlight, archived: true } }
+        : h
+    setHighlights((prev) => prev.map(applyArchivePatch))
+    await updateCache((c) => ({ highlights: c.highlights.map(applyArchivePatch) }))
+
+    if (!isOnline) {
+      await enqueueOfflineAction({ type: 'archive-highlight', params: { highlightId } })
+      return
+    }
+
     try {
       await (supabase.from('highlights') as any)
         .update({ archived: true })
         .eq('id', highlightId)
       await removeFromFutureMonths(supabase, highlightId)
-      setHighlights((prev) =>
-        prev.map((h) =>
-          h.highlight_id === highlightId && h.highlight
-            ? { ...h, highlight: { ...h.highlight, archived: true } }
-            : h
-        )
-      )
     } catch (error) {
-      console.error('Error archiving highlight:', error)
+      console.error('Error archiving highlight (falling back to offline queue):', error)
+      try {
+        await enqueueOfflineAction({ type: 'archive-highlight', params: { highlightId } })
+      } catch (queueError) {
+        console.error('Failed to queue offline archive:', queueError)
+      }
     }
   }
 
   const handleUnarchiveHighlight = async (highlightId: string) => {
+    // Optimistic local + cache update
+    const applyUnarchivePatch = (h: ReviewHighlight) =>
+      h.highlight_id === highlightId && h.highlight
+        ? { ...h, highlight: { ...h.highlight, archived: false } }
+        : h
+    setHighlights((prev) => prev.map(applyUnarchivePatch))
+    await updateCache((c) => ({ highlights: c.highlights.map(applyUnarchivePatch) }))
+
+    if (!isOnline) {
+      await enqueueOfflineAction({ type: 'unarchive-highlight', params: { highlightId } })
+      return
+    }
+
     try {
       await (supabase.from('highlights') as any)
         .update({ archived: false, unarchived_at: new Date().toISOString() })
         .eq('id', highlightId)
-      setHighlights((prev) =>
-        prev.map((h) =>
-          h.highlight_id === highlightId && h.highlight
-            ? { ...h, highlight: { ...h.highlight, archived: false } }
-            : h
-        )
-      )
     } catch (error) {
-      console.error('Error unarchiving highlight:', error)
+      console.error('Error unarchiving highlight (falling back to offline queue):', error)
+      try {
+        await enqueueOfflineAction({ type: 'unarchive-highlight', params: { highlightId } })
+      } catch (queueError) {
+        console.error('Failed to queue offline unarchive:', queueError)
+      }
     }
   }
 
@@ -880,27 +1002,44 @@ function ReviewPageContent() {
 
   const handleDeleteHighlight = async (highlightId: string) => {
     if (!confirm('Are you sure you want to delete this highlight? This cannot be undone.')) return
-    try {
-      const h = highlights.find((h) => h.highlight_id === highlightId)
-      const text = h?.highlight?.text || null
-      const htmlContent = h?.highlight?.html_content || null
 
-      // Delete from DB first; only enqueue the Notion delete on success so we can't
-      // wipe the highlight from Notion while the Supabase row still exists.
+    const h = highlights.find((h) => h.highlight_id === highlightId)
+    const text = h?.highlight?.text || null
+    const htmlContent = h?.highlight?.html_content || null
+
+    // Optimistic local + cache update
+    setHighlights((prev) => prev.filter((h) => h.highlight_id !== highlightId))
+    setCurrentIndex((prev) => Math.min(prev, highlights.length - 2))
+    await updateCache((c) => ({
+      highlights: c.highlights.filter((h: any) => h.highlight_id !== highlightId),
+    }))
+
+    if (!isOnline) {
+      await enqueueOfflineAction({
+        type: 'delete-highlight',
+        params: { highlightId, text, htmlContent },
+      })
+      return
+    }
+
+    try {
+      // Delete from DB first; only ping the Notion sync badge on success so we
+      // don't refresh stale state if the row is still present.
       const { error: deleteError } = await (supabase.from('highlights') as any).delete().eq('id', highlightId)
       if (deleteError) throw deleteError
 
       await addToSyncQueue(highlightId, 'delete', text, htmlContent)
       callRedistribute() // fire-and-forget
-
-      setHighlights((prev) => {
-        const updated = prev.filter((h) => h.highlight_id !== highlightId)
-        return updated
-      })
-      setCurrentIndex((prev) => Math.min(prev, highlights.length - 2))
     } catch (error) {
-      console.error('Error deleting highlight:', error)
-      alert('Failed to delete highlight. Please try again.')
+      console.error('Error deleting highlight (falling back to offline queue):', error)
+      try {
+        await enqueueOfflineAction({
+          type: 'delete-highlight',
+          params: { highlightId, text, htmlContent },
+        })
+      } catch (queueError) {
+        console.error('Failed to queue offline delete:', queueError)
+      }
     }
   }
 
@@ -910,44 +1049,125 @@ function ReviewPageContent() {
     const isPinned = pinnedHighlightIds.has(highlightId)
 
     if (isPinned) {
-      const response = await fetch(`/api/pins?highlightId=${highlightId}`, { method: 'DELETE' })
-      if (response.ok) {
-        setPinnedHighlightIds((prev) => { const next = new Set(prev); next.delete(highlightId); return next })
+      // Optimistic unpin + cache
+      setPinnedHighlightIds((prev) => { const next = new Set(prev); next.delete(highlightId); return next })
+      await updateCache((c) => ({ pinnedHighlightIds: c.pinnedHighlightIds.filter((id) => id !== highlightId) }))
+
+      if (!isOnline) {
+        await enqueueOfflineAction({ type: 'unpin-highlight', params: { highlightId } })
+        return
       }
-    } else {
+
+      try {
+        const response = await fetch(`/api/pins?highlightId=${highlightId}`, { method: 'DELETE' })
+        if (!response.ok) throw new Error('Unpin request failed')
+      } catch (error) {
+        console.error('Error unpinning (falling back to offline queue):', error)
+        try {
+          await enqueueOfflineAction({ type: 'unpin-highlight', params: { highlightId } })
+        } catch (queueError) {
+          console.error('Failed to queue offline unpin:', queueError)
+        }
+      }
+      return
+    }
+
+    // Pin path — enforce the 10-pin client cap using the local cache so the
+    // dialog flow works offline too.
+    if (pinnedHighlightIds.size >= 10) {
+      setPendingPinHighlightId(highlightId)
+      setPinDialogOpen(true)
+      return
+    }
+
+    // Optimistic pin + cache
+    setPinnedHighlightIds((prev) => new Set(prev).add(highlightId))
+    await updateCache((c) => ({
+      pinnedHighlightIds: c.pinnedHighlightIds.includes(highlightId)
+        ? c.pinnedHighlightIds
+        : [...c.pinnedHighlightIds, highlightId],
+    }))
+
+    if (!isOnline) {
+      await enqueueOfflineAction({ type: 'pin-highlight', params: { highlightId } })
+      return
+    }
+
+    try {
       const response = await fetch('/api/pins', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ highlightId }),
       })
       if (!response.ok) {
-        const data = await response.json()
+        const data = await response.json().catch(() => ({}))
         if (data.isFull) {
+          // Server-side count > local cache (another device pinned things).
+          // Revert optimistic, open the dialog so the user can choose which to drop.
+          setPinnedHighlightIds((prev) => { const next = new Set(prev); next.delete(highlightId); return next })
+          await updateCache((c) => ({ pinnedHighlightIds: c.pinnedHighlightIds.filter((id) => id !== highlightId) }))
           setPendingPinHighlightId(highlightId)
           setPinDialogOpen(true)
           return
         }
-      } else {
-        setPinnedHighlightIds((prev) => new Set(prev).add(highlightId))
+        throw new Error('Pin request failed')
+      }
+    } catch (error) {
+      console.error('Error pinning (falling back to offline queue):', error)
+      try {
+        await enqueueOfflineAction({ type: 'pin-highlight', params: { highlightId } })
+      } catch (queueError) {
+        console.error('Failed to queue offline pin:', queueError)
       }
     }
   }
 
   const handleRemoveFromPinBoard = async (highlightIdToRemove: string) => {
-    await fetch(`/api/pins?highlightId=${highlightIdToRemove}`, { method: 'DELETE' })
+    // Optimistic unpin + cache
     setPinnedHighlightIds((prev) => { const next = new Set(prev); next.delete(highlightIdToRemove); return next })
+    await updateCache((c) => ({ pinnedHighlightIds: c.pinnedHighlightIds.filter((id) => id !== highlightIdToRemove) }))
+
+    if (isOnline) {
+      try {
+        await fetch(`/api/pins?highlightId=${highlightIdToRemove}`, { method: 'DELETE' })
+      } catch (error) {
+        console.error('Error unpinning from board (falling back to offline queue):', error)
+        await enqueueOfflineAction({ type: 'unpin-highlight', params: { highlightId: highlightIdToRemove } }).catch(() => {})
+      }
+    } else {
+      await enqueueOfflineAction({ type: 'unpin-highlight', params: { highlightId: highlightIdToRemove } })
+    }
 
     if (pendingPinHighlightId) {
-      const pinResponse = await fetch('/api/pins', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ highlightId: pendingPinHighlightId }),
-      })
-      if (pinResponse.ok) {
-        setPinnedHighlightIds((prev) => new Set(prev).add(pendingPinHighlightId))
-        setPendingPinHighlightId(null)
-        setPinDialogOpen(false)
+      // Now pin the pending one
+      const newPinId = pendingPinHighlightId
+      setPinnedHighlightIds((prev) => new Set(prev).add(newPinId))
+      await updateCache((c) => ({
+        pinnedHighlightIds: c.pinnedHighlightIds.includes(newPinId)
+          ? c.pinnedHighlightIds
+          : [...c.pinnedHighlightIds, newPinId],
+      }))
+
+      if (isOnline) {
+        try {
+          const pinResponse = await fetch('/api/pins', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ highlightId: newPinId }),
+          })
+          if (!pinResponse.ok) {
+            await enqueueOfflineAction({ type: 'pin-highlight', params: { highlightId: newPinId } })
+          }
+        } catch (error) {
+          console.error('Error pinning replacement (falling back to offline queue):', error)
+          await enqueueOfflineAction({ type: 'pin-highlight', params: { highlightId: newPinId } }).catch(() => {})
+        }
+      } else {
+        await enqueueOfflineAction({ type: 'pin-highlight', params: { highlightId: newPinId } })
       }
+
+      setPendingPinHighlightId(null)
+      setPinDialogOpen(false)
     }
   }
 
@@ -958,11 +1178,26 @@ function ReviewPageContent() {
     if (!isOnline) return
 
     const syncOfflineActions = async () => {
-      const actions = await getPendingActions()
+      const allActions = await getPendingActions()
+      // Only handle action types this page is responsible for — leave others
+      // (e.g. rate-daily from /daily) in the queue for that page to process.
+      const reviewTypes = new Set<string>([
+        'rate-review',
+        'edit-highlight',
+        'split-highlight',
+        'archive-highlight',
+        'unarchive-highlight',
+        'delete-highlight',
+        'pin-highlight',
+        'unpin-highlight',
+      ])
+      const actions = allActions.filter((a) => reviewTypes.has(a.type))
       if (actions.length === 0) return
 
       setIsSyncing(true)
       setPendingSyncCount(actions.length)
+
+      let touchedHighlights = false
 
       for (const action of actions) {
         try {
@@ -1021,6 +1256,154 @@ function ReviewPageContent() {
                 ...(shouldArchive ? { archived: true } : {}),
               })
               .eq('id', highlightId)
+          } else if (action.type === 'edit-highlight') {
+            const {
+              highlightId,
+              text,
+              htmlContent,
+              source,
+              author,
+              categoryIds,
+              skipNotionSync: actionSkipNotion,
+              originalText,
+              originalHtmlContent,
+            } = action.params
+
+            await (supabase.from('highlights') as any)
+              .update({
+                text,
+                html_content: htmlContent,
+                source,
+                author,
+                ...(actionSkipNotion ? { notion_optout_marker: crypto.randomUUID() } : {}),
+              })
+              .eq('id', highlightId)
+
+            await (supabase.from('highlight_categories') as any).delete().eq('highlight_id', highlightId)
+            if (categoryIds && categoryIds.length > 0) {
+              const categoryLinks = (categoryIds as string[]).map((catId) => ({
+                highlight_id: highlightId, category_id: catId,
+              }))
+              await (supabase.from('highlight_categories') as any).insert(categoryLinks)
+            }
+
+            const textChanged =
+              text !== (originalText || '') ||
+              htmlContent !== (originalHtmlContent || null)
+            if (!actionSkipNotion && textChanged) {
+              await addToSyncQueue(
+                highlightId, 'update',
+                text, htmlContent,
+                originalText, originalHtmlContent
+              )
+            }
+            touchedHighlights = true
+          } else if (action.type === 'split-highlight') {
+            const {
+              originalHighlightId,
+              originalText,
+              originalHtmlContent,
+              firstGroup,
+              newGroups,
+              source,
+              author,
+              categoryIds,
+            } = action.params
+
+            const { error: firstGroupUpdateError } = await (supabase.from('highlights') as any)
+              .update({
+                text: firstGroup.text,
+                html_content: firstGroup.html,
+              })
+              .eq('id', originalHighlightId)
+            if (firstGroupUpdateError) throw firstGroupUpdateError
+
+            await addToSyncQueue(
+              originalHighlightId, 'update',
+              firstGroup.text, firstGroup.html,
+              originalText, originalHtmlContent
+            )
+
+            const { data: { user } } = await supabase.auth.getUser()
+            if (!user) throw new Error('Not authenticated')
+
+            const insertedIds: string[] = []
+            for (const group of (newGroups as Array<{ id: string; text: string; html: string }>)) {
+              const { data: newHighlight, error: insertError } = await (supabase.from('highlights') as any)
+                .insert({
+                  id: group.id,
+                  text: group.text,
+                  html_content: group.html,
+                  source,
+                  author,
+                  resurface_count: 0,
+                  average_rating: 0,
+                  rating_count: 0,
+                  user_id: user.id,
+                })
+                .select()
+                .single()
+              if (insertError) throw insertError
+
+              insertedIds.push(newHighlight.id)
+
+              if (categoryIds && categoryIds.length > 0) {
+                const categoryLinks = (categoryIds as string[]).map((catId) => ({
+                  highlight_id: newHighlight.id,
+                  category_id: catId,
+                }))
+                await (supabase.from('highlight_categories') as any).insert(categoryLinks)
+              }
+
+              addToSyncQueue(
+                newHighlight.id, 'add',
+                group.text, group.html
+              ).catch((err: any) => console.error('Error syncing split highlight:', err))
+            }
+
+            if (insertedIds.length > 0) {
+              callRedistribute(insertedIds).catch(() => {})
+            }
+            touchedHighlights = true
+          } else if (action.type === 'archive-highlight') {
+            const { highlightId } = action.params
+            await (supabase.from('highlights') as any)
+              .update({ archived: true })
+              .eq('id', highlightId)
+            await removeFromFutureMonths(supabase, highlightId)
+            touchedHighlights = true
+          } else if (action.type === 'unarchive-highlight') {
+            const { highlightId } = action.params
+            await (supabase.from('highlights') as any)
+              .update({ archived: false, unarchived_at: new Date().toISOString() })
+              .eq('id', highlightId)
+            touchedHighlights = true
+          } else if (action.type === 'delete-highlight') {
+            const { highlightId, text, htmlContent } = action.params
+            const { error: deleteError } = await (supabase.from('highlights') as any)
+              .delete()
+              .eq('id', highlightId)
+            if (deleteError) throw deleteError
+            await addToSyncQueue(highlightId, 'delete', text, htmlContent)
+            callRedistribute().catch(() => {})
+            touchedHighlights = true
+          } else if (action.type === 'pin-highlight') {
+            const { highlightId } = action.params
+            const response = await fetch('/api/pins', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ highlightId }),
+            })
+            if (!response.ok) {
+              // Most likely cause: server-side pin slot already filled by another
+              // device, or the highlight no longer exists. Drop the action — the
+              // post-sync loadHighlights() will re-derive the truthful pin set.
+              const data = await response.json().catch(() => ({}))
+              console.warn('Pin replay rejected, dropping action:', data)
+            }
+          } else if (action.type === 'unpin-highlight') {
+            const { highlightId } = action.params
+            await fetch(`/api/pins?highlightId=${highlightId}`, { method: 'DELETE' })
           }
 
           await removeAction(action.id!)
@@ -1037,6 +1420,10 @@ function ReviewPageContent() {
 
       // Reload fresh data after sync
       loadHighlights()
+      if (touchedHighlights) {
+        // Nudge the Notion sync badge to refetch its count.
+        window.dispatchEvent(new Event('notion-sync-queue-updated'))
+      }
     }
 
     syncOfflineActions()
@@ -1410,29 +1797,25 @@ function ReviewPageContent() {
                 <div className="flex gap-2 mt-3 justify-center flex-wrap">
                   <button
                     onClick={() => handleStartEdit(current.highlight)}
-                    disabled={!isOnline}
-                    className="px-3 py-1 text-sm bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300 rounded hover:bg-blue-200 dark:hover:bg-blue-800 transition disabled:opacity-40 disabled:cursor-not-allowed"
-                    title={!isOnline ? 'Editing is not available offline' : undefined}
+                    className="px-3 py-1 text-sm bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300 rounded hover:bg-blue-200 dark:hover:bg-blue-800 transition"
                   >
                     Edit
                   </button>
                   <button
                     onClick={() => handleStartSplit(current.highlight)}
-                    disabled={!isOnline}
-                    className="px-3 py-1 text-sm bg-purple-100 dark:bg-purple-900 text-purple-700 dark:text-purple-300 rounded hover:bg-purple-200 dark:hover:bg-purple-800 transition disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1"
-                    title={!isOnline ? 'Splitting is not available offline' : 'Split into multiple highlights'}
+                    className="px-3 py-1 text-sm bg-purple-100 dark:bg-purple-900 text-purple-700 dark:text-purple-300 rounded hover:bg-purple-200 dark:hover:bg-purple-800 transition flex items-center gap-1"
+                    title="Split into multiple highlights"
                   >
                     Split
                   </button>
                   <button
                     onClick={() => handlePin(current.highlight_id)}
-                    disabled={!isOnline}
-                    className={`px-3 py-1 text-sm rounded transition flex items-center gap-1 disabled:opacity-40 disabled:cursor-not-allowed ${
+                    className={`px-3 py-1 text-sm rounded transition flex items-center gap-1 ${
                       pinnedHighlightIds.has(current.highlight_id)
                         ? 'bg-yellow-100 dark:bg-yellow-900 text-yellow-700 dark:text-yellow-300 hover:bg-yellow-200 dark:hover:bg-yellow-800'
                         : 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'
                     }`}
-                    title={!isOnline ? 'Pinning is not available offline' : pinnedHighlightIds.has(current.highlight_id) ? 'Unpin' : 'Pin'}
+                    title={pinnedHighlightIds.has(current.highlight_id) ? 'Unpin' : 'Pin'}
                   >
                     {pinnedHighlightIds.has(current.highlight_id) ? (
                       <><PinOff className="w-3.5 h-3.5" /> Unpin</>
@@ -1443,27 +1826,21 @@ function ReviewPageContent() {
                   {current.highlight.archived ? (
                     <button
                       onClick={() => handleUnarchiveHighlight(current.highlight_id)}
-                      disabled={!isOnline}
-                      className="px-3 py-1 text-sm bg-green-100 dark:bg-green-900 text-green-700 dark:text-green-300 rounded hover:bg-green-200 dark:hover:bg-green-800 transition disabled:opacity-40 disabled:cursor-not-allowed"
-                      title={!isOnline ? 'Unarchiving is not available offline' : undefined}
+                      className="px-3 py-1 text-sm bg-green-100 dark:bg-green-900 text-green-700 dark:text-green-300 rounded hover:bg-green-200 dark:hover:bg-green-800 transition"
                     >
                       Unarchive
                     </button>
                   ) : (
                     <button
                       onClick={() => handleArchiveHighlight(current.highlight_id)}
-                      disabled={!isOnline}
-                      className="px-3 py-1 text-sm bg-orange-100 dark:bg-orange-900 text-orange-700 dark:text-orange-300 rounded hover:bg-orange-200 dark:hover:bg-orange-800 transition disabled:opacity-40 disabled:cursor-not-allowed"
-                      title={!isOnline ? 'Archiving is not available offline' : undefined}
+                      className="px-3 py-1 text-sm bg-orange-100 dark:bg-orange-900 text-orange-700 dark:text-orange-300 rounded hover:bg-orange-200 dark:hover:bg-orange-800 transition"
                     >
                       Archive
                     </button>
                   )}
                   <button
                     onClick={() => handleDeleteHighlight(current.highlight_id)}
-                    disabled={!isOnline}
-                    className="px-3 py-1 text-sm bg-red-100 dark:bg-red-900 text-red-700 dark:text-red-300 rounded hover:bg-red-200 dark:hover:bg-red-800 transition disabled:opacity-40 disabled:cursor-not-allowed"
-                    title={!isOnline ? 'Deleting is not available offline' : undefined}
+                    className="px-3 py-1 text-sm bg-red-100 dark:bg-red-900 text-red-700 dark:text-red-300 rounded hover:bg-red-200 dark:hover:bg-red-800 transition"
                   >
                     Delete
                   </button>
