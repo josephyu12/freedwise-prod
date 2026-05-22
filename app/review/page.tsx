@@ -93,6 +93,15 @@ function ReviewPageContent() {
   const [pendingSyncCount, setPendingSyncCount] = useState(0)
   const [usingCachedData, setUsingCachedData] = useState(false)
 
+  // Inline-bold state: floating "B" button shown above any text selection
+  // inside the highlight content. Lets users bold/unbold without entering edit mode.
+  const [boldButtonPos, setBoldButtonPos] = useState<{ top: number; left: number } | null>(null)
+  // Per-highlight undo/redo stacks holding prior html_content snapshots.
+  const undoStacksRef = useRef<Map<string, string[]>>(new Map())
+  const redoStacksRef = useRef<Map<string, string[]>>(new Map())
+  // Bumps to force re-render of undo/redo affordances when stacks change.
+  const [, setHistoryVersion] = useState(0)
+
   // Navigation dots visibility (persisted across reloads)
   const [showDots, setShowDots] = useState(true)
   useEffect(() => {
@@ -469,7 +478,86 @@ function ReviewPageContent() {
     if (highlightContentRef.current) {
       highlightContentRef.current.scrollTop = 0
     }
+    setBoldButtonPos(null)
   }, [current?.id])
+
+  // Position the floating "B" pill when the user selects text inside the
+  // highlight content. Hides on collapse, on selection elsewhere, or while
+  // editing/splitting (the read view isn't rendered then).
+  useEffect(() => {
+    const onSelectionChange = () => {
+      if (editingId || splitMode) {
+        setBoldButtonPos(null)
+        return
+      }
+      const sel = window.getSelection()
+      const container = highlightContentRef.current
+      if (!sel || sel.rangeCount === 0 || sel.isCollapsed || !container) {
+        setBoldButtonPos(null)
+        return
+      }
+      const range = sel.getRangeAt(0)
+      if (!container.contains(range.commonAncestorContainer)) {
+        setBoldButtonPos(null)
+        return
+      }
+      if (!range.toString().trim()) {
+        setBoldButtonPos(null)
+        return
+      }
+      const rect = range.getBoundingClientRect()
+      setBoldButtonPos({
+        top: rect.top - 44,
+        left: rect.left + rect.width / 2,
+      })
+    }
+    document.addEventListener('selectionchange', onSelectionChange)
+    return () => document.removeEventListener('selectionchange', onSelectionChange)
+  }, [editingId, splitMode])
+
+  // ⌘B toggles bold on the current selection. ⌘Z / ⌘⇧Z (or ⌘Y) drive the
+  // per-highlight undo/redo stack populated by toggleBoldOnSelection.
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null
+      if (
+        target &&
+        (target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.isContentEditable)
+      ) {
+        return
+      }
+      if (!(e.metaKey || e.ctrlKey)) return
+
+      const live = inlineHandlersRef.current
+      if (live.editingId || live.splitMode || !live.currentHighlightId) return
+
+      const key = e.key.toLowerCase()
+      if (key === 'b') {
+        const sel = window.getSelection()
+        const container = highlightContentRef.current
+        if (!sel || sel.rangeCount === 0 || sel.isCollapsed || !container) return
+        const range = sel.getRangeAt(0)
+        if (!container.contains(range.commonAncestorContainer)) return
+        if (!range.toString().trim()) return
+        e.preventDefault()
+        live.toggleBold()
+      } else if (key === 'z' && !e.shiftKey) {
+        const stack = undoStacksRef.current.get(live.currentHighlightId) || []
+        if (stack.length === 0) return
+        e.preventDefault()
+        live.undo()
+      } else if ((key === 'z' && e.shiftKey) || key === 'y') {
+        const stack = redoStacksRef.current.get(live.currentHighlightId) || []
+        if (stack.length === 0) return
+        e.preventDefault()
+        live.redo()
+      }
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [])
 
   const handleRate = async (rating: 'low' | 'med' | 'high') => {
     if (!current || ratingInProgress) return
@@ -916,6 +1004,200 @@ function ReviewPageContent() {
     } finally {
       setUpdatingNotion(false)
     }
+  }
+
+  // ─── Inline formatting (bold) + undo/redo ──────────────────────────
+  //
+  // Lets users bold/unbold any text inside the highlight without entering edit
+  // mode. Persists by writing a new html_content (same path as a full edit, but
+  // text/source/author/categories unchanged). ⌘B toggles bold on the selection.
+  // ⌘Z / ⌘⇧Z (or ⌘Y) undo/redo, scoped to the currently-displayed highlight.
+
+  const persistInlineHtmlEdit = async (
+    highlightId: string,
+    newHtmlContent: string | null,
+    originalHtmlContent: string | null,
+  ) => {
+    const target = highlights.find((h) => h.highlight_id === highlightId)?.highlight
+    if (!target) return
+    const text = target.text
+    const source = target.source || null
+    const author = target.author || null
+    const categoryIds = (target.categories || []).map((c) => c.id)
+
+    const applyPatch = (h: ReviewHighlight) =>
+      h.highlight_id === highlightId && h.highlight
+        ? { ...h, highlight: { ...h.highlight, html_content: newHtmlContent } }
+        : h
+    setHighlights((prev) => prev.map(applyPatch))
+    await updateCache((c) => ({ highlights: c.highlights.map(applyPatch) }))
+
+    const offlinePayload = {
+      type: 'edit-highlight' as const,
+      params: {
+        highlightId,
+        text,
+        htmlContent: newHtmlContent,
+        source,
+        author,
+        categoryIds,
+        skipNotionSync: false,
+        originalText: text,
+        originalHtmlContent,
+      },
+    }
+
+    if (!isOnline) {
+      await enqueueOfflineAction(offlinePayload)
+      return
+    }
+
+    try {
+      const { error } = await (supabase.from('highlights') as any)
+        .update({ html_content: newHtmlContent })
+        .eq('id', highlightId)
+      if (error) throw error
+      await addToSyncQueue(
+        highlightId,
+        'update',
+        text,
+        newHtmlContent,
+        text,
+        originalHtmlContent,
+      )
+    } catch (error) {
+      console.error('Inline format save failed, queuing offline:', error)
+      try {
+        await enqueueOfflineAction(offlinePayload)
+      } catch (queueError) {
+        console.error('Failed to queue offline inline edit:', queueError)
+      }
+    }
+  }
+
+  const pushUndoSnapshot = (highlightId: string, beforeHtml: string | null) => {
+    const stack = undoStacksRef.current.get(highlightId) || []
+    stack.push(beforeHtml ?? '')
+    undoStacksRef.current.set(highlightId, stack)
+    redoStacksRef.current.set(highlightId, []) // new branch
+    setHistoryVersion((v) => v + 1)
+  }
+
+  const toggleBoldOnSelection = async () => {
+    if (editingId || splitMode) return
+    if (!current?.highlight) return
+
+    const container = highlightContentRef.current
+    if (!container) return
+
+    const sel = window.getSelection()
+    if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return
+
+    const range = sel.getRangeAt(0)
+    if (!container.contains(range.commonAncestorContainer)) return
+    if (!range.toString().trim()) return
+
+    const highlightId = current.highlight.id
+    const originalHtml = current.highlight.html_content || null
+
+    // Look for an enclosing <strong>/<b> — if the selection sits inside one,
+    // treat the action as "unbold" by unwrapping that ancestor.
+    let strongAncestor: HTMLElement | null = null
+    let node: Node | null = range.commonAncestorContainer
+    while (node && node !== container) {
+      if (node.nodeType === Node.ELEMENT_NODE) {
+        const tag = (node as Element).tagName
+        if (tag === 'STRONG' || tag === 'B') {
+          strongAncestor = node as HTMLElement
+          break
+        }
+      }
+      node = node.parentNode
+    }
+
+    try {
+      if (strongAncestor) {
+        const parent = strongAncestor.parentNode
+        if (!parent) return
+        while (strongAncestor.firstChild) {
+          parent.insertBefore(strongAncestor.firstChild, strongAncestor)
+        }
+        parent.removeChild(strongAncestor)
+      } else {
+        const fragment = range.extractContents()
+        const strong = document.createElement('strong')
+        strong.appendChild(fragment)
+        range.insertNode(strong)
+      }
+    } catch (err) {
+      // Range mutations can throw on awkward selections that span node boundaries
+      // in incompatible ways. Safer to bail than to leave the DOM in a half state.
+      console.warn('Bold toggle failed:', err)
+      return
+    }
+
+    sel.removeAllRanges()
+    setBoldButtonPos(null)
+
+    const newHtml = container.innerHTML
+    pushUndoSnapshot(highlightId, originalHtml)
+    await persistInlineHtmlEdit(highlightId, newHtml, originalHtml)
+  }
+
+  const handleInlineUndo = async () => {
+    if (editingId || splitMode) return
+    if (!current?.highlight) return
+    const highlightId = current.highlight.id
+    const undoStack = undoStacksRef.current.get(highlightId) || []
+    if (undoStack.length === 0) return
+
+    const previousHtml = undoStack[undoStack.length - 1]
+    undoStacksRef.current.set(highlightId, undoStack.slice(0, -1))
+
+    const currentHtml = current.highlight.html_content || ''
+    const redoStack = redoStacksRef.current.get(highlightId) || []
+    redoStack.push(currentHtml)
+    redoStacksRef.current.set(highlightId, redoStack)
+
+    setHistoryVersion((v) => v + 1)
+    await persistInlineHtmlEdit(highlightId, previousHtml || null, currentHtml || null)
+  }
+
+  const handleInlineRedo = async () => {
+    if (editingId || splitMode) return
+    if (!current?.highlight) return
+    const highlightId = current.highlight.id
+    const redoStack = redoStacksRef.current.get(highlightId) || []
+    if (redoStack.length === 0) return
+
+    const nextHtml = redoStack[redoStack.length - 1]
+    redoStacksRef.current.set(highlightId, redoStack.slice(0, -1))
+
+    const currentHtml = current.highlight.html_content || ''
+    const undoStack = undoStacksRef.current.get(highlightId) || []
+    undoStack.push(currentHtml)
+    undoStacksRef.current.set(highlightId, undoStack)
+
+    setHistoryVersion((v) => v + 1)
+    await persistInlineHtmlEdit(highlightId, nextHtml || null, currentHtml || null)
+  }
+
+  // Bundled live state for the keydown listener — bound once, reads latest via ref.
+  const inlineHandlersRef = useRef({
+    currentHighlightId: null as string | null,
+    editingId: null as string | null,
+    splitMode: false,
+    toggleBold: (async () => {}) as () => Promise<void>,
+    undo: (async () => {}) as () => Promise<void>,
+    redo: (async () => {}) as () => Promise<void>,
+  })
+  inlineHandlersRef.current = {
+    currentHighlightId: current?.highlight?.id || null,
+    editingId,
+    splitMode,
+    toggleBold: toggleBoldOnSelection,
+    undo: handleInlineUndo,
+    redo: handleInlineRedo,
   }
 
   const handleCreateCategory = async () => {
@@ -1888,6 +2170,56 @@ function ReviewPageContent() {
         onSelectRemove={handleRemoveFromPinBoard}
         onCancel={() => { setPinDialogOpen(false); setPendingPinHighlightId(null) }}
       />
+
+      {/* Floating Bold pill — appears above any selection inside the highlight content */}
+      {boldButtonPos && !editingId && !splitMode && (
+        <button
+          type="button"
+          // preventDefault on mousedown keeps the text selection alive when the
+          // button is clicked (otherwise the browser collapses it on focus shift).
+          onMouseDown={(e) => e.preventDefault()}
+          onTouchStart={(e) => e.preventDefault()}
+          onClick={() => toggleBoldOnSelection()}
+          title="Bold (⌘B). Undo with ⌘Z."
+          aria-label="Bold selection"
+          className="fixed z-50 -translate-x-1/2 px-3 py-1.5 rounded-md bg-gray-900 dark:bg-gray-100 text-white dark:text-gray-900 text-sm font-bold shadow-lg hover:bg-gray-700 dark:hover:bg-gray-300 transition"
+          style={{ top: boldButtonPos.top, left: boldButtonPos.left }}
+        >
+          B
+        </button>
+      )}
+
+      {/* Undo / Redo affordance for inline formatting — only shows when there's history for the current highlight */}
+      {current?.highlight && !editingId && !splitMode && (() => {
+        const hid = current.highlight.id
+        const undoLen = (undoStacksRef.current.get(hid) || []).length
+        const redoLen = (redoStacksRef.current.get(hid) || []).length
+        if (undoLen === 0 && redoLen === 0) return null
+        return (
+          <div className="fixed bottom-4 right-4 z-40 flex gap-2 bg-white/95 dark:bg-gray-800/95 backdrop-blur rounded-full shadow-lg px-2 py-1.5 border border-gray-200 dark:border-gray-700">
+            <button
+              type="button"
+              onClick={() => handleInlineUndo()}
+              disabled={undoLen === 0}
+              title="Undo (⌘Z)"
+              aria-label="Undo"
+              className="px-2 py-1 text-sm rounded-full text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-30 disabled:cursor-not-allowed transition"
+            >
+              ↶ Undo
+            </button>
+            <button
+              type="button"
+              onClick={() => handleInlineRedo()}
+              disabled={redoLen === 0}
+              title="Redo (⌘⇧Z)"
+              aria-label="Redo"
+              className="px-2 py-1 text-sm rounded-full text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-30 disabled:cursor-not-allowed transition"
+            >
+              ↷ Redo
+            </button>
+          </div>
+        )
+      })()}
     </div>
   )
 }
