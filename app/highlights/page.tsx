@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { Highlight, Category } from '@/types/database'
 import Link from 'next/link'
@@ -45,6 +45,12 @@ export default function HighlightsPage() {
   const [pinDialogOpen, setPinDialogOpen] = useState(false)
   const [pendingPinHighlightId, setPendingPinHighlightId] = useState<string | null>(null)
   const supabase = createClient()
+
+  // Synchronous re-entry guard. The `saving` state below is only set
+  // *after* `await supabase.auth.getUser()`, so it cannot block a second
+  // submit fired during that auth round-trip (double-click / double-tap).
+  // A ref mutates synchronously, so it closes that window.
+  const submittingRef = useRef(false)
 
   // Split state
   const [splitMode, setSplitMode] = useState(false)
@@ -378,22 +384,35 @@ export default function HighlightsPage() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!text.trim() || saving) return
+    if (!text.trim() || saving || submittingRef.current) return
+    submittingRef.current = true
 
     const highlightText = text.trim()
     const highlightHtml = htmlContent || null
     const selectedCats = [...selectedCategories]
 
     // Get authenticated user up front — needed for user_id on rows.
-    const { data: { user }, error: userError } = await supabase.auth.getUser()
-    if (userError || !user) {
+    // Wrap getUser() so a thrown auth/network error can't leave
+    // submittingRef stuck true (which would lock the form until reload).
+    let user = null
+    try {
+      const { data, error: userError } = await supabase.auth.getUser()
+      if (!userError) user = data?.user ?? null
+    } catch {
+      // getUser() threw — treat as not authenticated
+    }
+    if (!user) {
+      submittingRef.current = false
       alert('You must be logged in to add highlights')
       return
     }
 
     // Split a single submission into multiple highlights on blank-line separators
     const pieces = splitHtmlByBlankLines(highlightHtml, highlightText)
-    if (pieces.length === 0) return
+    if (pieces.length === 0) {
+      submittingRef.current = false
+      return
+    }
 
     // Build rows with client-side IDs so the optimistic UI and any background
     // writes (categories, redistribute) can reference them before the insert
@@ -512,6 +531,7 @@ export default function HighlightsPage() {
         alert('Failed to add highlight. Please check your Supabase configuration.')
       } finally {
         setSaving(false)
+        submittingRef.current = false
       }
     })()
   }

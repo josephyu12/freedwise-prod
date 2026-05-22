@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import RichTextEditor from '@/components/RichTextEditor'
@@ -21,6 +21,12 @@ export default function Home() {
   const [dupeNotice, setDupeNotice] = useState<string | null>(null)
   const [fullscreen, setFullscreen] = useState(false)
   const supabase = createClient()
+
+  // Synchronous re-entry guard. The `saving` state below is only set
+  // *after* `await supabase.auth.getUser()`, so it cannot block a second
+  // submit fired during that auth round-trip (double-click / double-tap).
+  // A ref mutates synchronously, so it closes that window.
+  const submittingRef = useRef(false)
 
   // Lock background scroll + handle Esc while fullscreen
   useEffect(() => {
@@ -85,21 +91,34 @@ export default function Home() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!text.trim() || saving) return
+    if (!text.trim() || saving || submittingRef.current) return
+    submittingRef.current = true
 
     const highlightText = text.trim()
     const highlightHtml = htmlContent || null
     const selectedCats = [...selectedCategories]
 
-    const { data: { user } } = await supabase.auth.getUser()
+    // Wrap getUser() so a thrown auth/network error can't leave
+    // submittingRef stuck true (which would lock the form until reload).
+    let user = null
+    try {
+      const { data } = await supabase.auth.getUser()
+      user = data?.user ?? null
+    } catch {
+      // getUser() threw — treat as not authenticated
+    }
     if (!user) {
+      submittingRef.current = false
       alert('Please log in to add highlights')
       return
     }
 
     // Split a single submission into multiple highlights on blank-line separators.
     const pieces = splitHtmlByBlankLines(highlightHtml, highlightText)
-    if (pieces.length === 0) return
+    if (pieces.length === 0) {
+      submittingRef.current = false
+      return
+    }
 
     // Build rows with client-side IDs. Dedup is intentionally NOT done up
     // front — the round-trip dominated perceived save time. The /highlights
@@ -184,6 +203,7 @@ export default function Home() {
         alert('Failed to add highlight. Please try again.')
       } finally {
         setSaving(false)
+        submittingRef.current = false
       }
     })()
   }
