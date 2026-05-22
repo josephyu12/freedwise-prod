@@ -92,6 +92,16 @@ function ReviewPageContent() {
   const [pendingSyncCount, setPendingSyncCount] = useState(0)
   const [usingCachedData, setUsingCachedData] = useState(false)
 
+  // Navigation dots visibility (persisted across reloads)
+  const [showDots, setShowDots] = useState(true)
+  useEffect(() => {
+    const stored = localStorage.getItem('review-show-dots')
+    if (stored !== null) setShowDots(stored === 'true')
+  }, [])
+  useEffect(() => {
+    localStorage.setItem('review-show-dots', String(showDots))
+  }, [showDots])
+
   const today = format(new Date(), 'yyyy-MM-dd')
 
   const addToSyncQueue = async (
@@ -1452,21 +1462,33 @@ function ReviewPageContent() {
             )}
 
             {/* Navigation dots */}
-            <div className="flex justify-center gap-1.5 mt-6 flex-wrap">
-              {highlights.map((h, i) => (
+            <div className="mt-6">
+              {showDots && (
+                <div className="flex justify-center gap-1.5 flex-wrap">
+                  {highlights.map((h, i) => (
+                    <button
+                      key={h.id}
+                      onClick={() => setCurrentIndex(i)}
+                      className={`w-2.5 h-2.5 rounded-full transition-all ${
+                        i === currentIndex
+                          ? 'bg-blue-500 scale-125'
+                          : h.rating
+                          ? 'bg-green-400 dark:bg-green-600'
+                          : 'bg-gray-300 dark:bg-gray-600'
+                      }`}
+                      aria-label={`Highlight ${i + 1}`}
+                    />
+                  ))}
+                </div>
+              )}
+              <div className="flex justify-center mt-2">
                 <button
-                  key={h.id}
-                  onClick={() => setCurrentIndex(i)}
-                  className={`w-2.5 h-2.5 rounded-full transition-all ${
-                    i === currentIndex
-                      ? 'bg-blue-500 scale-125'
-                      : h.rating
-                      ? 'bg-green-400 dark:bg-green-600'
-                      : 'bg-gray-300 dark:bg-gray-600'
-                  }`}
-                  aria-label={`Highlight ${i + 1}`}
-                />
-              ))}
+                  onClick={() => setShowDots((prev) => !prev)}
+                  className="text-xs text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 transition"
+                >
+                  {showDots ? 'Hide dots' : 'Show dots'}
+                </button>
+              </div>
             </div>
           </div>
         )}
