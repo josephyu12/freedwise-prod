@@ -2001,7 +2001,7 @@ function ReviewPageContent() {
 
                   <div
                     ref={highlightContentRef}
-                    className="highlight-content text-lg leading-relaxed prose dark:prose-invert max-w-none mb-4 overflow-y-auto"
+                    className="highlight-content text-base mb-3 prose dark:prose-invert max-w-none overflow-y-auto"
                     style={{ maxHeight: '24em' }}
                     dangerouslySetInnerHTML={{
                       __html: renderHighlightHtml(current.highlight.html_content, current.highlight.text),
