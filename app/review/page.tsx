@@ -102,6 +102,10 @@ function ReviewPageContent() {
   // Bumps to force re-render of undo/redo affordances when stacks change.
   const [, setHistoryVersion] = useState(0)
 
+  // Direction of the last highlight change. Drives the slide-in animation on
+  // the highlight card: 'next' slides in from the right, 'prev' from the left.
+  const [navDirection, setNavDirection] = useState<'next' | 'prev'>('next')
+
   // Navigation dots visibility (persisted across reloads)
   const [showDots, setShowDots] = useState(true)
   useEffect(() => {
@@ -701,12 +705,14 @@ function ReviewPageContent() {
 
   const goToNext = () => {
     if (currentIndex < highlights.length - 1) {
+      setNavDirection('next')
       setCurrentIndex(currentIndex + 1)
     }
   }
 
   const goToPrev = () => {
     if (currentIndex > 0) {
+      setNavDirection('prev')
       setCurrentIndex(currentIndex - 1)
     }
   }
@@ -1807,9 +1813,12 @@ function ReviewPageContent() {
         {current && current.highlight && (
           <div className="w-full max-w-lg">
             {/* Highlight card */}
-            <div className={`bg-white dark:bg-gray-800 rounded-2xl shadow-xl p-6 mb-4 ${
-              current.highlight.archived ? 'opacity-60 border-2 border-orange-300 dark:border-orange-700' : ''
-            }`}>
+            <div
+              key={current.highlight.id}
+              className={`bg-white dark:bg-gray-800 rounded-2xl shadow-xl p-6 mb-4 ${
+                navDirection === 'prev' ? 'review-card-enter-prev' : 'review-card-enter-next'
+              } ${current.highlight.archived ? 'opacity-60 border-2 border-orange-300 dark:border-orange-700' : ''}`}
+            >
               {isCatchUp && (
                 <div className="mb-2 px-2 py-1 bg-indigo-100 dark:bg-indigo-900 text-indigo-800 dark:text-indigo-200 rounded text-xs font-semibold inline-block">
                   Catching up · {format(new Date(`${current.date}T00:00:00`), 'MMM d')}
@@ -2137,7 +2146,11 @@ function ReviewPageContent() {
                   {highlights.map((h, i) => (
                     <button
                       key={h.id}
-                      onClick={() => setCurrentIndex(i)}
+                      onClick={() => {
+                        if (i === currentIndex) return
+                        setNavDirection(i > currentIndex ? 'next' : 'prev')
+                        setCurrentIndex(i)
+                      }}
                       className={`w-2.5 h-2.5 rounded-full transition-all ${
                         i === currentIndex
                           ? 'bg-blue-500 scale-125'
