@@ -394,12 +394,24 @@ export default function HighlightsPage() {
     // Get authenticated user up front — needed for user_id on rows.
     // Wrap getUser() so a thrown auth/network error can't leave
     // submittingRef stuck true (which would lock the form until reload).
+    // getUser() hits the auth server to verify the JWT — a transient network
+    // blip there returns null even when the session is fine. Fall back to
+    // getSession() (local storage, no network) so a brief auth hiccup doesn't
+    // false-positive "you must be logged in".
     let user = null
     try {
       const { data, error: userError } = await supabase.auth.getUser()
       if (!userError) user = data?.user ?? null
     } catch {
-      // getUser() threw — treat as not authenticated
+      // getUser() threw — fall through to session check
+    }
+    if (!user) {
+      try {
+        const { data } = await supabase.auth.getSession()
+        user = data?.session?.user ?? null
+      } catch {
+        // getSession() threw — treat as not authenticated
+      }
     }
     if (!user) {
       submittingRef.current = false
@@ -521,14 +533,37 @@ export default function HighlightsPage() {
         }
       } catch (error) {
         console.error('Error adding highlight:', error)
-        const failedIds = new Set(rows.map((r) => r.id))
-        setHighlights((prev) => prev.filter((h) => !failedIds.has(h.id)))
-        setTotalHighlights((prev) => Math.max(0, prev - rows.length))
-        // Restore form so the user can retry without losing what they typed
-        setText(highlightText)
-        setHtmlContent(highlightHtml || '')
-        setSelectedCategories(selectedCats)
-        alert('Failed to add highlight. Please check your Supabase configuration.')
+        // The upsert HTTP response failed but the row may have committed at the DB
+        // (timeout, transient network). Re-check by the UUIDs we generated — only
+        // our rows match — before alerting the user about a false positive.
+        let landed: Array<{ id: string }> = []
+        try {
+          const { data } = await supabase
+            .from('highlights')
+            .select('id')
+            .in('id', rows.map((r) => r.id))
+            .eq('user_id', user.id)
+          landed = (data || []) as Array<{ id: string }>
+        } catch {
+          // verification failed; treat as no landed rows
+        }
+        if (landed.length > 0) {
+          // The DB trigger already wrote the matching notion_sync_queue rows;
+          // nudge the sync badge to refresh its count. Optimistic UI already
+          // shows the rows, so leave it in place.
+          if (typeof window !== 'undefined') {
+            window.dispatchEvent(new Event('notion-sync-queue-updated'))
+          }
+        } else {
+          const failedIds = new Set(rows.map((r) => r.id))
+          setHighlights((prev) => prev.filter((h) => !failedIds.has(h.id)))
+          setTotalHighlights((prev) => Math.max(0, prev - rows.length))
+          // Restore form so the user can retry without losing what they typed
+          setText(highlightText)
+          setHtmlContent(highlightHtml || '')
+          setSelectedCategories(selectedCats)
+          alert('Failed to add highlight. Please check your Supabase configuration.')
+        }
       } finally {
         setSaving(false)
         submittingRef.current = false

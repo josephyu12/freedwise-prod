@@ -3,6 +3,94 @@ import { createClient } from '@/lib/supabase/server'
 import { Client } from '@notionhq/client'
 import { htmlToNotionBlocks, htmlToBlockText, normalizeForBlockCompare, getBlockText, findMatchingHighlightBlocks, buildNormalizedSearchStrings, flattenBlocksWithChildren, BLOCK_BOUNDARY, buildNormalizedBlockGroups, appendBlocksDeep } from '@/lib/notionBlocks'
 
+type AddState =
+  | { kind: 'absent' }
+  | { kind: 'exact' }
+  | { kind: 'partial'; topLevelMatchingIds: string[] }
+
+// Inspect the Notion page to decide what (if anything) a prior `add` attempt
+// already wrote for this queue item:
+//   - 'absent'  — nothing to recover, safe to append normally
+//   - 'exact'   — full highlight is already in Notion; the failure was a
+//                 false positive (Notion committed but our HTTP errored)
+//   - 'partial' — some blocks landed (e.g. multi-call appendBlocksDeep got
+//                 the top-level append in then choked on a child append).
+//                 Caller should delete the listed top-level blocks (Notion
+//                 cascades children) before re-appending the full content,
+//                 otherwise the retry leaves orphaned leftovers.
+//
+// Reuses the same matcher update/delete use, so the leading-prefix +
+// ≥50%-alignment heuristic that's already trusted for those paths governs
+// partial detection here too.
+async function checkAddState(
+  notion: any,
+  pageId: string,
+  queueItem: any
+): Promise<AddState> {
+  let blockText = ''
+  let plainText = (queueItem.text || '').trim().toLowerCase()
+  if (queueItem.html_content) {
+    blockText = htmlToBlockText(queueItem.html_content).trim().toLowerCase()
+  }
+  if (!blockText && plainText) blockText = plainText
+  if (!blockText && !plainText) return { kind: 'absent' }
+
+  const { normalizedOriginalNoHtml, normalizedOriginalPlainNoHtml } =
+    buildNormalizedSearchStrings(blockText, plainText)
+  if (!normalizedOriginalNoHtml && !normalizedOriginalPlainNoHtml) {
+    return { kind: 'absent' }
+  }
+
+  let allBlocks: any[] = []
+  let cursor: string | undefined
+  do {
+    const response = await notion.blocks.children.list({
+      block_id: pageId,
+      start_cursor: cursor,
+    })
+    allBlocks.push(...response.results)
+    cursor = response.next_cursor || undefined
+  } while (cursor)
+
+  const topLevelBlocks = [...allBlocks]
+  allBlocks = await flattenBlocksWithChildren(notion, allBlocks)
+
+  const { matchingBlocks, foundMatch, exactMatch } = findMatchingHighlightBlocks(
+    allBlocks,
+    normalizedOriginalNoHtml,
+    normalizedOriginalPlainNoHtml,
+    blockText
+  )
+
+  if (!foundMatch || matchingBlocks.length === 0) return { kind: 'absent' }
+  if (exactMatch) return { kind: 'exact' }
+
+  const matchingIds = new Set(matchingBlocks.map((b: any) => b.id))
+  const topLevelMatchingIds = topLevelBlocks
+    .filter((b: any) => matchingIds.has(b.id))
+    .map((b: any) => b.id)
+
+  if (topLevelMatchingIds.length === 0) return { kind: 'absent' }
+  return { kind: 'partial', topLevelMatchingIds }
+}
+
+// Delete top-level blocks tolerantly — siblings may have been archived by a
+// concurrent sync or by an earlier deletion in the same loop. Anything else
+// throws so the caller's normal failure handling kicks in.
+async function deleteTopLevelBlocks(notion: any, ids: string[]): Promise<void> {
+  for (const id of ids) {
+    try {
+      await notion.blocks.delete({ block_id: id })
+    } catch (err: any) {
+      const msg = (err.message || '').toLowerCase()
+      if (msg.includes('archived') || msg.includes('not found') || err.code === 'object_not_found') {
+        continue
+      }
+      throw err
+    }
+  }
+}
+
 // Process a single queue item. Claim with status=processing first to avoid duplicate processing when multiple sync requests run.
 async function processQueueItem(supabase: any, queueItem: any, notionSettings: { notion_api_key: string; notion_page_id: string; enabled: boolean }) {
   // Claim this item so concurrent sync requests don't process it twice (fixes multiple items / bullet quadrupling)
@@ -22,6 +110,32 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
 
   try {
     if (queueItem.operation_type === 'add') {
+      // On retry, the previous attempt may have committed at Notion despite
+      // throwing (timeout / 5xx after commit / partial multi-call append).
+      // Inspect the page first so we don't either (a) duplicate a fully-
+      // committed highlight or (b) leave orphaned partial blocks alongside a
+      // fresh full re-append.
+      if (queueItem.retry_count > 0) {
+        const state = await checkAddState(notion, notionSettings.notion_page_id, queueItem)
+        if (state.kind === 'exact') {
+          await (supabase
+            .from('notion_sync_queue') as any)
+            .update({
+              status: 'completed',
+              processed_at: new Date().toISOString(),
+            })
+            .eq('id', queueItem.id)
+          return { success: true }
+        }
+        if (state.kind === 'partial') {
+          // Remove the leftover blocks from the prior partial commit so the
+          // re-append below ends up with one clean copy instead of partial
+          // + full. If delete fails for a non-skippable reason, the outer
+          // try/catch records the failure and the next retry tries again.
+          await deleteTopLevelBlocks(notion, state.topLevelMatchingIds)
+        }
+      }
+
       const blocks = htmlToNotionBlocks(queueItem.html_content || queueItem.text)
       blocks.push({
         type: 'paragraph',
@@ -304,6 +418,32 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
 
     return { success: true }
   } catch (error: any) {
+    // Notion may have committed the write even though our HTTP errored
+    // (timeout, 5xx after commit, partial multi-call append). For `add`,
+    // check the page before marking failed — if the full highlight is
+    // already there, mark completed instead, killing the false "1 failed"
+    // count. Partial commits aren't recovered here on purpose: doing more
+    // Notion writes from inside an error path risks compounding failures
+    // and leaving the queue item stuck in `processing`. The pre-retry
+    // check above will detect and clean up partial state on the next pass.
+    if (queueItem.operation_type === 'add') {
+      try {
+        const state = await checkAddState(notion, notionSettings.notion_page_id, queueItem)
+        if (state.kind === 'exact') {
+          await (supabase
+            .from('notion_sync_queue') as any)
+            .update({
+              status: 'completed',
+              processed_at: new Date().toISOString(),
+            })
+            .eq('id', queueItem.id)
+          return { success: true }
+        }
+      } catch {
+        // Verification itself failed — fall through to normal failure handling.
+      }
+    }
+
     // Mark as failed and increment retry count
     const newRetryCount = queueItem.retry_count + 1
     const shouldRetry = newRetryCount < queueItem.max_retries
