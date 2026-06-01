@@ -179,9 +179,9 @@ function ReviewPageContent() {
         return
       }
 
-      // All queries in parallel — highlights joined with daily_summaries eliminates
-      // the previous sequential: fetch summary → then fetch highlights
-      const [catResult, pinResult, hlResult] = await Promise.all([
+      // Categories + pins in parallel. Highlights are fetched separately below
+      // because they must be paginated (see note).
+      const [catResult, pinResult] = await Promise.all([
         supabase
           .from('categories')
           .select('id, name')
@@ -190,6 +190,18 @@ function ReviewPageContent() {
         (supabase.from('pinned_highlights') as any)
           .select('highlight_id')
           .eq('user_id', user.id),
+      ])
+
+      setCategories(catResult.data || [])
+      const pinIds = (pinResult.data || []).map((p: any) => p.highlight_id)
+      setPinnedHighlightIds(new Set(pinIds))
+
+      // Paginate to avoid Supabase's 1000-row cap. Without this, a month with
+      // more than 1000 daily_summary_highlights is silently truncated — and
+      // because rows are ordered by rating/id (not date), today's highlights
+      // get scattered across the cutoff, undercounting them on the all-done page.
+      const PAGE = 1000
+      const fetchHighlightsPage = (from: number) =>
         supabase
           .from('daily_summary_highlights')
           .select(`
@@ -214,22 +226,27 @@ function ReviewPageContent() {
           .eq('daily_summaries.user_id', user.id)
           .eq('highlight.archived', false)
           .order('rating', { ascending: false, nullsFirst: true })
-          .order('id', { ascending: true }),
-      ])
+          .order('id', { ascending: true })
+          .range(from, from + PAGE - 1)
 
-      setCategories(catResult.data || [])
-      const pinIds = (pinResult.data || []).map((p: any) => p.highlight_id)
-      setPinnedHighlightIds(new Set(pinIds))
+      let hlData: any[] = []
+      let from = 0
+      while (true) {
+        const { data: page, error: pageError } = await fetchHighlightsPage(from)
+        if (pageError) throw pageError
+        const list = page || []
+        hlData = hlData.concat(list)
+        if (list.length < PAGE) break
+        from += PAGE
+      }
 
-      if (hlResult.error) throw hlResult.error
-
-      if (!hlResult.data || hlResult.data.length === 0) {
+      if (hlData.length === 0) {
         setHighlights([])
         setLoading(false)
         return
       }
 
-      const allRows: ReviewHighlight[] = (hlResult.data || []).map((sh: any) => ({
+      const allRows: ReviewHighlight[] = hlData.map((sh: any) => ({
         id: sh.id,
         daily_summary_id: sh.daily_summaries?.id || '',
         highlight_id: sh.highlight_id,
