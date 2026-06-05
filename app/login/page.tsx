@@ -68,6 +68,17 @@ export default function LoginPage() {
             )}
           </button>
         </div>
+        <p className="mt-6 text-center text-sm text-gray-500 dark:text-gray-400">
+          By signing in, you agree to our{' '}
+          <a href="/terms" className="underline hover:text-gray-700 dark:hover:text-gray-200">
+            Terms of Service
+          </a>{' '}
+          and{' '}
+          <a href="/privacy" className="underline hover:text-gray-700 dark:hover:text-gray-200">
+            Privacy Policy
+          </a>
+          .
+        </p>
       </div>
     </main>
   )
