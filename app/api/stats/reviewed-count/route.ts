@@ -97,18 +97,18 @@ export async function GET(request: NextRequest) {
 
     const count = reviewedIds.size
 
-    const highlightsAddedBeforeMonthEnd: Array<{ id: string; text: string; created_at: string }> = []
+    const highlightsAddedBeforeMonthEnd: Array<{ id: string; text: string; created_at: string; archived: boolean | null }> = []
     from = 0
     while (true) {
       const { data, error } = await supabase
         .from('highlights')
-        .select('id, text, created_at')
+        .select('id, text, created_at, archived')
         .eq('user_id', user.id)
         .lt('created_at', createdBefore)
         .order('created_at', { ascending: false })
         .range(from, from + PAGE - 1)
       if (error) throw error
-      const page = (data || []) as Array<{ id: string; text: string; created_at: string }>
+      const page = (data || []) as Array<{ id: string; text: string; created_at: string; archived: boolean | null }>
       highlightsAddedBeforeMonthEnd.push(...page)
       if (page.length < PAGE) break
       from += PAGE
@@ -161,6 +161,7 @@ export async function GET(request: NextRequest) {
         textSnippet: snippet,
         created_at: h.created_at,
         assigned_date: highlightToDate.get(h.id) ?? null,
+        archived: !!h.archived,
       }
     })
 

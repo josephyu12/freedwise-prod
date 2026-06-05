@@ -34,6 +34,7 @@ export default function SettingsPage() {
     textSnippet: string
     created_at: string
     assigned_date: string | null
+    archived: boolean
   }>>([])
 
   const loadSettings = useCallback(async () => {
@@ -454,9 +455,19 @@ export default function SettingsPage() {
                         className="p-3 rounded-lg text-sm"
                         style={{ background: 'var(--surface-hover)' }}
                       >
-                        <p className="line-clamp-2 mb-1" style={{ color: 'var(--text-primary)' }}>
-                          {h.textSnippet || '(no text)'}
-                        </p>
+                        <div className="flex items-start gap-2 mb-1">
+                          <p className="line-clamp-2 flex-1" style={{ color: 'var(--text-primary)' }}>
+                            {h.textSnippet || '(no text)'}
+                          </p>
+                          {h.archived && (
+                            <span className="shrink-0 inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-amber-100 dark:bg-amber-500/15 text-amber-700 dark:text-amber-300">
+                              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4" />
+                              </svg>
+                              Archived
+                            </span>
+                          )}
+                        </div>
                         <p className="text-xs" style={{ color: 'var(--text-tertiary)' }}>
                           Added {createdDate} · {assignedLabel}
                         </p>
