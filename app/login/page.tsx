@@ -163,6 +163,19 @@ export default function LoginPage() {
                 Free to use · Sign in with your Google account
               </p>
             </div>
+
+            {/* Beta notice about the Google OAuth domain */}
+            <div className="mt-6 max-w-md mx-auto flex items-start gap-3 rounded-lg border border-amber-300 dark:border-amber-500/40 bg-amber-50 dark:bg-amber-900/15 px-4 py-3 text-left text-sm text-amber-900 dark:text-amber-200">
+              <svg className="w-4 h-4 mt-0.5 shrink-0 text-amber-600 dark:text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              <span>
+                <strong className="font-semibold">Beta note:</strong> On the Google sign-in screen
+                you’ll see “kiguewhexyxthomovykj.supabase.co” as the destination. That’s our secure
+                authentication provider — it’s expected while Freedwise is in beta, and your data
+                stays private. A branded sign-in is coming soon.
+              </span>
+            </div>
           </div>
         </div>
       </section>
