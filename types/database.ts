@@ -62,7 +62,7 @@ export type Database = {
           name: string
           color: string | null
           created_at: string
-          user_id: string | null
+          user_id: string
         }
         Insert: {
           id?: string
@@ -92,7 +92,7 @@ export type Database = {
           average_rating: number | null
           rating_count: number
           archived: boolean | null
-          user_id: string | null
+          user_id: string
           imported_from_notion: boolean
           notion_optout_marker: string | null
         }
@@ -134,7 +134,7 @@ export type Database = {
           id: string
           date: string
           created_at: string
-          user_id: string | null
+          user_id: string
         }
         Insert: {
           id?: string

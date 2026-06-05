@@ -50,7 +50,7 @@ These migrations can be applied individually to update existing databases:
    - Idempotent; only touches rows that look like the bad midnight-UTC cast
    - **Date:** 2026-05-10
 
-8. **`migration_dedupe_text_unique.sql`** (Latest)
+8. **`migration_dedupe_text_unique.sql`**
    - Adds a generated `text_hash` column (md5 of normalized text) and a unique
      constraint on `(user_id, text_hash)` so the database enforces "no duplicate
      highlights per user."
@@ -58,6 +58,14 @@ These migrations can be applied individually to update existing databases:
    - Lets the app `.upsert(..., { ignoreDuplicates: true })` without a pre-insert
      dedup fetch, which used to dominate save latency.
    - **Date:** 2026-05-11
+
+9. **`migration_user_id_not_null.sql`** (Latest)
+   - Enforces `NOT NULL` on `user_id` for `highlights`, `daily_summaries`, and
+     `categories`. A NULL `user_id` is invisible under RLS (matches no caller),
+     so it's both silent data loss and a sign of an owner-less write path.
+   - Safe on dirty data: skips any table that still has orphan rows and reports
+     the count instead of failing. Idempotent — re-run after cleanup.
+   - **Date:** 2026-06-05
 
 ## Migration Order
 
@@ -72,6 +80,7 @@ If applying migrations incrementally, use this order:
 7. `migration_resurface_stats.sql`
 8. `migration_fix_last_resurfaced_tz.sql`
 9. `migration_dedupe_text_unique.sql`
+10. `migration_user_id_not_null.sql`
 
 ## Usage
 
@@ -92,6 +101,7 @@ If applying migrations incrementally, use this order:
 \i migration_resurface_stats.sql
 \i migration_fix_last_resurfaced_tz.sql
 \i migration_dedupe_text_unique.sql
+\i migration_user_id_not_null.sql
 ```
 
 ## Notes

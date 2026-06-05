@@ -198,6 +198,28 @@ ALTER TABLE highlights
 ALTER TABLE highlights
   ADD COLUMN IF NOT EXISTS notion_optout_marker TEXT;
 
+-- Enforce NOT NULL on every user-owning column. A NULL user_id is invisible
+-- under the `auth.uid() = user_id` RLS policies (it matches no caller), so an
+-- orphan row is both a silent data loss and a sign of a write path that forgot
+-- to set the owner. Skip per-table if orphan rows exist rather than erroring,
+-- so this stays idempotent on dirty databases. See migration_user_id_not_null.sql.
+DO $$
+DECLARE
+  v_orphans bigint;
+  v_tbl     text;
+BEGIN
+  FOREACH v_tbl IN ARRAY ARRAY['highlights', 'daily_summaries', 'categories']
+  LOOP
+    EXECUTE format('SELECT count(*) FROM %I WHERE user_id IS NULL', v_tbl)
+      INTO v_orphans;
+    IF v_orphans = 0 THEN
+      EXECUTE format('ALTER TABLE %I ALTER COLUMN user_id SET NOT NULL', v_tbl);
+    ELSE
+      RAISE WARNING '[user_id NOT NULL] % has % orphan row(s); leaving column nullable. Clean up and re-run.', v_tbl, v_orphans;
+    END IF;
+  END LOOP;
+END $$;
+
 -- ============================================================================
 -- 3. CREATE INDEXES
 -- ============================================================================

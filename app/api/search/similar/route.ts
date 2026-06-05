@@ -175,6 +175,14 @@ const dailyAssignmentsSelect = 'daily_assignments:daily_summary_highlights(id,da
 export async function POST(request: NextRequest) {
   try {
     const supabase = await createClient()
+
+    // Defense-in-depth: scope every read to the authenticated user explicitly,
+    // in addition to RLS. A request without a valid session is rejected outright.
+    const { data: { user }, error: authError } = await supabase.auth.getUser()
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    }
+
     const { highlightId, text, htmlContent } = await request.json()
 
     if (!highlightId || !text) {
@@ -207,6 +215,7 @@ export async function POST(request: NextRequest) {
         ),
         ${dailyAssignmentsSelect}
       `)
+      .eq('user_id', user.id)
       .eq('archived', false)
       .neq('id', highlightId)
       .limit(1000) // Limit for performance

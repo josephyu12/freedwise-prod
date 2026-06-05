@@ -219,6 +219,14 @@ const monthsReviewedSelect = 'months_reviewed:highlight_months_reviewed(id,month
 export async function POST(request: NextRequest) {
   try {
     const supabase = await createClient()
+
+    // Defense-in-depth: scope every read to the authenticated user explicitly,
+    // in addition to RLS. A request without a valid session is rejected outright.
+    const { data: { user }, error: authError } = await supabase.auth.getUser()
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    }
+
     const { query, type } = await request.json()
 
     if (!query || typeof query !== 'string') {
@@ -254,6 +262,7 @@ export async function POST(request: NextRequest) {
           ${dailyAssignmentsSelect},
           ${monthsReviewedSelect}
         `)
+        .eq('user_id', user.id)
         .or(`text.ilike.%${query}%,html_content.ilike.%${query}%`)
         .eq('archived', false)
         .order('created_at', { ascending: false })
@@ -276,6 +285,7 @@ export async function POST(request: NextRequest) {
       const { data: allHighlightsData } = await supabase
         .from('highlights')
         .select('id, text, html_content')
+        .eq('user_id', user.id)
         .eq('archived', false)
         .limit(1000) // Limit for performance
 
@@ -317,6 +327,7 @@ export async function POST(request: NextRequest) {
               ${monthsReviewedSelect}
             `)
             .in('id', similarIds)
+            .eq('user_id', user.id)
             .eq('archived', false)
 
           if (similarHighlights) {
@@ -371,6 +382,7 @@ export async function POST(request: NextRequest) {
           ${dailyAssignmentsSelect},
           ${monthsReviewedSelect}
         `)
+        .eq('user_id', user.id)
         .eq('archived', false)
         .limit(1000) // Limit for performance
 
