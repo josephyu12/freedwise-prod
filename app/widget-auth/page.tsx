@@ -124,12 +124,23 @@ export default function WidgetAuthPage() {
         <div className="mt-6 p-4 bg-blue-50 dark:bg-blue-900/20 rounded-lg">
           <h3 className="text-sm font-semibold text-blue-800 dark:text-blue-300 mb-2">Setup Steps</h3>
           <ol className="text-xs text-blue-700 dark:text-blue-400 space-y-1 list-decimal list-inside">
-            <li>Install Scriptable from the App Store</li>
-            <li>Create a new script, paste the widget code</li>
-            <li>Paste token above as <code className="bg-blue-100 dark:bg-blue-900/50 px-1 rounded">WIDGET_TOKEN</code></li>
-            <li>Run script once (tap Play button)</li>
-            <li><strong>Clear token from script</strong> (stored securely in Keychain)</li>
-            <li>Add a Large Scriptable widget to your home screen, or a Lock Screen accessory (rectangular, inline, or circular)</li>
+            <li>Install <strong>Scriptable</strong> from the App Store</li>
+            <li>
+              Create a new script and paste in the{' '}
+              <a
+                href="/freedwise-widget.js"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="underline font-medium hover:no-underline"
+              >
+                widget code
+              </a>{' '}
+              (opens the full script — copy everything)
+            </li>
+            <li>Paste the token above as <code className="bg-blue-100 dark:bg-blue-900/50 px-1 rounded">WIDGET_TOKEN</code></li>
+            <li>Run the script once (tap the Play button)</li>
+            <li>After it says &quot;Token stored securely&quot;, <strong>clear the token from the script</strong> (it&apos;s kept in the iOS Keychain)</li>
+            <li>Add a Large Scriptable widget to your home screen, or a Lock Screen accessory (rectangular, inline, or circular), then long-press → Edit Widget → choose this script</li>
           </ol>
         </div>
 

@@ -438,7 +438,22 @@ export default function Home() {
                 <p className="text-sm" style={{ color: 'var(--text-tertiary)' }}>Review highlights</p>
               </div>
             </Link>
-            
+
+            <Link
+              href="/review"
+              className="glass-card glass-card-interactive p-5 flex items-center gap-4 group"
+            >
+              <div className="flex-shrink-0 w-11 h-11 rounded-xl bg-sky-50 dark:bg-sky-500/10 flex items-center justify-center group-hover:bg-sky-100 dark:group-hover:bg-sky-500/20 transition-colors">
+                <svg className="w-5 h-5 text-sky-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M5 13l4 4L19 7" />
+                </svg>
+              </div>
+              <div>
+                <h2 className="font-semibold text-gray-900 dark:text-white">Quick Review</h2>
+                <p className="text-sm" style={{ color: 'var(--text-tertiary)' }}>Rate highlights one by one</p>
+              </div>
+            </Link>
+
             <Link
               href="/archives"
               className="glass-card glass-card-interactive p-5 flex items-center gap-4 group"
@@ -466,6 +481,21 @@ export default function Home() {
               <div>
                 <h2 className="font-semibold text-gray-900 dark:text-white">Pin Board</h2>
                 <p className="text-sm" style={{ color: 'var(--text-tertiary)' }}>Your pinned highlights</p>
+              </div>
+            </Link>
+
+            <Link
+              href="/widget-auth"
+              className="glass-card glass-card-interactive p-5 flex items-center gap-4 group"
+            >
+              <div className="flex-shrink-0 w-11 h-11 rounded-xl bg-teal-50 dark:bg-teal-500/10 flex items-center justify-center group-hover:bg-teal-100 dark:group-hover:bg-teal-500/20 transition-colors">
+                <svg className="w-5 h-5 text-teal-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 18h.01M8 21h8a2 2 0 002-2V5a2 2 0 00-2-2H8a2 2 0 00-2 2v14a2 2 0 002 2z" />
+                </svg>
+              </div>
+              <div>
+                <h2 className="font-semibold text-gray-900 dark:text-white">iOS Widget</h2>
+                <p className="text-sm" style={{ color: 'var(--text-tertiary)' }}>Set up the lock-screen widget</p>
               </div>
             </Link>
           </div>

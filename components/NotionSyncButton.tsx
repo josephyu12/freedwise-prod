@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { useUnsavedChanges } from '@/hooks/useUnsavedChanges'
+import { createClient } from '@/lib/supabase/client'
 
 type QueueStatus = {
   pending: number
@@ -28,6 +29,10 @@ export default function NotionSyncButton() {
   const [syncing, setSyncing] = useState(false)
   const [progress, setProgress] = useState<{ processed: number; failed: number } | null>(null)
   const [message, setMessage] = useState<string | null>(null)
+  // null = still checking, false = Notion sync off (render nothing), true = on.
+  // When Notion sync isn't enabled there's nothing to sync, so the whole button
+  // is hidden and the rest of the app works exactly the same without it.
+  const [notionEnabled, setNotionEnabled] = useState<boolean | null>(null)
 
   // Treat an in-progress sync like an unsaved change — block tab close,
   // refresh, and in-app navigation until the sync finishes.
@@ -45,6 +50,31 @@ export default function NotionSyncButton() {
     } catch {
       // best-effort
     }
+  }, [])
+
+  // Decide whether to show the button at all based on the user's Notion setting.
+  useEffect(() => {
+    let cancelled = false
+    const checkEnabled = async () => {
+      try {
+        const supabase = createClient()
+        const { data: { user } } = await supabase.auth.getUser()
+        if (!user) {
+          if (!cancelled) setNotionEnabled(false)
+          return
+        }
+        const { data } = await supabase
+          .from('user_notion_settings')
+          .select('enabled')
+          .eq('user_id', user.id)
+          .maybeSingle()
+        if (!cancelled) setNotionEnabled(!!(data as { enabled?: boolean } | null)?.enabled)
+      } catch {
+        if (!cancelled) setNotionEnabled(false)
+      }
+    }
+    checkEnabled()
+    return () => { cancelled = true }
   }, [])
 
   useEffect(() => {
@@ -129,6 +159,10 @@ export default function NotionSyncButton() {
   } else {
     label = 'Sync Notion'
   }
+
+  // Notion sync is off (or we're still checking) — render nothing. The button
+  // only appears once we confirm the user has Notion sync enabled.
+  if (notionEnabled !== true) return null
 
   return (
     <>

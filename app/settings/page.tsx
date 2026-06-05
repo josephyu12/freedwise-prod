@@ -26,7 +26,6 @@ export default function SettingsPage() {
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
   const [resettingDaily, setResettingDaily] = useState(false)
   const [showResetConfirm, setShowResetConfirm] = useState(false)
-  const [debugRedistributing, setDebugRedistributing] = useState(false)
   const [lastMonthReviewedCount, setLastMonthReviewedCount] = useState<number | null>(null)
   const [lastMonthLabel, setLastMonthLabel] = useState<string>('')
   const [syncingRepair, setSyncingRepair] = useState(false)
@@ -201,33 +200,6 @@ export default function SettingsPage() {
       setMessage({ type: 'error', text: error.message || 'Failed to reset daily highlights' })
     } finally {
       setResettingDaily(false)
-    }
-  }
-
-  const handleDebugLastDayRedistribute = async () => {
-    setDebugRedistributing(true)
-    setMessage(null)
-    try {
-      const res = await fetch('/api/daily/redistribute', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ debugLastDay: true }),
-      })
-      const data = await res.json()
-      if (!res.ok) {
-        throw new Error(data.error || 'Redistribute failed')
-      }
-      const detail = data.effectiveDate
-        ? ` (pretended today is ${data.effectiveDate}, day ${data.effectiveDay})`
-        : ''
-      setMessage({
-        type: 'success',
-        text: data.message + (detail || '') + (data.totalHighlights ? ` ${data.totalHighlights} highlight(s) assigned.` : ''),
-      })
-    } catch (error: any) {
-      setMessage({ type: 'error', text: error.message || 'Failed to run redistribute (debug last day)' })
-    } finally {
-      setDebugRedistributing(false)
     }
   }
 
@@ -569,29 +541,6 @@ export default function SettingsPage() {
             )}
           </div>
 
-          {/* Debug section */}
-          <div className="glass-card p-6 sm:p-8" style={{ borderColor: 'var(--warning)', borderWidth: '1px' }}>
-            <div className="flex items-center gap-3 mb-4">
-              <div className="w-9 h-9 rounded-lg bg-amber-50 dark:bg-amber-500/10 flex items-center justify-center">
-                <svg className="w-5 h-5 text-amber-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
-                </svg>
-              </div>
-              <h2 className="text-xl font-semibold" style={{ color: 'var(--text-primary)' }}>Debug: last day of month</h2>
-            </div>
-            <p className="text-sm mb-4" style={{ color: 'var(--text-secondary)' }}>
-              Run daily redistribution as if today were the last day of the month. Use this to test that highlights added on the last day get assigned and to assign any orphans.
-            </p>
-            <button
-              type="button"
-              onClick={handleDebugLastDayRedistribute}
-              disabled={debugRedistributing}
-              className="btn-secondary"
-              style={{ borderColor: 'var(--warning)' }}
-            >
-              {debugRedistributing ? 'Running…' : 'Redistribute (debug last day)'}
-            </button>
-          </div>
         </div>
       </div>
     </main>
