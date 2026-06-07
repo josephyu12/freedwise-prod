@@ -319,11 +319,19 @@ export default function DailyPage() {
 
       // If no assignments exist for this month, create them
       if (!monthSummaries || monthSummaries.length === 0) {
-        // Call the assignment API to create assignments for the entire month
+        // If we're building the real current month for the first time mid-month, only
+        // distribute across remaining days (today → end of month) so highlights aren't
+        // wasted on days that have already passed — same behavior as adding highlights
+        // incrementally via /redistribute. For past/future months, build the full month.
+        const now = new Date()
+        const isCurrentMonth = year === now.getFullYear() && month === now.getMonth() + 1
+        const startDay = isCurrentMonth ? now.getDate() : 1
+
+        // Call the assignment API to create assignments for the month
         const response = await fetch('/api/daily/assign', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ year, month }),
+          body: JSON.stringify({ year, month, startDay }),
         })
 
         if (!response.ok) {

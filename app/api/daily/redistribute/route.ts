@@ -4,7 +4,10 @@ import { createClient } from '@/lib/supabase/server'
 /**
  * POST /api/daily/redistribute
  * Assigns specific new highlights to remaining days. Existing assignments are never removed or moved.
- * Only affects future days: strictly after today (tomorrow through end of month). Today is never changed.
+ * Normally only affects future days: strictly after today (tomorrow through end of month), so an
+ * in-progress/completed today is never changed. EXCEPTION — on a fresh start (the user has no daily
+ * summaries yet for the current month, e.g. a brand-new user importing mid-month) today is included
+ * so they can start reviewing immediately. The last day of the month also assigns to today.
  *
  * - Body { highlightIds: string[] } (required for placement): only when provided (e.g. from add-highlight
  *   flow) are any highlights placed. When omitted or empty (e.g. after delete), no highlights are placed.
@@ -68,11 +71,26 @@ export async function POST(request: NextRequest) {
       dayOfMonth = daysInMonth // pretend today is the last day (e.g. 31st) for debugging
     }
 
-    // Use remaining days in current month. On the last day of the month, assign new highlights to today (the last day).
-    // Otherwise: from tomorrow to end of month (today is never changed).
+    // Fresh start = the user has no daily summaries at all for the current month yet (e.g. a
+    // brand-new user importing mid-month). In that case we include today in the distribution so
+    // they can start reviewing immediately; today is empty, so there's nothing to disturb.
+    const monthStartDate = `${year}-${String(month).padStart(2, '0')}-01`
+    const monthEndDate = `${year}-${String(month).padStart(2, '0')}-${String(daysInMonth).padStart(2, '0')}`
+    const { data: monthSummaryRows } = await supabase
+      .from('daily_summaries')
+      .select('id')
+      .eq('user_id', user.id)
+      .gte('date', monthStartDate)
+      .lte('date', monthEndDate)
+      .limit(1)
+    const isFreshStart = !monthSummaryRows || monthSummaryRows.length === 0
+
+    // Use remaining days in current month. On the last day of the month, assign new highlights to
+    // today (the last day). On a fresh start, also include today. Otherwise: from tomorrow to end
+    // of month (an existing today may be in-progress/completed and is never changed).
     const isLastDayOfMonth = dayOfMonth === daysInMonth
-    const remainingDaysInMonth = isLastDayOfMonth ? 1 : daysInMonth - dayOfMonth
-    const startDay = isLastDayOfMonth ? dayOfMonth : dayOfMonth + 1
+    const startDay = (isLastDayOfMonth || isFreshStart) ? dayOfMonth : dayOfMonth + 1
+    const remainingDaysInMonth = daysInMonth - startDay + 1
 
     if (remainingDaysInMonth <= 0) {
       return NextResponse.json({

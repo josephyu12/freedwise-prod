@@ -50,12 +50,18 @@ function hashStr(s: string): number {
  * to ensure roughly equal total character counts per day.
  * Uses a richer seed (year*373 + month*31) and per-highlight tie-breaking
  * so the same highlight tends to land on different days each month.
+ *
+ * `startDay` (default 1) limits distribution to days startDay..daysInMonth.
+ * Pass today's day-of-month when building the current month for the first time
+ * mid-month, so highlights only land on remaining days (today → end of month)
+ * instead of being wasted on days that have already passed.
  */
 function assignHighlightsToDays(
   highlights: HighlightWithScore[],
   daysInMonth: number,
   year: number,
-  month: number
+  month: number,
+  startDay: number = 1
 ): DayAssignment[] {
   // Richer seed so month-to-month variation is stronger (avoids same day each month)
   const seed = year * 373 + month * 31
@@ -63,11 +69,14 @@ function assignHighlightsToDays(
   const shuffledHighlights = seededShuffle(highlights, seed)
   const sortedHighlights = [...shuffledHighlights].sort((a, b) => b.score - a.score)
 
-  const days: DayAssignment[] = Array.from({ length: daysInMonth }, (_, i) => ({
-    day: i + 1,
+  const numDays = Math.max(0, daysInMonth - startDay + 1)
+  const days: DayAssignment[] = Array.from({ length: numDays }, (_, i) => ({
+    day: startDay + i,
     highlights: [],
     totalScore: 0,
   }))
+
+  if (days.length === 0) return days
 
   for (const highlight of sortedHighlights) {
     let minScore = days[0].totalScore
@@ -102,9 +111,15 @@ function assignHighlightsToDays(
 /**
  * POST /api/daily/assign
  * Assigns highlights to days for a given month.
- * Acts on the whole month: ALL days 1..lastDay, both past and future.
+ * By default acts on the whole month: ALL days 1..lastDay, both past and future.
  * Use when (re)building the full month (e.g. after "reset daily highlights").
  * Preserves completed days (all highlights rated); recreates summaries for all other days.
+ *
+ * Body { year, month, startDay? }. Pass `startDay` (today's day-of-month) when building
+ * the current month for the first time mid-month, so highlights are distributed only across
+ * remaining days (today → end of month) — matching how /redistribute handles added highlights —
+ * instead of being wasted on days that have already passed. Omit startDay (or pass 1) for a
+ * full-month build (reset, next-month prep).
  */
 export async function POST(request: NextRequest) {
   try {
@@ -138,6 +153,15 @@ export async function POST(request: NextRequest) {
     }
 
     const daysInMonth = new Date(year, month, 0).getDate()
+
+    // Optional startDay: limits distribution to days startDay..daysInMonth (today → end of month
+    // for a mid-month first build). Defaults to 1 (full month). Clamp to a valid day so a bad
+    // value never zeroes out the month.
+    let startDay = 1
+    const rawStartDay = (body as { startDay?: unknown }).startDay
+    if (typeof rawStartDay === 'number' && Number.isFinite(rawStartDay)) {
+      startDay = Math.min(Math.max(1, Math.floor(rawStartDay)), daysInMonth)
+    }
     const monthYear = `${year}-${String(month).padStart(2, '0')}`
 
     // Fetch ALL unarchived highlights (Supabase default limit is 1000; paginate to get all)
@@ -204,8 +228,9 @@ export async function POST(request: NextRequest) {
       }
     })
 
-    // Assign highlights to ALL days in the month (1..daysInMonth), including past days
-    const assignments = assignHighlightsToDays(highlightsWithScore, daysInMonth, year, month)
+    // Assign highlights to days startDay..daysInMonth (full month by default; remaining days
+    // only when startDay is supplied for a mid-month first build)
+    const assignments = assignHighlightsToDays(highlightsWithScore, daysInMonth, year, month, startDay)
 
     // Get existing assignments and preserve those for completed days
     const startDate = `${year}-${String(month).padStart(2, '0')}-01`
@@ -317,7 +342,7 @@ export async function POST(request: NextRequest) {
 
     // Recalculate assignments only for non-preserved highlights
     const newAssignments = highlightsToAssign.length > 0
-      ? assignHighlightsToDays(highlightsToAssign, daysInMonth, year, month)
+      ? assignHighlightsToDays(highlightsToAssign, daysInMonth, year, month, startDay)
       : []
 
     // Create daily summaries and assignments
@@ -397,9 +422,10 @@ export async function POST(request: NextRequest) {
     
     // If there are unassigned highlights, assign them to non-completed days
     if (unassignedHighlights.length > 0) {
-      // Get all non-completed days
+      // Get all non-completed days (respecting startDay so a mid-month build never
+      // back-fills past days)
       const availableDays: number[] = []
-      for (let day = 1; day <= daysInMonth; day++) {
+      for (let day = startDay; day <= daysInMonth; day++) {
         const date = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
         if (!completedDays.has(date)) {
           availableDays.push(day)
