@@ -14,6 +14,7 @@ import { addToNotionSyncQueue } from '@/lib/notionSyncQueue'
 import { callRedistribute } from '@/lib/redistribute'
 import { parseIntoParagraphs, groupParagraphsByDividers, ParagraphBlock } from '@/lib/splitHighlightText'
 import { renderHighlightHtml } from '@/lib/renderHighlightHtml'
+import { computeMonthReviewStatus } from '@/lib/monthReviewStatus'
 import { useOfflineStatus } from '@/hooks/useOfflineStatus'
 import OfflineBanner from '@/components/OfflineBanner'
 import {
@@ -535,40 +536,29 @@ export default function DailyPage() {
         const summariesData = summaries as Array<{ id: string; date: string }>
         const summaryIds = summariesData.map((s) => s.id)
         const PAGE = 1000
-        let highlights: Array<{ daily_summary_id: string; rating: string | null }> = []
+        // Pull the archived flag so the status count can exclude archived
+        // highlights — matching the day-detail modal and the review flow. An
+        // archived-but-unrated highlight must not paint the day yellow.
+        let highlights: Array<{ daily_summary_id: string; rating: string | null; archived: boolean }> = []
         let from = 0
         while (true) {
           const { data: page, error: highlightsError } = await supabase
             .from('daily_summary_highlights')
-            .select('daily_summary_id, rating')
+            .select('daily_summary_id, rating, highlight:highlights!inner(archived)')
             .in('daily_summary_id', summaryIds)
             .range(from, from + PAGE - 1)
           if (highlightsError) throw highlightsError
-          const list = (page || []) as Array<{ daily_summary_id: string; rating: string | null }>
+          const list = ((page || []) as any[]).map((h) => ({
+            daily_summary_id: h.daily_summary_id,
+            rating: h.rating,
+            archived: h.highlight?.archived ?? false,
+          }))
           highlights = highlights.concat(list)
           if (list.length < PAGE) break
           from += PAGE
         }
 
-        // Group highlights by summary and check completion status
-        const statusMap = new Map<string, 'completed' | 'partial' | 'none'>()
-        
-        for (const summary of summariesData) {
-          const summaryHighlights = highlights?.filter((h: any) => h.daily_summary_id === summary.id) || []
-          const totalHighlights = summaryHighlights.length
-          const ratedHighlights = summaryHighlights.filter((h: any) => h.rating !== null).length
-
-          if (totalHighlights === 0) {
-            statusMap.set(summary.date, 'none')
-          } else if (ratedHighlights === totalHighlights) {
-            statusMap.set(summary.date, 'completed')
-          } else if (ratedHighlights > 0) {
-            statusMap.set(summary.date, 'partial')
-          } else {
-            statusMap.set(summary.date, 'none')
-          }
-        }
-
+        const statusMap = computeMonthReviewStatus(summariesData, highlights)
         setMonthReviewStatus(statusMap)
       } else {
         setMonthReviewStatus(new Map())
