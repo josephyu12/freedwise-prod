@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { DailySummary, DailySummaryHighlight, Category } from '@/types/database'
 import Link from 'next/link'
@@ -214,6 +214,8 @@ export default function DailyPage() {
   const { isOnline } = useOfflineStatus()
   const [isSyncing, setIsSyncing] = useState(false)
   const [pendingSyncCount, setPendingSyncCount] = useState(0)
+  // Single-flight lock for the offline-replay effect (see syncOfflineActions).
+  const syncInFlightRef = useRef(false)
   const [usingCachedData, setUsingCachedData] = useState(false)
 
   const editingHighlight = editingId
@@ -1798,7 +1800,25 @@ export default function DailyPage() {
       }
     }
 
-    syncOfflineActions()
+    const runSyncGuarded = async () => {
+      // Single-flight lock. A flapping connection (the heartbeat in
+      // useOfflineStatus toggling isOnline false→true→false→true on a weak
+      // signal) re-fires this effect while a prior replay is still awaiting
+      // Supabase. Two concurrent runs read overlapping queue snapshots and both
+      // decrement pendingSyncCount for the same actions (removeAction is
+      // idempotent against IndexedDB), driving the counter negative. The ref
+      // check+set is synchronous — no await between them — so a second run bails
+      // before it can touch shared state.
+      if (syncInFlightRef.current) return
+      syncInFlightRef.current = true
+      try {
+        await syncOfflineActions()
+      } finally {
+        syncInFlightRef.current = false
+      }
+    }
+
+    runSyncGuarded()
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOnline])
 
