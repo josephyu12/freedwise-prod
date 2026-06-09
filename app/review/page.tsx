@@ -120,6 +120,11 @@ function ReviewPageContent() {
 
   const today = format(new Date(), 'yyyy-MM-dd')
 
+  // "Review ahead" mode (?ahead=1): in addition to today + overdue catch-up,
+  // pull unrated highlights from the remaining days of the month, round-robin
+  // across days, so the user can get ahead instead of stopping at today.
+  const aheadMode = searchParams.get('ahead') === '1'
+
   const addToSyncQueue = async (
     highlightId: string,
     operationType: 'add' | 'update' | 'delete',
@@ -202,6 +207,13 @@ function ReviewPageContent() {
       // more than 1000 daily_summary_highlights is silently truncated — and
       // because rows are ordered by rating/id (not date), today's highlights
       // get scattered across the cutoff, undercounting them on the all-done page.
+      // In ahead mode, extend the upper bound from "today" to the last day of
+      // the month so the remaining days of the month are pulled in too.
+      const [ty, tm] = today.split('-').map(Number)
+      const lastDayOfMonth = new Date(ty, tm, 0).getDate()
+      const endOfMonth = `${today.substring(0, 8)}${String(lastDayOfMonth).padStart(2, '0')}`
+      const upperDate = aheadMode ? endOfMonth : today
+
       const PAGE = 1000
       const fetchHighlightsPage = (from: number) =>
         supabase
@@ -224,7 +236,7 @@ function ReviewPageContent() {
             )
           `)
           .gte('daily_summaries.date', `${today.substring(0, 8)}01`)
-          .lte('daily_summaries.date', today)
+          .lte('daily_summaries.date', upperDate)
           .eq('daily_summaries.user_id', user.id)
           .eq('highlight.archived', false)
           .order('rating', { ascending: false, nullsFirst: true })
@@ -273,7 +285,7 @@ function ReviewPageContent() {
 
       // Catch-up: only unrated from earlier days, oldest first then shortest
       const catchUpRows = allRows
-        .filter((h) => h.date !== today && h.rating === null)
+        .filter((h) => h.date < today && h.rating === null)
         .sort((a, b) => {
           if (a.date !== b.date) return a.date < b.date ? -1 : 1
           const aLen = a.highlight?.text?.length || 0
@@ -281,7 +293,42 @@ function ReviewPageContent() {
           return aLen - bLen
         })
 
-      const processed = [...todayRows, ...catchUpRows]
+      // Ahead: unrated highlights from the remaining days of the month, pulled
+      // round-robin — one (shortest) per future day in date order, then loop —
+      // so the user gets a spread across the rest of the month rather than
+      // finishing one day at a time. Only populated in ahead mode.
+      const aheadRows: ReviewHighlight[] = []
+      if (aheadMode) {
+        const byDate = new Map<string, ReviewHighlight[]>()
+        for (const h of allRows) {
+          if (h.date > today && h.rating === null) {
+            const bucket = byDate.get(h.date) || []
+            bucket.push(h)
+            byDate.set(h.date, bucket)
+          }
+        }
+        const futureDates = Array.from(byDate.keys()).sort()
+        for (const d of futureDates) {
+          byDate.get(d)!.sort((a, b) => {
+            const aLen = a.highlight?.text?.length || 0
+            const bLen = b.highlight?.text?.length || 0
+            return aLen - bLen
+          })
+        }
+        for (let round = 0; ; round++) {
+          let addedThisRound = false
+          for (const d of futureDates) {
+            const bucket = byDate.get(d)!
+            if (round < bucket.length) {
+              aheadRows.push(bucket[round])
+              addedThisRound = true
+            }
+          }
+          if (!addedThisRound) break
+        }
+      }
+
+      const processed = [...todayRows, ...catchUpRows, ...aheadRows]
 
       setHighlights(processed)
 
@@ -321,7 +368,7 @@ function ReviewPageContent() {
     } finally {
       setLoading(false)
     }
-  }, [supabase, today])
+  }, [supabase, today, aheadMode])
 
   useEffect(() => {
     loadHighlights()
@@ -494,8 +541,18 @@ function ReviewPageContent() {
   const allDone =
     highlights.length > 0 && highlights.every((h) => h.rating !== null)
 
+  // Header/progress denominator: today's count normally, the full queue in
+  // ahead mode (so the bar reflects month-wide progress, not just today).
+  const overallRatedCount = useMemo(
+    () => highlights.filter((h) => h.rating !== null).length,
+    [highlights]
+  )
+  const progressRated = aheadMode ? overallRatedCount : ratedCount
+  const progressTotal = aheadMode ? highlights.length : todayHighlights.length
+
   const current = highlights[currentIndex] || null
-  const isCatchUp = current ? current.date !== today : false
+  const isCatchUp = current ? current.date < today : false
+  const isAhead = current ? current.date > today : false
 
   // Reset highlight content scroll to top whenever the displayed highlight changes,
   // so a long, scrolled-down highlight doesn't leave the next one mid-scroll.
@@ -1805,14 +1862,28 @@ function ReviewPageContent() {
           All Done!
         </h2>
         <p className="text-gray-600 dark:text-gray-300 mb-6 text-center">
-          {highlights.length === todayHighlights.length
+          {aheadMode
+            ? `You're ahead through the end of the month — all ${highlights.length} highlights reviewed.`
+            : highlights.length === todayHighlights.length
             ? `You reviewed all ${todayHighlights.length} highlights for today.`
             : `You're all caught up — ${todayHighlights.length} today plus ${highlights.length - todayHighlights.length} from earlier this month.`}
         </p>
         <div className="flex gap-3">
+          {!aheadMode && (
+            <Link
+              href="/review?ahead=1"
+              className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition font-medium"
+            >
+              Review ahead →
+            </Link>
+          )}
           <Link
             href="/"
-            className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition font-medium"
+            className={`px-6 py-3 rounded-lg transition font-medium ${
+              aheadMode
+                ? 'bg-blue-600 text-white hover:bg-blue-700'
+                : 'bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-600'
+            }`}
           >
             Home
           </Link>
@@ -1835,14 +1906,23 @@ function ReviewPageContent() {
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 safe-area-top">
         <div className="text-sm font-medium text-gray-700 dark:text-gray-300">
-          {ratedCount} / {todayHighlights.length} reviewed
+          {progressRated} / {progressTotal} reviewed{aheadMode ? ' this month' : ''}
         </div>
-        <Link
-          href="/daily"
-          className="text-sm text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 transition"
-        >
-          Full View
-        </Link>
+        <div className="flex items-center gap-4">
+          <Link
+            href="/review/lite"
+            className="text-sm text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition"
+            title="Minimal text-only view for weak connections"
+          >
+            Lite
+          </Link>
+          <Link
+            href="/daily"
+            className="text-sm text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 transition"
+          >
+            Full View
+          </Link>
+        </div>
       </div>
 
       {/* Progress bar */}
@@ -1852,9 +1932,9 @@ function ReviewPageContent() {
             className="h-full bg-blue-500 rounded-full transition-all duration-500 ease-out"
             style={{
               width: `${
-                todayHighlights.length === 0
+                progressTotal === 0
                   ? 0
-                  : (ratedCount / todayHighlights.length) * 100
+                  : (progressRated / progressTotal) * 100
               }%`,
             }}
           />
@@ -1875,6 +1955,11 @@ function ReviewPageContent() {
               {isCatchUp && (
                 <div className="mb-2 px-2 py-1 bg-indigo-100 dark:bg-indigo-900 text-indigo-800 dark:text-indigo-200 rounded text-xs font-semibold inline-block">
                   Catching up · {format(new Date(`${current.date}T00:00:00`), 'MMM d')}
+                </div>
+              )}
+              {isAhead && (
+                <div className="mb-2 px-2 py-1 bg-teal-100 dark:bg-teal-900 text-teal-800 dark:text-teal-200 rounded text-xs font-semibold inline-block">
+                  Reviewing ahead · {format(new Date(`${current.date}T00:00:00`), 'MMM d')}
                 </div>
               )}
               {current.highlight.archived && (

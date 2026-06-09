@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect } from 'react'
+import Link from 'next/link'
 import { hasPendingActions } from '@/lib/offlineStore'
 
 interface OfflineBannerProps {
@@ -32,7 +33,12 @@ export default function OfflineBanner({ isOnline, isSyncing, pendingCount }: Off
           Syncing {pendingCount ? `${pendingCount} pending` : ''} change{pendingCount !== 1 ? 's' : ''}…
         </span>
       ) : isWeakSignal ? (
-        <span>📶 Weak connection — ratings will be saved and synced automatically</span>
+        <span>
+          📶 Weak connection — ratings will be saved and synced automatically.{' '}
+          <Link href="/review/lite" className="underline font-semibold">
+            Switch to text-only →
+          </Link>
+        </span>
       ) : (
         <span>⚡ You&apos;re offline — ratings will sync when you reconnect</span>
       )}
