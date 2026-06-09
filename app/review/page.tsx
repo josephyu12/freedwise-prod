@@ -15,6 +15,7 @@ import { removeFromFutureMonths } from '@/lib/removeFromFutureMonths'
 import { callRedistribute } from '@/lib/redistribute'
 import { useOfflineStatus } from '@/hooks/useOfflineStatus'
 import OfflineBanner from '@/components/OfflineBanner'
+import ReviewServiceWorker from '@/components/ReviewServiceWorker'
 import {
   cacheReviewData,
   getCachedReviewData,
@@ -42,13 +43,19 @@ interface ReviewHighlight {
 
 export default function ReviewPage() {
   return (
-    <Suspense fallback={
-      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 to-indigo-100 dark:from-gray-900 dark:to-gray-800">
+    <>
+      <ReviewServiceWorker />
+      <Suspense fallback={
+      <div className="min-h-screen flex flex-col items-center justify-center gap-4 bg-gradient-to-br from-blue-50 to-indigo-100 dark:from-gray-900 dark:to-gray-800 px-6">
         <div className="text-xl text-gray-600 dark:text-gray-300">Loading...</div>
+        <Link href="/review/lite" className="text-sm text-blue-600 dark:text-blue-400 underline">
+          Slow connection? Switch to text-only →
+        </Link>
       </div>
     }>
       <ReviewPageContent />
-    </Suspense>
+      </Suspense>
+    </>
   )
 }
 
@@ -1832,8 +1839,11 @@ function ReviewPageContent() {
 
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 to-indigo-100 dark:from-gray-900 dark:to-gray-800">
+      <div className="min-h-screen flex flex-col items-center justify-center gap-4 bg-gradient-to-br from-blue-50 to-indigo-100 dark:from-gray-900 dark:to-gray-800 px-6">
         <div className="text-xl text-gray-600 dark:text-gray-300">Loading...</div>
+        <Link href="/review/lite" className="text-sm text-blue-600 dark:text-blue-400 underline">
+          Slow connection? Switch to text-only →
+        </Link>
       </div>
     )
   }
