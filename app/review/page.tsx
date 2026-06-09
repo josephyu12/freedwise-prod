@@ -304,8 +304,23 @@ function ReviewPageContent() {
       // round-robin — one (shortest) per future day in date order, then loop —
       // so the user gets a spread across the rest of the month rather than
       // finishing one day at a time. Only populated in ahead mode.
+      //
+      // Already-rated future highlights are kept too (placed up front, not
+      // filtered out): without them, rating a future highlight and then
+      // refreshing would drop it from the set, resetting the progress bar and
+      // making it look like review restarts from tomorrow. Keeping them in means
+      // they still count as reviewed across a reload — firstUnrated skips them.
       const aheadRows: ReviewHighlight[] = []
       if (aheadMode) {
+        const ratedAhead = allRows
+          .filter((h) => h.date > today && h.rating !== null)
+          .sort((a, b) => {
+            if (a.date !== b.date) return a.date < b.date ? -1 : 1
+            const aLen = a.highlight?.text?.length || 0
+            const bLen = b.highlight?.text?.length || 0
+            return aLen - bLen
+          })
+
         const byDate = new Map<string, ReviewHighlight[]>()
         for (const h of allRows) {
           if (h.date > today && h.rating === null) {
@@ -322,17 +337,20 @@ function ReviewPageContent() {
             return aLen - bLen
           })
         }
+        const unratedAhead: ReviewHighlight[] = []
         for (let round = 0; ; round++) {
           let addedThisRound = false
           for (const d of futureDates) {
             const bucket = byDate.get(d)!
             if (round < bucket.length) {
-              aheadRows.push(bucket[round])
+              unratedAhead.push(bucket[round])
               addedThisRound = true
             }
           }
           if (!addedThisRound) break
         }
+
+        aheadRows.push(...ratedAhead, ...unratedAhead)
       }
 
       const processed = [...todayRows, ...catchUpRows, ...aheadRows]
