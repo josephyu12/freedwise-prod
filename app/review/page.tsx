@@ -5,7 +5,7 @@ import { createClient } from '@/lib/supabase/client'
 import Link from 'next/link'
 import { useSearchParams, useRouter } from 'next/navigation'
 import { format } from 'date-fns'
-import { Pin, PinOff } from 'lucide-react'
+import { Pin, PinOff, ArrowRight, Home, CalendarDays } from 'lucide-react'
 import { parseIntoParagraphs, groupParagraphsByDividers, ParagraphBlock } from '@/lib/splitHighlightText'
 import { renderHighlightHtml } from '@/lib/renderHighlightHtml'
 import RichTextEditor from '@/components/RichTextEditor'
@@ -1868,31 +1868,36 @@ function ReviewPageContent() {
             ? `You reviewed all ${todayHighlights.length} highlights for today.`
             : `You're all caught up — ${todayHighlights.length} today plus ${highlights.length - todayHighlights.length} from earlier this month.`}
         </p>
-        <div className="flex gap-3">
+        <div className="flex flex-col gap-3 w-full max-w-xs">
           {!aheadMode && (
             <Link
               href="/review?ahead=1"
-              className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition font-medium"
+              className="inline-flex items-center justify-center gap-2 px-6 py-3 bg-blue-600 text-white rounded-xl hover:bg-blue-700 transition font-medium whitespace-nowrap"
             >
-              Review ahead →
+              Review ahead
+              <ArrowRight className="w-4 h-4" />
             </Link>
           )}
-          <Link
-            href="/"
-            className={`px-6 py-3 rounded-lg transition font-medium ${
-              aheadMode
-                ? 'bg-blue-600 text-white hover:bg-blue-700'
-                : 'bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-600'
-            }`}
-          >
-            Home
-          </Link>
-          <Link
-            href="/daily"
-            className="px-6 py-3 bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-300 dark:hover:bg-gray-600 transition font-medium"
-          >
-            Daily Review
-          </Link>
+          <div className="flex gap-3">
+            <Link
+              href="/"
+              className={`flex-1 inline-flex items-center justify-center gap-2 px-4 py-3 rounded-xl transition font-medium whitespace-nowrap ${
+                aheadMode
+                  ? 'bg-blue-600 text-white hover:bg-blue-700'
+                  : 'bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-600'
+              }`}
+            >
+              <Home className="w-4 h-4" />
+              Home
+            </Link>
+            <Link
+              href="/daily"
+              className="flex-1 inline-flex items-center justify-center gap-2 px-4 py-3 bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-xl hover:bg-gray-300 dark:hover:bg-gray-600 transition font-medium whitespace-nowrap"
+            >
+              <CalendarDays className="w-4 h-4" />
+              Daily
+            </Link>
+          </div>
         </div>
       </div>
     )
