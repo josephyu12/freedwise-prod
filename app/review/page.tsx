@@ -300,30 +300,24 @@ function ReviewPageContent() {
           return aLen - bLen
         })
 
-      // Ahead: unrated highlights from the remaining days of the month, pulled
+      // Ahead: highlights from the remaining days of the month, pulled
       // round-robin — one (shortest) per future day in date order, then loop —
       // so the user gets a spread across the rest of the month rather than
       // finishing one day at a time. Only populated in ahead mode.
       //
-      // Already-rated future highlights are kept too (placed up front, not
-      // filtered out): without them, rating a future highlight and then
-      // refreshing would drop it from the set, resetting the progress bar and
-      // making it look like review restarts from tomorrow. Keeping them in means
-      // they still count as reviewed across a reload — firstUnrated skips them.
+      // The round-robin includes BOTH rated and unrated rows (no rating filter)
+      // and breaks length ties by id, so the resulting order is fixed and
+      // identical on every load regardless of what's already been rated. That's
+      // what makes review resumable: firstUnrated below lands on the next item in
+      // that stable sequence (e.g. June 15 after you rated through June 14),
+      // instead of snapping back to tomorrow. If we bucketed only unrated rows,
+      // each reload would re-pack the queue and the earliest future day would
+      // always resurface at the front.
       const aheadRows: ReviewHighlight[] = []
       if (aheadMode) {
-        const ratedAhead = allRows
-          .filter((h) => h.date > today && h.rating !== null)
-          .sort((a, b) => {
-            if (a.date !== b.date) return a.date < b.date ? -1 : 1
-            const aLen = a.highlight?.text?.length || 0
-            const bLen = b.highlight?.text?.length || 0
-            return aLen - bLen
-          })
-
         const byDate = new Map<string, ReviewHighlight[]>()
         for (const h of allRows) {
-          if (h.date > today && h.rating === null) {
+          if (h.date > today) {
             const bucket = byDate.get(h.date) || []
             bucket.push(h)
             byDate.set(h.date, bucket)
@@ -334,23 +328,21 @@ function ReviewPageContent() {
           byDate.get(d)!.sort((a, b) => {
             const aLen = a.highlight?.text?.length || 0
             const bLen = b.highlight?.text?.length || 0
-            return aLen - bLen
+            if (aLen !== bLen) return aLen - bLen
+            return a.id < b.id ? -1 : a.id > b.id ? 1 : 0
           })
         }
-        const unratedAhead: ReviewHighlight[] = []
         for (let round = 0; ; round++) {
           let addedThisRound = false
           for (const d of futureDates) {
             const bucket = byDate.get(d)!
             if (round < bucket.length) {
-              unratedAhead.push(bucket[round])
+              aheadRows.push(bucket[round])
               addedThisRound = true
             }
           }
           if (!addedThisRound) break
         }
-
-        aheadRows.push(...ratedAhead, ...unratedAhead)
       }
 
       const processed = [...todayRows, ...catchUpRows, ...aheadRows]
