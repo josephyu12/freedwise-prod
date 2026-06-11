@@ -172,7 +172,35 @@ function CalendarView({
 export default function DailyPage() {
   const [summary, setSummary] = useState<DailySummary | null>(null)
   const [loading, setLoading] = useState(true)
-  const [date, setDate] = useState(format(new Date(), 'yyyy-MM-dd'))
+  // Seed the selected day from the URL (?date=) so a refresh — including the
+  // offline one, where the service worker serves a cached /daily shell —
+  // restores the day you were on instead of snapping back to today. Without
+  // this, work done offline on another day looks like it vanished after a
+  // refresh (the changes are still queued and will sync; the view had just
+  // reset to today and hid them).
+  //
+  // Reading it in the initializer (rather than a mount effect) means the data
+  // load targets the right day immediately, with no flash of today's highlights
+  // first. Hydration-safe: the first render is the date-agnostic "Loading…"
+  // screen, so seeding the date differently on the client never diverges from
+  // the server HTML.
+  const [date, setDate] = useState(() => {
+    if (typeof window !== 'undefined') {
+      const p = new URLSearchParams(window.location.search).get('date')
+      if (p && /^\d{4}-\d{2}-\d{2}$/.test(p)) return p
+    }
+    return format(new Date(), 'yyyy-MM-dd')
+  })
+
+  // Keep the URL in sync when the day changes so the next refresh restores it.
+  const selectDay = useCallback((d: string) => {
+    setDate(d)
+    if (typeof window !== 'undefined') {
+      const today = format(new Date(), 'yyyy-MM-dd')
+      window.history.replaceState(null, '', d === today ? '/daily' : `/daily?date=${d}`)
+    }
+  }, [])
+
   const [slidingOutIds, setSlidingOutIds] = useState<Set<string>>(new Set())
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editText, setEditText] = useState('')
@@ -1838,7 +1866,7 @@ export default function DailyPage() {
               <CalendarView
                 key={format(displayMonth, 'yyyy-MM')} // Force re-render when month changes
                 selectedDate={date}
-                onDateSelect={setDate}
+                onDateSelect={selectDay}
                 monthReviewStatus={monthReviewStatus}
                 displayMonth={displayMonth}
                 onDisplayMonthChange={handleDisplayMonthChange}
