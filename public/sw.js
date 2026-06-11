@@ -32,6 +32,7 @@
 const TIMEOUT_MS = 7000
 const PAGE_CACHE = 'freedwise-pages-v1'
 const ASSET_CACHE = 'freedwise-assets-v1'
+const CURRENT_CACHES = [PAGE_CACHE, ASSET_CACHE]
 
 self.addEventListener('install', () => {
   // Activate this version immediately rather than waiting for all old tabs to close.
@@ -39,8 +40,23 @@ self.addEventListener('install', () => {
 })
 
 self.addEventListener('activate', (event) => {
-  // Take control of in-scope clients so the new version is effective right away.
-  event.waitUntil(self.clients.claim())
+  event.waitUntil(
+    (async () => {
+      // Drop any of our caches that aren't the current versions — old renamed
+      // caches (e.g. the earlier freedwise-lite-v1) and, on a future version
+      // bump, the previous generation. Scoped to our own 'freedwise-' prefix so
+      // we never touch another origin's caches. Without this the asset cache in
+      // particular would accumulate every deploy's immutable chunks forever.
+      const keys = await caches.keys()
+      await Promise.all(
+        keys
+          .filter((k) => k.startsWith('freedwise-') && !CURRENT_CACHES.includes(k))
+          .map((k) => caches.delete(k))
+      )
+      // Take control of in-scope clients so the new version is effective now.
+      await self.clients.claim()
+    })()
+  )
 })
 
 self.addEventListener('fetch', (event) => {

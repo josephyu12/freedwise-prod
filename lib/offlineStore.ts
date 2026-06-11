@@ -47,6 +47,7 @@ export interface OfflineAction {
   type: OfflineActionType
   params: any
   createdAt: number
+  attempts?: number // failed replay attempts; used to drop poison actions
 }
 
 // ─── DB Helpers ─────────────────────────────────────────────
@@ -171,6 +172,11 @@ export async function getCachedReviewData(): Promise<CachedReviewData | undefine
 }
 
 // ─── Offline Queue ──────────────────────────────────────────
+//
+// NOTE: this queue is NOT durable indefinitely. iOS Safari evicts IndexedDB
+// (and SW caches) for PWAs not opened in ~7 days, so unsynced offline actions
+// can be dropped if the app isn't reopened within a week. Treat it as a
+// best-effort buffer for short offline spells, not long-term storage.
 
 /** Add an action to the offline queue */
 export async function enqueueOfflineAction(action: Omit<OfflineAction, 'id' | 'createdAt'>): Promise<number> {
@@ -186,6 +192,32 @@ export async function getPendingActions(): Promise<OfflineAction[]> {
 /** Remove a single action from the queue by its ID */
 export async function removeAction(id: number): Promise<void> {
   await idbDelete(QUEUE_STORE, id)
+}
+
+/**
+ * Increment and return a queued action's failed-replay count. Lets a replayer
+ * drop a permanently-failing ("poison") action after enough attempts so it
+ * can't block the rest of the queue forever. Returns 0 if the action is gone.
+ */
+export async function incrementActionAttempts(id: number): Promise<number> {
+  const db = await openDB()
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(QUEUE_STORE, 'readwrite')
+    const store = tx.objectStore(QUEUE_STORE)
+    const getReq = store.get(id)
+    getReq.onsuccess = () => {
+      const action = getReq.result as OfflineAction | undefined
+      if (!action) {
+        resolve(0)
+        return
+      }
+      action.attempts = (action.attempts || 0) + 1
+      const putReq = store.put(action)
+      putReq.onsuccess = () => resolve(action.attempts!)
+      putReq.onerror = () => reject(putReq.error)
+    }
+    getReq.onerror = () => reject(getReq.error)
+  })
 }
 
 /** Clear the entire offline queue */

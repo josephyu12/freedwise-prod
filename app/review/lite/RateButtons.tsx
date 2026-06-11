@@ -30,6 +30,14 @@ export default function RateButtons({
   const [rating, setRating] = useState<Rating>(initialRating)
   const { isOnline } = useOfflineStatus()
 
+  // Tell ReviewCounter a row flipped unrated→rated (-1) or rolled back (+1) so
+  // the header count tracks live without a server refetch.
+  const emitDelta = (d: number) => {
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('lite-rated-delta', { detail: d }))
+    }
+  }
+
   // The page HTML may be served from the service-worker cache (a snapshot from
   // the last online load), so a rating made while offline wouldn't be reflected
   // in `initialRating`. Re-apply any still-pending queued rating for this
@@ -45,7 +53,13 @@ export default function RateButtons({
               a.params?.summaryHighlightId === summaryHighlightId
           )
           .pop()
-        if (!cancelled && mine) setRating(mine.params.rating as Rating)
+        if (!cancelled && mine) {
+          setRating(mine.params.rating as Rating)
+          // If the cached shell rendered this row as unrated (so the server
+          // count still includes it) but we have a pending offline rating,
+          // reconcile the header count down by one.
+          if (initialRating === null) emitDelta(-1)
+        }
       })
       .catch(() => {})
     return () => {
@@ -77,13 +91,21 @@ export default function RateButtons({
     if (value !== 'low' && value !== 'med' && value !== 'high') return
 
     const prev = rating
+    const wasUnrated = prev === null
     setRating(value) // optimistic fill — stays put whether we save now or later
+    if (wasUnrated) emitDelta(-1) // header count drops immediately
+
+    // Roll back both the fill and the count if we can't even queue the rating.
+    const revert = () => {
+      setRating(prev)
+      if (wasUnrated) emitDelta(1)
+    }
 
     if (!isOnline) {
       try {
         await queue(value)
       } catch {
-        setRating(prev)
+        revert()
       }
       return
     }
@@ -96,7 +118,7 @@ export default function RateButtons({
       try {
         await queue(value)
       } catch {
-        setRating(prev)
+        revert()
       }
     }
   }

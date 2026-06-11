@@ -13,6 +13,7 @@ import { format } from 'date-fns'
 import { createClient } from '@/lib/supabase/server'
 import RateButtons from './RateButtons'
 import LiteOfflineSync from './LiteOfflineSync'
+import ReviewCounter from './ReviewCounter'
 
 // Always render fresh per-request — this is per-user data behind auth.
 export const dynamic = 'force-dynamic'
@@ -159,23 +160,11 @@ export default async function ReviewLitePage({
           Full view
         </Link>
       </div>
-      <p className="text-sm text-gray-500 dark:text-gray-400 mb-4">
-        {ordered.length === 0
-          ? 'Nothing to review.'
-          : remaining === 0
-            ? '🎉 All caught up.'
-            : `${remaining} to review${aheadMode ? ' (through end of month)' : ''}.`}
-        {' '}
-        {aheadMode ? (
-          <Link href="/review/lite" className="text-blue-600 dark:text-blue-400 underline">
-            Just today
-          </Link>
-        ) : (
-          <Link href="/review/lite?ahead=1" className="text-blue-600 dark:text-blue-400 underline">
-            Review ahead
-          </Link>
-        )}
-      </p>
+      <ReviewCounter
+        total={ordered.length}
+        initialRemaining={remaining}
+        aheadMode={aheadMode}
+      />
 
       {loadError && (
         <p className="mb-4 px-3 py-2 rounded bg-amber-100 dark:bg-amber-900 text-amber-800 dark:text-amber-200 text-sm">
