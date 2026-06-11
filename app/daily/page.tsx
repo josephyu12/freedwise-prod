@@ -1566,6 +1566,16 @@ export default function DailyPage() {
     if (!isOnline) return
 
     const syncOfflineActions = async () => {
+      // Guard the mount race: useOfflineStatus seeds isOnline=true for the first
+      // render (SSR/hydration safety) before its heartbeat corrects it. On an
+      // OFFLINE refresh this effect therefore fires with isOnline=true while
+      // we're actually offline. The Supabase client *resolves* (doesn't throw)
+      // on a dead network, so the replay below would appear to "succeed" and
+      // then removeAction() (IndexedDB, works offline) would delete the queued
+      // ratings without ever persisting them — losing them for good. Bail if the
+      // browser knows we're offline; the real reconnect will re-fire this.
+      if (typeof navigator !== 'undefined' && !navigator.onLine) return
+
       const allActions = await getPendingActions()
       // Process daily's own rating action plus the shared highlight-mutation
       // actions (edit/split/archive/delete/pin). Leave rate-review for /review.
@@ -1592,25 +1602,35 @@ export default function DailyPage() {
           if (action.type === 'rate-daily') {
             const { summaryHighlightId, highlightId, rating, summaryDate } = action.params
 
-            await (supabase.from('daily_summary_highlights') as any)
+            // Critical write: the rating itself. Supabase RESOLVES (doesn't
+            // reject) on a network error, so without this guard a weak-signal
+            // failure would fall through to removeAction() below and silently
+            // drop the rating. Throwing keeps it queued for the next retry.
+            const { error: rateError } = await (supabase.from('daily_summary_highlights') as any)
               .update({ rating })
               .eq('id', summaryHighlightId)
+            if (rateError) throw rateError
 
             if (rating !== null && summaryDate) {
               const [y, mo] = summaryDate.split('-').map(Number)
               const monthYear = `${y}-${String(mo).padStart(2, '0')}`
-              await (supabase.from('highlight_months_reviewed') as any)
+              const { error: reviewedError } = await (supabase.from('highlight_months_reviewed') as any)
                 .upsert(
                   { highlight_id: highlightId, month_year: monthYear },
                   { onConflict: 'highlight_id,month_year' }
                 )
+              if (reviewedError) throw reviewedError
             }
 
-            const { data: allRatingsData } = await supabase
+            // Throw on read errors too, so a flaky network can't compute a bogus
+            // average (e.g. 0 from an empty result) and persist it. The rating
+            // is already saved above; re-running on retry is idempotent.
+            const { data: allRatingsData, error: allRatingsError } = await supabase
               .from('daily_summary_highlights')
               .select('rating')
               .eq('highlight_id', highlightId)
               .not('rating', 'is', null)
+            if (allRatingsError) throw allRatingsError
 
             const allRatings = (allRatingsData || []) as Array<{ rating: string }>
             const ratingMap: Record<string, number> = { low: 1, med: 2, high: 3 }
@@ -1619,19 +1639,21 @@ export default function DailyPage() {
               ? ratingValues.reduce((a, b) => a + b, 0) / ratingValues.length
               : 0
 
-            const { data: highlightData } = await (supabase.from('highlights') as any)
+            const { data: highlightData, error: highlightError } = await (supabase.from('highlights') as any)
               .select('unarchived_at')
               .eq('id', highlightId)
               .single()
+            if (highlightError) throw highlightError
 
             let lowRatingsCount = 0
             if (highlightData?.unarchived_at) {
-              const { data: recentLowRatings } = await supabase
+              const { data: recentLowRatings, error: recentLowError } = await supabase
                 .from('daily_summary_highlights')
                 .select('rating, daily_summary:daily_summaries!inner(date)')
                 .eq('highlight_id', highlightId)
                 .eq('rating', 'low')
                 .gt('daily_summary.date', highlightData.unarchived_at.split('T')[0])
+              if (recentLowError) throw recentLowError
               lowRatingsCount = (recentLowRatings || []).length
             } else {
               lowRatingsCount = allRatings.filter((r) => r.rating === 'low').length
@@ -1639,13 +1661,14 @@ export default function DailyPage() {
 
             const shouldArchive = lowRatingsCount >= 2
 
-            await (supabase.from('highlights') as any)
+            const { error: statsError } = await (supabase.from('highlights') as any)
               .update({
                 average_rating: average,
                 rating_count: ratingValues.length,
                 ...(shouldArchive ? { archived: true } : {}),
               })
               .eq('id', highlightId)
+            if (statsError) throw statsError
           } else if (action.type === 'edit-highlight') {
             const {
               highlightId,
@@ -1659,7 +1682,7 @@ export default function DailyPage() {
               originalHtmlContent,
             } = action.params
 
-            await (supabase.from('highlights') as any)
+            const { error: editError } = await (supabase.from('highlights') as any)
               .update({
                 text,
                 html_content: htmlContent,
@@ -1668,13 +1691,18 @@ export default function DailyPage() {
                 ...(actionSkipNotion ? { notion_optout_marker: crypto.randomUUID() } : {}),
               })
               .eq('id', highlightId)
+            if (editError) throw editError
 
-            await (supabase.from('highlight_categories') as any).delete().eq('highlight_id', highlightId)
+            const { error: catDeleteError } = await (supabase.from('highlight_categories') as any)
+              .delete()
+              .eq('highlight_id', highlightId)
+            if (catDeleteError) throw catDeleteError
             if (categoryIds && categoryIds.length > 0) {
               const categoryLinks = (categoryIds as string[]).map((catId) => ({
                 highlight_id: highlightId, category_id: catId,
               }))
-              await (supabase.from('highlight_categories') as any).insert(categoryLinks)
+              const { error: catInsertError } = await (supabase.from('highlight_categories') as any).insert(categoryLinks)
+              if (catInsertError) throw catInsertError
             }
 
             const textChanged =
@@ -1742,7 +1770,8 @@ export default function DailyPage() {
                   highlight_id: newHighlight.id,
                   category_id: catId,
                 }))
-                await (supabase.from('highlight_categories') as any).insert(categoryLinks)
+                const { error: splitCatError } = await (supabase.from('highlight_categories') as any).insert(categoryLinks)
+                if (splitCatError) throw splitCatError
               }
 
               addToSyncQueue(
@@ -1757,15 +1786,17 @@ export default function DailyPage() {
             touchedHighlights = true
           } else if (action.type === 'archive-highlight') {
             const { highlightId } = action.params
-            await (supabase.from('highlights') as any)
+            const { error: archiveError } = await (supabase.from('highlights') as any)
               .update({ archived: true })
               .eq('id', highlightId)
+            if (archiveError) throw archiveError
             touchedHighlights = true
           } else if (action.type === 'unarchive-highlight') {
             const { highlightId } = action.params
-            await (supabase.from('highlights') as any)
+            const { error: unarchiveError } = await (supabase.from('highlights') as any)
               .update({ archived: false })
               .eq('id', highlightId)
+            if (unarchiveError) throw unarchiveError
             touchedHighlights = true
           } else if (action.type === 'delete-highlight') {
             const { highlightId, text, htmlContent } = action.params
