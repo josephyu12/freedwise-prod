@@ -11,7 +11,9 @@ import Link from 'next/link'
 import { cookies, headers } from 'next/headers'
 import { format } from 'date-fns'
 import { createClient } from '@/lib/supabase/server'
-import { rateAction } from './actions'
+import RateButtons from './RateButtons'
+import LiteOfflineSync from './LiteOfflineSync'
+import ReviewServiceWorker from '@/components/ReviewServiceWorker'
 
 // Always render fresh per-request — this is per-user data behind auth.
 export const dynamic = 'force-dynamic'
@@ -149,6 +151,10 @@ export default async function ReviewLitePage({
 
   return (
     <main className="max-w-2xl mx-auto px-4 py-6">
+      {/* Registers the weak-signal SW (scope /review covers this page) so a user
+          who lands directly here still gets offline caching + replay. */}
+      <ReviewServiceWorker />
+      <LiteOfflineSync />
       <div className="flex items-center justify-between mb-1">
         <h1 className="text-lg font-semibold text-gray-900 dark:text-white">
           Review — text only
@@ -199,50 +205,12 @@ export default async function ReviewLitePage({
               <div className="whitespace-pre-wrap text-base text-gray-900 dark:text-gray-100 mb-3">
                 {r.text}
               </div>
-              <form action={rateAction} className="flex gap-2">
-                <input type="hidden" name="summaryHighlightId" value={r.id} />
-                <input type="hidden" name="highlightId" value={r.highlight_id} />
-                <input type="hidden" name="summaryDate" value={r.date} />
-                <button
-                  type="submit"
-                  name="rating"
-                  value="low"
-                  aria-pressed={r.rating === 'low'}
-                  className={`flex-1 py-2 rounded border font-medium transition-colors ${
-                    r.rating === 'low'
-                      ? 'border-red-600 bg-red-600 text-white'
-                      : 'border-red-300 dark:border-red-700 text-red-700 dark:text-red-300'
-                  }`}
-                >
-                  Low
-                </button>
-                <button
-                  type="submit"
-                  name="rating"
-                  value="med"
-                  aria-pressed={r.rating === 'med'}
-                  className={`flex-1 py-2 rounded border font-medium transition-colors ${
-                    r.rating === 'med'
-                      ? 'border-yellow-500 bg-yellow-500 text-white'
-                      : 'border-yellow-300 dark:border-yellow-700 text-yellow-700 dark:text-yellow-300'
-                  }`}
-                >
-                  Med
-                </button>
-                <button
-                  type="submit"
-                  name="rating"
-                  value="high"
-                  aria-pressed={r.rating === 'high'}
-                  className={`flex-1 py-2 rounded border font-medium transition-colors ${
-                    r.rating === 'high'
-                      ? 'border-green-600 bg-green-600 text-white'
-                      : 'border-green-300 dark:border-green-700 text-green-700 dark:text-green-300'
-                  }`}
-                >
-                  High
-                </button>
-              </form>
+              <RateButtons
+                summaryHighlightId={r.id}
+                highlightId={r.highlight_id}
+                summaryDate={r.date}
+                initialRating={r.rating}
+              />
             </li>
           ))}
         </ul>
