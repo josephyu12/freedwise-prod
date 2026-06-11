@@ -40,7 +40,13 @@ export async function GET(request: NextRequest) {
       user = data.user
     }
 
-    const today = format(new Date(), 'yyyy-MM-dd')
+    // Use the date from the client (their local timezone) when provided, else
+    // fall back to server time. A bare server `new Date()` resolves in the
+    // host's UTC, which rolls the day over hours early for users in the
+    // Americas and surfaces the wrong day's summary at night. Matches the
+    // convention in app/api/review/widget/route.ts.
+    const dateParam = request.nextUrl.searchParams.get('date')
+    const today = dateParam || format(new Date(), 'yyyy-MM-dd')
 
     // Get today's daily summary
     const { data: summaryData, error: summaryError } = await supabase

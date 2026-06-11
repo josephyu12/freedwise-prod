@@ -29,6 +29,19 @@ export default function RootLayout({
       <head>
         <link rel="manifest" href="/manifest.json" />
         <meta name="theme-color" content="#6366f1" />
+        {/*
+          Record the browser's IANA timezone in a cookie so server-rendered
+          pages (e.g. /review/lite) can compute "today" in the user's local
+          time instead of the server's UTC. Runs synchronously while the head
+          is parsed — before any client navigation — so the cookie is already
+          present on the RSC request for the next page.
+        */}
+        <script
+          dangerouslySetInnerHTML={{
+            __html:
+              "try{document.cookie='tz='+encodeURIComponent(Intl.DateTimeFormat().resolvedOptions().timeZone)+';path=/;max-age=31536000;samesite=lax'}catch(e){}",
+          }}
+        />
       </head>
       <body className={`${inter.className} flex flex-col min-h-screen`}>
         <AppHeader />

@@ -36,8 +36,9 @@ export async function rateAction(formData: FormData) {
     summaryDate,
   })
 
-  // Re-render the list so the just-rated highlight drops out (it's now rated,
-  // and the page only renders unrated ones). The request URL — including any
-  // ?ahead=1 — is preserved across the action, so the mode sticks.
+  // Re-render the list so the just-rated highlight shows its new rating filled
+  // in. Every row stays put (rated rows aren't filtered out), so nothing
+  // disappears as you work. The request URL — including any ?ahead=1 — is
+  // preserved across the action, so the mode sticks.
   revalidatePath('/review/lite')
 }
