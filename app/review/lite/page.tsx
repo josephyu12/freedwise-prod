@@ -81,14 +81,16 @@ export default async function ReviewLitePage({
   const cookieTz = (await cookies()).get('tz')?.value
   const ipTz = (await headers()).get('x-vercel-ip-timezone') || undefined
   const today = localToday(cookieTz || ipTz)
-  const [ty, tm] = today.split('-').map(Number)
+  const [ty, tm, td] = today.split('-').map(Number)
   const lastDay = new Date(ty, tm, 0).getDate()
   const firstOfMonth = `${today.substring(0, 8)}01`
   const endOfMonth = `${today.substring(0, 8)}${String(lastDay).padStart(2, '0')}`
+  // Tomorrow (handles month rollover via the local Date constructor).
+  const tomorrow = format(new Date(ty, tm - 1, td + 1), 'yyyy-MM-dd')
   // Default mode: this month up to today (today + earlier-day catch-up).
-  // Ahead mode: today onwards through end of month — no earlier-month catch-up,
-  // so getting ahead doesn't drag the whole month back into view.
-  const lower = aheadMode ? today : firstOfMonth
+  // Ahead mode: strictly tomorrow onwards through end of month — no today, no
+  // earlier-month catch-up, so "review ahead" shows only the future.
+  const lower = aheadMode ? tomorrow : firstOfMonth
   const upper = aheadMode ? endOfMonth : today
 
   // Text field only — the minimum payload. We fetch rated rows too (not just
@@ -139,8 +141,10 @@ export default async function ReviewLitePage({
   // not rating), so a row holds its position across the re-render that follows a
   // rating instead of jumping. (This is intentionally more persistent than
   // /review's in-memory list, which re-buckets unrated-only on a hard reload.)
-  const todayRows = rows.filter((r) => r.date === today).sort(byLen)
-  // Earlier-day catch-up only in default mode; ahead mode is today-onwards.
+  // Ahead mode drops today entirely (the query already excludes it; this keeps
+  // the bucketing honest too).
+  const todayRows = aheadMode ? [] : rows.filter((r) => r.date === today).sort(byLen)
+  // Earlier-day catch-up only in default mode; ahead mode is tomorrow-onwards.
   const catchUpRows = aheadMode ? [] : rows.filter((r) => r.date < today).sort(byDateThenLen)
   const aheadRows = aheadMode ? rows.filter((r) => r.date > today).sort(byDateThenLen) : []
   const ordered = [...todayRows, ...catchUpRows, ...aheadRows]
