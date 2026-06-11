@@ -53,6 +53,16 @@ export default function AuthButton({ dropdownDirection = 'down' }: AuthButtonPro
 
   const handleLogout = async () => {
     await supabase.auth.signOut()
+
+    // Purge the service worker's cached page shells. They're served offline
+    // (bypassing the auth middleware that would otherwise redirect to /login),
+    // so without this an authed shell could still render offline after logout.
+    // Best-effort — never block sign-out on it. Build assets (immutable JS
+    // chunks) aren't sensitive and are left cached.
+    if (typeof caches !== 'undefined') {
+      caches.delete('freedwise-pages-v1').catch(() => {})
+    }
+
     router.push('/login')
     router.refresh()
   }

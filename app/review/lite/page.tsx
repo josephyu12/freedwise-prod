@@ -13,7 +13,6 @@ import { format } from 'date-fns'
 import { createClient } from '@/lib/supabase/server'
 import RateButtons from './RateButtons'
 import LiteOfflineSync from './LiteOfflineSync'
-import ReviewServiceWorker from '@/components/ReviewServiceWorker'
 
 // Always render fresh per-request — this is per-user data behind auth.
 export const dynamic = 'force-dynamic'
@@ -151,9 +150,6 @@ export default async function ReviewLitePage({
 
   return (
     <main className="max-w-2xl mx-auto px-4 py-6">
-      {/* Registers the weak-signal SW (scope /review covers this page) so a user
-          who lands directly here still gets offline caching + replay. */}
-      <ReviewServiceWorker />
       <LiteOfflineSync />
       <div className="flex items-center justify-between mb-1">
         <h1 className="text-lg font-semibold text-gray-900 dark:text-white">

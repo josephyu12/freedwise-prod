@@ -2,6 +2,7 @@ import type { Metadata } from 'next'
 import { Inter } from 'next/font/google'
 import './globals.css'
 import AppHeader from '@/components/AppHeader'
+import ServiceWorkerRegistrar from '@/components/ServiceWorkerRegistrar'
 
 const inter = Inter({ subsets: ['latin'], display: 'swap' })
 import Link from 'next/link'
@@ -44,6 +45,7 @@ export default function RootLayout({
         />
       </head>
       <body className={`${inter.className} flex flex-col min-h-screen`}>
+        <ServiceWorkerRegistrar />
         <AppHeader />
         <div className="flex-1">
           {children}
