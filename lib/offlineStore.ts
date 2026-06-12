@@ -180,7 +180,14 @@ export async function getCachedReviewData(): Promise<CachedReviewData | undefine
 
 /** Add an action to the offline queue */
 export async function enqueueOfflineAction(action: Omit<OfflineAction, 'id' | 'createdAt'>): Promise<number> {
-  return idbAdd(QUEUE_STORE, { ...action, createdAt: Date.now() })
+  const id = await idbAdd(QUEUE_STORE, { ...action, createdAt: Date.now() })
+  // Poke the global <OfflineSync> drainer so a write that failed on a weak
+  // signal (queued while still "online") gets retried promptly, instead of
+  // waiting for the next offline→online transition.
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new Event('offline-action-enqueued'))
+  }
+  return id
 }
 
 /** Get all pending offline actions in order */

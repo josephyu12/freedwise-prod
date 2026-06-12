@@ -14,13 +14,12 @@ import { addToNotionSyncQueue } from '@/lib/notionSyncQueue'
 import { removeFromFutureMonths } from '@/lib/removeFromFutureMonths'
 import { callRedistribute } from '@/lib/redistribute'
 import { useOfflineStatus } from '@/hooks/useOfflineStatus'
+import { useOfflineSyncState } from '@/hooks/useOfflineSyncState'
 import OfflineBanner from '@/components/OfflineBanner'
 import {
   cacheReviewData,
   getCachedReviewData,
   enqueueOfflineAction,
-  getPendingActions,
-  removeAction,
 } from '@/lib/offlineStore'
 
 interface ReviewHighlight {
@@ -92,12 +91,10 @@ function ReviewPageContent() {
   const [pinDialogOpen, setPinDialogOpen] = useState(false)
   const [pendingPinHighlightId, setPendingPinHighlightId] = useState<string | null>(null)
 
-  // Offline state
+  // Offline state. Draining is owned by the global <OfflineSync>; we just read
+  // its progress for the banner.
   const { isOnline } = useOfflineStatus()
-  const [isSyncing, setIsSyncing] = useState(false)
-  const [pendingSyncCount, setPendingSyncCount] = useState(0)
-  // Single-flight lock for the offline-replay effect (see syncOfflineActions).
-  const syncInFlightRef = useRef(false)
+  const { isSyncing, pendingCount: pendingSyncCount } = useOfflineSyncState()
   const [usingCachedData, setUsingCachedData] = useState(false)
 
   // Inline-bold state: floating "B" button shown above any text selection
@@ -1534,314 +1531,17 @@ function ReviewPageContent() {
 
   // ─── Offline Sync ─────────────────────────────────────────
 
-  // When coming back online, replay queued actions
+  // Replaying the offline queue is owned by the global <OfflineSync> in the
+  // root layout, so it drains on reconnect from ANY page (not just here). When
+  // a sync finishes and something was persisted, reload to show server truth.
   useEffect(() => {
-    if (!isOnline) return
-
-    const syncOfflineActions = async () => {
-      // Guard the mount race: on a refresh while offline, useOfflineStatus seeds
-      // isOnline=true for the first render (SSR hydration safety) before the
-      // heartbeat corrects it. That transient true would otherwise fire this
-      // effect and replay queued writes against a dead network — and because the
-      // replay then calls removeAction() (IndexedDB, which works offline), the
-      // queued actions would be dropped without ever reaching Supabase. Bail if
-      // the browser knows we're offline.
-      if (typeof navigator !== 'undefined' && !navigator.onLine) return
-
-      const allActions = await getPendingActions()
-      // Only handle action types this page is responsible for — leave others
-      // (e.g. rate-daily from /daily) in the queue for that page to process.
-      const reviewTypes = new Set<string>([
-        'rate-review',
-        'edit-highlight',
-        'split-highlight',
-        'archive-highlight',
-        'unarchive-highlight',
-        'delete-highlight',
-        'pin-highlight',
-        'unpin-highlight',
-      ])
-      const actions = allActions.filter((a) => reviewTypes.has(a.type))
-      if (actions.length === 0) return
-
-      setIsSyncing(true)
-      setPendingSyncCount(actions.length)
-
-      let touchedHighlights = false
-
-      for (const action of actions) {
-        try {
-          if (action.type === 'rate-review') {
-            const { summaryHighlightId, highlightId, rating, today: actionToday } = action.params
-            const [y, mo] = actionToday.split('-').map(Number)
-            const monthYear = `${y}-${String(mo).padStart(2, '0')}`
-
-            // Check the write errors and throw on failure. Supabase resolves
-            // (rather than rejecting) on a network error, so without these guards
-            // a failed replay would fall through to removeAction() below and
-            // silently discard the queued rating. Throwing keeps it queued for
-            // the next retry.
-            const { error: rateError } = await (supabase.from('daily_summary_highlights') as any)
-              .update({ rating })
-              .eq('id', summaryHighlightId)
-            if (rateError) throw rateError
-
-            const { error: reviewedError } = await (supabase.from('highlight_months_reviewed') as any)
-              .upsert(
-                { highlight_id: highlightId, month_year: monthYear },
-                { onConflict: 'highlight_id,month_year' }
-              )
-            if (reviewedError) throw reviewedError
-
-            // Recompute derived stats. Throw on any read error so we never write
-            // a bogus average (e.g. 0 from an empty result on a flaky network).
-            // The rating itself is already persisted above; re-running on retry
-            // is idempotent.
-            const [allRatingsRes, highlightRes, lowRatingsRes] = await Promise.all([
-              supabase
-                .from('daily_summary_highlights')
-                .select('rating')
-                .eq('highlight_id', highlightId)
-                .not('rating', 'is', null),
-              (supabase.from('highlights') as any)
-                .select('unarchived_at')
-                .eq('id', highlightId)
-                .single(),
-              supabase
-                .from('daily_summary_highlights')
-                .select('rating, daily_summary:daily_summaries!inner(date)')
-                .eq('highlight_id', highlightId)
-                .eq('rating', 'low'),
-            ])
-            if (allRatingsRes.error) throw allRatingsRes.error
-            if (highlightRes.error) throw highlightRes.error
-            if (lowRatingsRes.error) throw lowRatingsRes.error
-
-            const allRatings = (allRatingsRes.data || []) as Array<{ rating: string }>
-            const ratingMap: Record<string, number> = { low: 1, med: 2, high: 3 }
-            const ratingValues = allRatings.map((r) => ratingMap[r.rating] || 0).filter((v) => v > 0)
-            const average = ratingValues.length > 0
-              ? ratingValues.reduce((a, b) => a + b, 0) / ratingValues.length
-              : 0
-
-            const unarchivedAt = (highlightRes.data as any)?.unarchived_at?.split('T')[0]
-            const lowMonths = new Set(
-              ((lowRatingsRes.data || []) as Array<{ rating: string; daily_summary: { date: string } }>)
-                .filter((r) => !unarchivedAt || r.daily_summary.date > unarchivedAt)
-                .map((r) => r.daily_summary.date.substring(0, 7))
-            )
-            const prevMonth = mo === 1 ? `${y - 1}-12` : `${y}-${String(mo - 1).padStart(2, '0')}`
-            const shouldArchive = lowMonths.has(monthYear) && lowMonths.has(prevMonth)
-
-            const { error: statsError } = await (supabase.from('highlights') as any)
-              .update({
-                average_rating: average,
-                rating_count: ratingValues.length,
-                ...(shouldArchive ? { archived: true } : {}),
-              })
-              .eq('id', highlightId)
-            if (statsError) throw statsError
-          } else if (action.type === 'edit-highlight') {
-            const {
-              highlightId,
-              text,
-              htmlContent,
-              source,
-              author,
-              categoryIds,
-              skipNotionSync: actionSkipNotion,
-              originalText,
-              originalHtmlContent,
-            } = action.params
-
-            const { error: editError } = await (supabase.from('highlights') as any)
-              .update({
-                text,
-                html_content: htmlContent,
-                source,
-                author,
-                ...(actionSkipNotion ? { notion_optout_marker: crypto.randomUUID() } : {}),
-              })
-              .eq('id', highlightId)
-            if (editError) throw editError
-
-            const { error: catDeleteError } = await (supabase.from('highlight_categories') as any)
-              .delete()
-              .eq('highlight_id', highlightId)
-            if (catDeleteError) throw catDeleteError
-            if (categoryIds && categoryIds.length > 0) {
-              const categoryLinks = (categoryIds as string[]).map((catId) => ({
-                highlight_id: highlightId, category_id: catId,
-              }))
-              const { error: catInsertError } = await (supabase.from('highlight_categories') as any).insert(categoryLinks)
-              if (catInsertError) throw catInsertError
-            }
-
-            const textChanged =
-              text !== (originalText || '') ||
-              htmlContent !== (originalHtmlContent || null)
-            if (!actionSkipNotion && textChanged) {
-              await addToSyncQueue(
-                highlightId, 'update',
-                text, htmlContent,
-                originalText, originalHtmlContent
-              )
-            }
-            touchedHighlights = true
-          } else if (action.type === 'split-highlight') {
-            const {
-              originalHighlightId,
-              originalText,
-              originalHtmlContent,
-              firstGroup,
-              newGroups,
-              source,
-              author,
-              categoryIds,
-            } = action.params
-
-            const { error: firstGroupUpdateError } = await (supabase.from('highlights') as any)
-              .update({
-                text: firstGroup.text,
-                html_content: firstGroup.html,
-              })
-              .eq('id', originalHighlightId)
-            if (firstGroupUpdateError) throw firstGroupUpdateError
-
-            await addToSyncQueue(
-              originalHighlightId, 'update',
-              firstGroup.text, firstGroup.html,
-              originalText, originalHtmlContent
-            )
-
-            const { data: { user } } = await supabase.auth.getUser()
-            if (!user) throw new Error('Not authenticated')
-
-            const insertedIds: string[] = []
-            for (const group of (newGroups as Array<{ id: string; text: string; html: string }>)) {
-              const { data: newHighlight, error: insertError } = await (supabase.from('highlights') as any)
-                .insert({
-                  id: group.id,
-                  text: group.text,
-                  html_content: group.html,
-                  source,
-                  author,
-                  resurface_count: 0,
-                  average_rating: 0,
-                  rating_count: 0,
-                  user_id: user.id,
-                })
-                .select()
-                .single()
-              if (insertError) throw insertError
-
-              insertedIds.push(newHighlight.id)
-
-              if (categoryIds && categoryIds.length > 0) {
-                const categoryLinks = (categoryIds as string[]).map((catId) => ({
-                  highlight_id: newHighlight.id,
-                  category_id: catId,
-                }))
-                const { error: splitCatError } = await (supabase.from('highlight_categories') as any).insert(categoryLinks)
-                if (splitCatError) throw splitCatError
-              }
-
-              addToSyncQueue(
-                newHighlight.id, 'add',
-                group.text, group.html
-              ).catch((err: any) => console.error('Error syncing split highlight:', err))
-            }
-
-            if (insertedIds.length > 0) {
-              callRedistribute(insertedIds).catch(() => {})
-            }
-            touchedHighlights = true
-          } else if (action.type === 'archive-highlight') {
-            const { highlightId } = action.params
-            const { error: archiveError } = await (supabase.from('highlights') as any)
-              .update({ archived: true })
-              .eq('id', highlightId)
-            if (archiveError) throw archiveError
-            // Best-effort future-month cleanup; the archive flag above is the
-            // critical write and is already persisted.
-            await removeFromFutureMonths(supabase, highlightId)
-            touchedHighlights = true
-          } else if (action.type === 'unarchive-highlight') {
-            const { highlightId } = action.params
-            const { error: unarchiveError } = await (supabase.from('highlights') as any)
-              .update({ archived: false, unarchived_at: new Date().toISOString() })
-              .eq('id', highlightId)
-            if (unarchiveError) throw unarchiveError
-            touchedHighlights = true
-          } else if (action.type === 'delete-highlight') {
-            const { highlightId, text, htmlContent } = action.params
-            const { error: deleteError } = await (supabase.from('highlights') as any)
-              .delete()
-              .eq('id', highlightId)
-            if (deleteError) throw deleteError
-            await addToSyncQueue(highlightId, 'delete', text, htmlContent)
-            callRedistribute().catch(() => {})
-            touchedHighlights = true
-          } else if (action.type === 'pin-highlight') {
-            const { highlightId } = action.params
-            const response = await fetch('/api/pins', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ highlightId }),
-            })
-            if (!response.ok) {
-              // Most likely cause: server-side pin slot already filled by another
-              // device, or the highlight no longer exists. Drop the action — the
-              // post-sync loadHighlights() will re-derive the truthful pin set.
-              const data = await response.json().catch(() => ({}))
-              console.warn('Pin replay rejected, dropping action:', data)
-            }
-          } else if (action.type === 'unpin-highlight') {
-            const { highlightId } = action.params
-            await fetch(`/api/pins?highlightId=${highlightId}`, { method: 'DELETE' })
-          }
-
-          await removeAction(action.id!)
-          setPendingSyncCount((prev) => prev - 1)
-        } catch (error) {
-          console.error('Error syncing offline action:', error)
-          // Leave the action in the queue for next retry
-          break
-        }
-      }
-
-      setIsSyncing(false)
-      setPendingSyncCount(0)
-
-      // Reload fresh data after sync
-      loadHighlights()
-      if (touchedHighlights) {
-        // Nudge the Notion sync badge to refetch its count.
-        window.dispatchEvent(new Event('notion-sync-queue-updated'))
-      }
+    const onComplete = (e: Event) => {
+      const result = (e as CustomEvent).detail
+      if (result?.processed > 0 || result?.touchedHighlights) loadHighlights()
     }
-
-    const runSyncGuarded = async () => {
-      // Single-flight lock. A flapping connection (the heartbeat in
-      // useOfflineStatus toggling isOnline false→true→false→true on a weak
-      // signal) re-fires this effect while a prior replay is still awaiting
-      // Supabase. Two concurrent runs read overlapping queue snapshots and both
-      // decrement pendingSyncCount for the same actions (removeAction is
-      // idempotent against IndexedDB), driving the counter negative. The ref
-      // check+set is synchronous — no await between them — so a second run bails
-      // before it can touch shared state.
-      if (syncInFlightRef.current) return
-      syncInFlightRef.current = true
-      try {
-        await syncOfflineActions()
-      } finally {
-        syncInFlightRef.current = false
-      }
-    }
-
-    runSyncGuarded()
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isOnline])
+    window.addEventListener('offline-sync-complete', onComplete)
+    return () => window.removeEventListener('offline-sync-complete', onComplete)
+  }, [loadHighlights])
 
   // ─── Render ───────────────────────────────────────────────
 

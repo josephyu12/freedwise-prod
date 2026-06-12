@@ -1,27 +1,20 @@
 /**
  * Regression test for the negative "changes to sync" counter.
  *
- * Root cause: the offline-replay effect in app/review/page.tsx (and the twin in
- * app/daily/page.tsx) ran on [isOnline] with no concurrency guard. A flapping
- * connection — the heartbeat in useOfflineStatus toggling isOnline
- * false→true→false→true on a weak signal — re-fired the effect while a prior
- * replay was still awaiting Supabase. The two concurrent runs each read an
- * overlapping snapshot of the IndexedDB queue and each ran the
- * `removeAction(id)` + `setPendingSyncCount(prev => prev - 1)` pair for the SAME
- * actions (removeAction is idempotent against IndexedDB, so the duplicate
- * removal resolved cleanly). The decrements stacked past the initial
- * setPendingSyncCount(actions.length), driving the visible counter negative
- * (the reported -15).
+ * Root cause: the offline-replay effect ran on [isOnline] with no concurrency
+ * guard. A flapping connection — the heartbeat in useOfflineStatus toggling
+ * isOnline false→true→false→true on a weak signal — re-fired the effect while a
+ * prior replay was still awaiting Supabase. The two concurrent runs each read an
+ * overlapping snapshot of the IndexedDB queue and each ran removeAction(id) for
+ * the SAME actions (removeAction is idempotent, so the duplicate removal
+ * resolved cleanly), stacking the decrements past the initial count and driving
+ * the visible counter negative (the reported -15).
  *
- * The fix is a synchronous `useRef` single-flight lock, checked-and-set with no
- * await in between, so the second concurrent run bails before it touches the
- * queue or the counter.
- *
- * removeAction is called exactly once per queued action it actually processes,
- * immediately before each decrement — so "removeAction called N times" is a
- * faithful proxy for "the counter was decremented N times". A guarded replay
- * processes each of the 3 queued actions once (3 calls); the unguarded race
- * processed them twice (6 calls) and is what drove the counter below zero.
+ * The replay was since consolidated into one global drainer — components/
+ * OfflineSync.tsx (single-flight useRef) + lib/offlineReplay.ts — so it now runs
+ * once app-wide instead of a copy per page. This test exercises that drainer:
+ * removeAction must be called exactly once per queued action even when the
+ * connection flaps mid-sync (3 actions → 3 removals, never 6).
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { render, act } from '@testing-library/react'
@@ -46,8 +39,6 @@ const offlineMocks = vi.hoisted(() => ({
   getPendingActions: vi.fn(async () => QUEUE),
   removeAction: vi.fn(async () => {}),
   enqueueOfflineAction: vi.fn(async () => 0),
-  cacheReviewData: vi.fn(async () => {}),
-  getCachedReviewData: vi.fn(async () => undefined),
 }))
 
 vi.mock('@/hooks/useOfflineStatus', () => ({
@@ -55,55 +46,25 @@ vi.mock('@/hooks/useOfflineStatus', () => ({
 }))
 
 vi.mock('@/lib/offlineStore', () => offlineMocks)
+vi.mock('@/lib/redistribute', () => ({ callRedistribute: vi.fn(async () => {}) }))
+vi.mock('@/lib/removeFromFutureMonths', () => ({ removeFromFutureMonths: vi.fn(async () => {}) }))
 
-// Permissive Supabase stand-in. getSession returns no user so loadHighlights()
-// short-circuits — the page renders its empty state, but the replay effect
-// (which is what we're testing) still runs on its own [isOnline] schedule.
-const makeBuilder = () => {
-  const b: any = {
-    select: vi.fn(() => b),
-    eq: vi.fn(() => b),
-    neq: vi.fn(() => b),
-    not: vi.fn(() => b),
-    order: vi.fn(() => b),
-    range: vi.fn(() => b),
-    insert: vi.fn(() => b),
-    update: vi.fn(() => b),
-    delete: vi.fn(() => b),
-    upsert: vi.fn(() => b),
-    single: vi.fn(() => Promise.resolve({ data: null, error: null })),
-    then: (resolve: any, reject: any) =>
-      Promise.resolve({ data: [], error: null }).then(resolve, reject),
-  }
-  return b
-}
-// Stable singleton — the real createClient returns a memoized browser client,
-// and loadHighlights's useCallback deps include it. A fresh object per render
-// would recreate the callback every render and spin the load effect forever.
+// Supabase stand-in. getUser returns a user so replayPendingActions proceeds
+// (it no-ops when signed out). The queued actions are unpins, which only hit
+// fetch() — no table writes — so a permissive builder is enough.
 const supabaseSingleton = {
   auth: {
-    getSession: vi.fn(() => Promise.resolve({ data: { session: null } })),
-    getUser: vi.fn(() => Promise.resolve({ data: { user: null } })),
+    getUser: vi.fn(() => Promise.resolve({ data: { user: { id: 'u1' } } })),
   },
-  from: vi.fn(() => makeBuilder()),
+  from: vi.fn(() => ({})),
 }
 vi.mock('@/lib/supabase/client', () => ({
   createClient: () => supabaseSingleton,
 }))
 
-vi.mock('next/navigation', () => ({
-  useSearchParams: () => ({ get: () => null }),
-  useRouter: () => ({ push: vi.fn(), replace: vi.fn(), refresh: vi.fn(), prefetch: vi.fn() }),
-}))
-vi.mock('next/link', () => ({ default: (props: any) => props.children }))
-vi.mock('@/components/RichTextEditor', () => ({ default: () => null }))
-vi.mock('@/components/PinDialog', () => ({ default: () => null }))
-vi.mock('@/lib/notionSyncQueue', () => ({ addToNotionSyncQueue: vi.fn(async () => {}) }))
-vi.mock('@/lib/redistribute', () => ({ callRedistribute: vi.fn(async () => {}) }))
-
 // Slow the per-action replay write so the first run is still in flight when we
-// flap the connection. Each unpin action awaits this DELETE before its
-// removeAction/decrement; 3 actions ≈ 150ms of flight, plenty of overlap.
+// flap the connection. Each unpin awaits this DELETE before its removeAction;
+// 3 actions ≈ 150ms of flight, plenty of overlap.
 beforeEach(() => {
   online.value = true
   offlineMocks.getPendingActions.mockClear()
@@ -113,26 +74,26 @@ beforeEach(() => {
   ) as any
 })
 
-import ReviewPage from '@/app/review/page'
+import OfflineSync from '@/components/OfflineSync'
 
 describe('offline replay — single-flight guard', () => {
   it('processes each queued action exactly once when the connection flaps mid-sync', async () => {
-    const { rerender } = render(<ReviewPage />)
+    const { rerender } = render(<OfflineSync />)
 
     // Flap the connection while the first replay is still awaiting its first
     // DELETE: online → offline → online. Each transition is its own act() so
     // React commits the intermediate isOnline=false — otherwise the two
     // rerenders batch into a single commit, isOnline never changes value, and
-    // the replay effect (deps: [isOnline]) never re-fires. Without the guard
-    // the online→true transition fires a second, overlapping replay over the
-    // same queue snapshot.
+    // the effect (deps: [isOnline]) never re-fires. Without the guard the
+    // online→true transition fires a second, overlapping replay over the same
+    // queue snapshot.
     await act(async () => {
       online.value = false
-      rerender(<ReviewPage />)
+      rerender(<OfflineSync />)
     })
     await act(async () => {
       online.value = true
-      rerender(<ReviewPage />)
+      rerender(<OfflineSync />)
     })
 
     // Let both potential runs (and the slow DELETEs) fully settle.
@@ -140,8 +101,8 @@ describe('offline replay — single-flight guard', () => {
       await sleep(400)
     })
 
-    // The guard lets only one replay through: 3 actions → 3 removals → 3
-    // decrements, never the 6 that pushed the counter to a negative number.
+    // The guard lets only one replay through: 3 actions → 3 removals, never the
+    // 6 that pushed the counter to a negative number.
     expect(offlineMocks.removeAction).toHaveBeenCalledTimes(3)
   })
 })

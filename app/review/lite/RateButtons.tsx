@@ -2,7 +2,6 @@
 
 import { useEffect, useState } from 'react'
 import { rateAction, rateOne } from './actions'
-import { useOfflineStatus } from '@/hooks/useOfflineStatus'
 import { enqueueOfflineAction, getPendingActions } from '@/lib/offlineStore'
 
 type Rating = 'low' | 'med' | 'high' | null
@@ -28,7 +27,6 @@ export default function RateButtons({
   initialRating: Rating
 }) {
   const [rating, setRating] = useState<Rating>(initialRating)
-  const { isOnline } = useOfflineStatus()
 
   // Tell ReviewCounter a row flipped unrated→rated (-1) or rolled back (+1) so
   // the header count tracks live without a server refetch.
@@ -101,7 +99,14 @@ export default function RateButtons({
       if (wasUnrated) emitDelta(1)
     }
 
-    if (!isOnline) {
+    // Cheap online check at click time — no per-row connectivity heartbeat (this
+    // island renders once per highlight, so polling here would hammer
+    // /api/health on the very weak-signal page lite exists for). If navigator
+    // says online but the signal is actually dead, rateOne fails and we fall
+    // back to the queue below — so this gate doesn't need to be precise.
+    const online = typeof navigator === 'undefined' ? true : navigator.onLine
+
+    if (!online) {
       try {
         await queue(value)
       } catch {
