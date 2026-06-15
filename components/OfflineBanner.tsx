@@ -8,9 +8,13 @@ interface OfflineBannerProps {
   isOnline: boolean
   isSyncing?: boolean
   pendingCount?: number
+  // True when the banner is mounted on /review/lite itself. The weak-signal
+  // message normally offers a "Switch to text-only →" link, but that's a no-op
+  // here (you're already there), so we drop the link and keep just the message.
+  onLitePage?: boolean
 }
 
-export default function OfflineBanner({ isOnline, isSyncing, pendingCount }: OfflineBannerProps) {
+export default function OfflineBanner({ isOnline, isSyncing, pendingCount, onLitePage }: OfflineBannerProps) {
   if (isOnline && !isSyncing) return null
 
   // Detect weak signal: our heartbeat says offline but navigator thinks we're online
@@ -34,10 +38,15 @@ export default function OfflineBanner({ isOnline, isSyncing, pendingCount }: Off
         </span>
       ) : isWeakSignal ? (
         <span>
-          📶 Weak connection — ratings will be saved and synced automatically.{' '}
-          <Link href="/review/lite" className="underline font-semibold">
-            Switch to text-only →
-          </Link>
+          📶 Weak connection — ratings will be saved and synced automatically.
+          {!onLitePage && (
+            <>
+              {' '}
+              <Link href="/review/lite" className="underline font-semibold">
+                Switch to text-only →
+              </Link>
+            </>
+          )}
         </span>
       ) : (
         <span>⚡ You&apos;re offline — ratings will sync when you reconnect</span>

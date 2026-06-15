@@ -30,7 +30,7 @@
 //     keep using the already-loaded SPA. A live session is never yanked.
 
 const TIMEOUT_MS = 7000
-const PAGE_CACHE = 'freedwise-pages-v1'
+const PAGE_CACHE = 'freedwise-pages-v2'
 const ASSET_CACHE = 'freedwise-assets-v1'
 const CURRENT_CACHES = [PAGE_CACHE, ASSET_CACHE]
 
@@ -89,8 +89,15 @@ self.addEventListener('fetch', (event) => {
 
   // Every other in-app page: network-first with a cache fallback so it loads
   // offline. Keyed by pathname (e.g. /daily's selected day is client state, not
-  // in the URL), so each page is cached once and reused regardless of query.
-  event.respondWith(networkFirstPage(request, url.pathname))
+  // in the URL), so each page is cached once and reused regardless of query —
+  // EXCEPT /review/lite, whose ?ahead=1 mode renders a genuinely different page
+  // (future highlights vs. today + catch-up). Folding both into one pathname key
+  // let one mode serve the other's stale HTML, so we segment lite by that flag.
+  const cacheKey =
+    url.pathname === '/review/lite' && url.searchParams.get('ahead') === '1'
+      ? '/review/lite?ahead=1'
+      : url.pathname
+  event.respondWith(networkFirstPage(request, cacheKey))
 })
 
 // Cache-first for build assets: serve the cached copy if present, otherwise

@@ -14,6 +14,7 @@ import { createClient } from '@/lib/supabase/server'
 import RateButtons from './RateButtons'
 import LiteOfflineSync from './LiteOfflineSync'
 import ReviewCounter from './ReviewCounter'
+import RowDateLabel from './RowDateLabel'
 
 // Always render fresh per-request — this is per-user data behind auth.
 export const dynamic = 'force-dynamic'
@@ -160,9 +161,15 @@ export default async function ReviewLitePage({
         <h1 className="text-lg font-semibold text-gray-900 dark:text-white">
           Review — text only
         </h1>
-        <Link href="/review" className="text-sm text-blue-600 dark:text-blue-400 underline">
+        {/* A plain <a>, not next/link, on purpose. A client-side <Link> nav to
+            /review fetches an RSC payload the service worker doesn't intercept,
+            so on weak signal it fails silently and you appear stuck on lite. A
+            real document navigation goes through the SW's /review handler: full
+            page when online, clean interstitial → lite handoff when it can't
+            load. */}
+        <a href="/review" className="text-sm text-blue-600 dark:text-blue-400 underline">
           Full view
-        </Link>
+        </a>
       </div>
       <ReviewCounter
         total={ordered.length}
@@ -185,12 +192,7 @@ export default async function ReviewLitePage({
               key={r.id}
               className="border-b border-gray-200 dark:border-gray-700 pb-5"
             >
-              {r.date !== today && (
-                <div className="text-xs font-semibold text-gray-500 dark:text-gray-400 mb-1">
-                  {r.date < today ? 'Catching up' : 'Reviewing ahead'} ·{' '}
-                  {format(new Date(`${r.date}T00:00:00`), 'MMM d')}
-                </div>
-              )}
+              <RowDateLabel date={r.date} serverToday={today} />
               <div className="whitespace-pre-wrap text-base text-gray-900 dark:text-gray-100 mb-3">
                 {r.text}
               </div>

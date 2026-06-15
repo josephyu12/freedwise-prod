@@ -27,7 +27,7 @@ export default function LiteOfflineSync() {
 
   return (
     <>
-      <OfflineBanner isOnline={isOnline} isSyncing={isSyncing} pendingCount={pendingCount} />
+      <OfflineBanner isOnline={isOnline} isSyncing={isSyncing} pendingCount={pendingCount} onLitePage />
       {!isOnline && pendingCount > 0 && (
         <p className="mb-3 text-xs text-gray-500 dark:text-gray-400">
           {pendingCount} change{pendingCount === 1 ? '' : 's'} saved on this device — will sync when you reconnect.
