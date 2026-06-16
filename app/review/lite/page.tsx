@@ -1,48 +1,22 @@
-// Text-only, server-rendered review for weak/slow connections.
+// Text-only, read-only highlight list for the weakest connections.
 //
-// Unlike /review (a ~2,300-line client component that must download +
-// hydrate RichTextEditor, icons, etc. before any text appears), this page is a
-// server component: it fetches the highlights on the server and puts the plain
-// text straight into the initial HTML. The text is visible the instant the tiny
-// page lands — no big bundle, no client-side data round-trip. Rating happens via
-// a plain <form> server action, so the core read-and-rate loop needs zero JS.
+// The absolute-minimum view: a server component that pulls the highlights and
+// drops their plain text straight into the initial HTML. No rating, no offline
+// sync, no date labels, no client JS at all — nothing to download or hydrate.
+// The text is visible the instant the tiny page lands, so it loads even on the
+// slowest signal. For the full read-and-rate experience, use /review.
 
 import Link from 'next/link'
 import { cookies, headers } from 'next/headers'
 import { format } from 'date-fns'
 import { createClient } from '@/lib/supabase/server'
-import RateButtons from './RateButtons'
-import LiteOfflineSync from './LiteOfflineSync'
-import ReviewCounter from './ReviewCounter'
-import RowDateLabel from './RowDateLabel'
 
-// Always render fresh per-request — this is per-user data behind auth.
-export const dynamic = 'force-dynamic'
-
-type Rating = 'low' | 'med' | 'high' | null
-
-interface LiteRow {
-  id: string
-  highlight_id: string
-  date: string
-  text: string
-  rating: Rating
-}
-
-// "Today" in the user's local timezone, not the server's UTC. This page is a
-// server component, so a bare `new Date()` would resolve the date in Vercel's
-// UTC and roll over hours early for users in the Americas — surfacing the wrong
-// day's highlights at night.
-//
-// We resolve the zone from two sources, best first:
-//   1. The `tz` cookie — the browser's exact IANA zone, written by an inline
-//      script in app/layout.tsx on any prior page load. Authoritative because
-//      it's the device's real setting (matches the client `new Date()` the rest
-//      of the app relies on).
-//   2. The `x-vercel-ip-timezone` request header — IP geolocation Vercel adds
-//      to every request. Covers the cold-start case (a fresh browser landing
-//      directly on this URL, before the cookie exists) with zero extra JS.
-// Only if neither is present do we fall back to UTC.
+// "Today" in the user's local timezone, not the server's UTC. This is a server
+// component, so a bare `new Date()` would resolve in Vercel's UTC and roll the
+// date over early for users in the Americas. We resolve the zone from the `tz`
+// cookie (the browser's exact IANA zone, written by app/layout.tsx) first, then
+// the x-vercel-ip-timezone header (IP geolocation, covers a cold direct land),
+// falling back to UTC.
 function localToday(tz: string | undefined): string {
   try {
     // en-CA renders as YYYY-MM-DD, which is exactly our wire format.
@@ -57,12 +31,10 @@ function localToday(tz: string | undefined): string {
   }
 }
 
-export default async function ReviewLitePage({
-  searchParams,
-}: {
-  searchParams: { ahead?: string }
-}) {
-  const aheadMode = searchParams?.ahead === '1'
+// Always render fresh per-request — this is per-user data behind auth.
+export const dynamic = 'force-dynamic'
+
+export default async function ReviewLitePage() {
   const supabase = await createClient()
   const {
     data: { user },
@@ -82,130 +54,50 @@ export default async function ReviewLitePage({
   const cookieTz = (await cookies()).get('tz')?.value
   const ipTz = (await headers()).get('x-vercel-ip-timezone') || undefined
   const today = localToday(cookieTz || ipTz)
-  const [ty, tm, td] = today.split('-').map(Number)
-  const lastDay = new Date(ty, tm, 0).getDate()
+  // This month, from the 1st through today.
   const firstOfMonth = `${today.substring(0, 8)}01`
-  const endOfMonth = `${today.substring(0, 8)}${String(lastDay).padStart(2, '0')}`
-  // Tomorrow (handles month rollover via the local Date constructor).
-  const tomorrow = format(new Date(ty, tm - 1, td + 1), 'yyyy-MM-dd')
-  // Default mode: this month up to today (today + earlier-day catch-up).
-  // Ahead mode: strictly tomorrow onwards through end of month — no today, no
-  // earlier-month catch-up, so "review ahead" shows only the future.
-  const lower = aheadMode ? tomorrow : firstOfMonth
-  const upper = aheadMode ? endOfMonth : today
 
-  // Text field only — the minimum payload. We fetch rated rows too (not just
-  // unrated): a just-rated highlight must stay on the page with its rating
-  // filled in rather than vanish the instant you tap a button, matching
-  // /review. Paginate to stay under Supabase's 1000-row cap.
+  // Text field only — the minimum payload. Unrated rows only (`rating IS NULL`)
+  // so the catch-up list doesn't re-surface highlights you've already rated;
+  // it's a plain column filter on this table, so it returns fewer rows, not
+  // more. Paginate to stay under Supabase's 1000-row cap.
   const PAGE = 1000
-  let raw: any[] = []
+  let texts: string[] = []
   let from = 0
-  let loadError = false
   try {
     while (true) {
       const { data, error } = await supabase
         .from('daily_summary_highlights')
-        .select('id, highlight_id, rating, daily_summaries!inner(date), highlight:highlights!inner(id, text, archived)')
-        .gte('daily_summaries.date', lower)
-        .lte('daily_summaries.date', upper)
+        .select('daily_summaries!inner(date), highlight:highlights!inner(text, archived)')
+        .gte('daily_summaries.date', firstOfMonth)
+        .lte('daily_summaries.date', today)
         .eq('daily_summaries.user_id', user.id)
         .eq('highlight.archived', false)
+        .is('rating', null)
         .order('id', { ascending: true })
         .range(from, from + PAGE - 1)
       if (error) throw error
       const list = data || []
-      raw = raw.concat(list)
+      texts = texts.concat(list.map((sh: any) => sh.highlight?.text || '').filter(Boolean))
       if (list.length < PAGE) break
       from += PAGE
     }
   } catch {
-    loadError = true
+    texts = []
   }
-
-  const rows: LiteRow[] = raw.map((sh: any) => ({
-    id: sh.id,
-    highlight_id: sh.highlight_id,
-    date: sh.daily_summaries?.date || '',
-    text: sh.highlight?.text || '',
-    rating: (sh.rating ?? null) as Rating,
-  }))
-
-  const byLen = (a: LiteRow, b: LiteRow) => a.text.length - b.text.length
-  const byDateThenLen = (a: LiteRow, b: LiteRow) =>
-    a.date !== b.date ? (a.date < b.date ? -1 : 1) : byLen(a, b)
-
-  // Ordering: today (shortest first) → earlier-day catch-up (oldest first) →
-  // ahead (by date, ahead mode only). Every bucket keeps BOTH rated and unrated
-  // rows so nothing vanishes the moment you tap a rating — the row just stays
-  // put with its choice filled in. The sorts are rating-agnostic (length / date,
-  // not rating), so a row holds its position across the re-render that follows a
-  // rating instead of jumping. (This is intentionally more persistent than
-  // /review's in-memory list, which re-buckets unrated-only on a hard reload.)
-  // Ahead mode drops today entirely (the query already excludes it; this keeps
-  // the bucketing honest too).
-  const todayRows = aheadMode ? [] : rows.filter((r) => r.date === today).sort(byLen)
-  // Earlier-day catch-up only in default mode; ahead mode is tomorrow-onwards.
-  const catchUpRows = aheadMode ? [] : rows.filter((r) => r.date < today).sort(byDateThenLen)
-  const aheadRows = aheadMode ? rows.filter((r) => r.date > today).sort(byDateThenLen) : []
-  const ordered = [...todayRows, ...catchUpRows, ...aheadRows]
-
-  // Items still needing a rating — drives the header count + caught-up banner,
-  // while the list itself renders rated rows too so they don't vanish.
-  const remaining = ordered.filter((r) => r.rating === null).length
 
   return (
     <main className="max-w-2xl mx-auto px-4 py-6">
-      <LiteOfflineSync />
-      <div className="flex items-center justify-between mb-1">
-        <h1 className="text-lg font-semibold text-gray-900 dark:text-white">
-          Review — text only
-        </h1>
-        {/* A plain <a>, not next/link, on purpose. A client-side <Link> nav to
-            /review fetches an RSC payload the service worker doesn't intercept,
-            so on weak signal it fails silently and you appear stuck on lite. A
-            real document navigation goes through the SW's /review handler: full
-            page when online, clean interstitial → lite handoff when it can't
-            load. */}
-        <a href="/review" className="text-sm text-blue-600 dark:text-blue-400 underline">
-          Full view
-        </a>
-      </div>
-      <ReviewCounter
-        total={ordered.length}
-        initialRemaining={remaining}
-        aheadMode={aheadMode}
-      />
-
-      {loadError && (
-        <p className="mb-4 px-3 py-2 rounded bg-amber-100 dark:bg-amber-900 text-amber-800 dark:text-amber-200 text-sm">
-          Couldn&apos;t load on this connection. Pull to refresh when you have signal.
-        </p>
-      )}
-
-      {ordered.length === 0 && !loadError ? (
-        <p className="text-gray-600 dark:text-gray-300">🎉 All caught up.</p>
-      ) : (
-        <ul className="space-y-6">
-          {ordered.map((r) => (
-            <li
-              key={r.id}
-              className="border-b border-gray-200 dark:border-gray-700 pb-5"
-            >
-              <RowDateLabel date={r.date} serverToday={today} />
-              <div className="whitespace-pre-wrap text-base text-gray-900 dark:text-gray-100 mb-3">
-                {r.text}
-              </div>
-              <RateButtons
-                summaryHighlightId={r.id}
-                highlightId={r.highlight_id}
-                summaryDate={r.date}
-                initialRating={r.rating}
-              />
-            </li>
-          ))}
-        </ul>
-      )}
+      <ul className="divide-y divide-gray-200 dark:divide-gray-700">
+        {texts.map((text, i) => (
+          <li
+            key={i}
+            className="py-2 whitespace-pre-wrap text-base text-gray-900 dark:text-gray-100"
+          >
+            {text}
+          </li>
+        ))}
+      </ul>
     </main>
   )
 }
