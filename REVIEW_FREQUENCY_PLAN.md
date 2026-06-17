@@ -1,7 +1,7 @@
 # Configurable Review Frequency — Implementation Plan
 
 **Status:** Design / not yet implemented
-**Goal:** Let a user review their highlights on a cadence other than monthly — e.g. **every 2 months (bimonthly)** or **every 3 months (quarterly)** — instead of the hardcoded one-calendar-month cycle.
+**Goal:** Let a user review their highlights on a cadence other than monthly — e.g. **every 2 months (bimonthly)** or **every 3 months (quarterly)** — instead of the hardcoded one-calendar-month cycle. And let a user **turn daily review off entirely** if they don't want any resurfacing.
 **Author:** prepared as a future-implementation spec. Read this top-to-bottom before writing any code.
 
 ---
@@ -12,7 +12,9 @@ Today the app equates **one review cycle == one calendar month**. Every highligh
 
 The change is to introduce a **cycle abstraction** (`frequency_months ∈ {1, 2, 3, …}`) and replace "calendar month" with "cycle" everywhere. A cycle is `N` contiguous, **calendar-aligned** months. Each highlight resurfaces once per cycle, spread across all days of the cycle (so a quarterly cycle is ~90 days and each day is ~⅓ as heavy — exactly the lighter cadence you want).
 
-**The single most important property:** with `frequency_months = 1` (the default), the cycle key, cycle date list, and bin-packing seed are all **byte-identical** to today's behavior. So the feature ships dark, monthly users are completely unaffected, and there is **zero data migration**.
+A second, **orthogonal** control lets a user disable resurfacing altogether: `daily_review_enabled ∈ {true, false}`. When `false`, no new assignments are ever generated for that user — the cron skips them, lazy assignment on `/daily` is a no-op, and the widget shows a calm "off" state. Frequency and enabled are independent: turning review off does not lose your chosen cadence, and turning it back on resumes at that cadence.
+
+**The single most important property:** with `frequency_months = 1` and `daily_review_enabled = true` (the defaults), the cycle key, cycle date list, and bin-packing seed are all **byte-identical** to today's behavior. So the feature ships dark, monthly users are completely unaffected, and there is **zero data migration**.
 
 ---
 
@@ -86,6 +88,14 @@ Quarterly = Jan–Mar, Apr–Jun, Jul–Sep, Oct–Dec for **every** user. Bimon
 
 ### D4 — `cycle_key` = the cycle's **start month** in `YYYY-MM`
 Reuse the existing `highlight_months_reviewed.month_year` column as a generic cycle key. For `frequency_months = 1`, the start month *is* the calendar month, so **all existing rows stay valid and no backfill is needed.** For quarterly, Q1 2026's key is `2026-01`.
+
+### D5 — "Off" is a separate boolean, not `frequency_months = 0`
+Disabling daily review is modeled as `daily_review_enabled BOOLEAN NOT NULL DEFAULT TRUE`, **orthogonal** to `frequency_months`. Reasons:
+- It keeps the cycle math total (`frequency_months` stays `≥ 1`, so every invariant in §8 is untouched — there is no "0-month cycle" to special-case in `lib/cycle.ts`).
+- It preserves the user's chosen cadence across an off→on toggle. Turning review back on resumes at bimonthly/quarterly, not a reset to monthly.
+- The "enabled?" check is a single early `return`/skip at each entry point (cron, lazy assign, redistribute, widget) — additive, not a rewrite of the distribution logic.
+
+**Off does not delete reviewed history.** It stops generating *new* assignments and clears *future, un-rated* assignments (so the calendar doesn't show stale work). Past `daily_summaries` and all `daily_summary_highlights.rating` / `highlight_months_reviewed` rows are left intact, so stats and resurface counts are preserved and re-enabling is lossless.
 
 ---
 
@@ -185,23 +195,39 @@ export function cycleSeed(c: Cycle): number {
 }
 ```
 
-And a tiny server helper for reading the per-user setting (default 1):
+And a tiny server helper for reading the per-user settings (defaults: monthly, enabled):
 
 ```ts
 // lib/cycle.ts (continued) — or a server-only file if you prefer
-export async function getUserFrequency(
+export interface ReviewSettings {
+  freq: number      // frequency_months, ≥ 1
+  enabled: boolean  // daily_review_enabled
+}
+
+export async function getUserReviewSettings(
   supabase: any,
   userId: string
-): Promise<number> {
+): Promise<ReviewSettings> {
   const { data } = await supabase
     .from('user_review_settings')
-    .select('frequency_months')
+    .select('frequency_months, daily_review_enabled')
     .eq('user_id', userId)
     .maybeSingle()
-  const f = (data as { frequency_months?: number } | null)?.frequency_months
-  return f && f >= 1 ? f : 1
+  const row = data as { frequency_months?: number; daily_review_enabled?: boolean } | null
+  const f = row?.frequency_months
+  return {
+    freq: f && f >= 1 ? f : 1,
+    enabled: row?.daily_review_enabled ?? true, // default ON when no row exists
+  }
+}
+
+/** Convenience: frequency only (back-compat). */
+export async function getUserFrequency(supabase: any, userId: string): Promise<number> {
+  return (await getUserReviewSettings(supabase, userId)).freq
 }
 ```
+
+> **Default ON is load-bearing.** A user with no `user_review_settings` row must read as `enabled = true` (and `freq = 1`) so today's behavior is preserved with zero rows written. Never treat "missing row" as "off."
 
 > **Why `cycleSeed` matters:** the bin-packer is seeded by `year*373 + month*31` today. Using the cycle's **start** month keeps the seed (and therefore the exact assignment) identical for `freq=1`. Don't seed off "today" or the viewed month — seed off the cycle start.
 
@@ -219,12 +245,17 @@ New file `supabase/migration_review_frequency.sql` (idempotent, RLS-correct, fol
 -- month, so all existing rows remain valid and NO data migration is required.
 
 CREATE TABLE IF NOT EXISTS user_review_settings (
-  user_id          UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
-  frequency_months INTEGER NOT NULL DEFAULT 1
-                   CHECK (frequency_months >= 1 AND frequency_months <= 12),
-  created_at       TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-  updated_at       TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+  user_id             UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
+  frequency_months    INTEGER NOT NULL DEFAULT 1
+                      CHECK (frequency_months >= 1 AND frequency_months <= 12),
+  daily_review_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at          TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  updated_at          TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
+
+-- If the table predates this column (shipped frequency first), add it idempotently:
+ALTER TABLE user_review_settings
+  ADD COLUMN IF NOT EXISTS daily_review_enabled BOOLEAN NOT NULL DEFAULT TRUE;
 
 ALTER TABLE user_review_settings ENABLE ROW LEVEL SECURITY;
 
@@ -288,7 +319,7 @@ export function packIntoDates(items: Scored[], dates: string[], seed: number): D
 Note the key change vs today: buckets are keyed by **`date: string`**, not `day: number (1..31)`. A cycle spans months, so a 1..31 index is meaningless — every assignment must carry its real ISO date. This ripples through assign/prepare (see below).
 
 ### 6.1 — `app/api/daily/assign/route.ts`
-- Input: keep accepting `{ year, month }` (a month *inside* the target cycle) to minimize caller churn. Internally: `const freq = await getUserFrequency(supabase, user.id); const cycle = getCycle(year, month, freq);`
+- Input: keep accepting `{ year, month }` (a month *inside* the target cycle) to minimize caller churn. Internally: `const { freq, enabled } = await getUserReviewSettings(supabase, user.id);` — **if `!enabled`, return early with an empty result (HTTP 200, e.g. `{ assigned: 0, disabled: true }`)** rather than packing anything. Otherwise `const cycle = getCycle(year, month, freq);`
 - Replace `daysInMonth` / `startDate` / `endDate` with `cycle.dates`, `cycle.startDate`, `cycle.endDate`.
 - Replace `monthYear` dedup with `cycle.key`.
 - Replace `assignHighlightsToDays(..., daysInMonth, year, month)` with `packIntoDates(scored, cycle.dates, cycleSeed(cycle))`.
@@ -296,13 +327,14 @@ Note the key change vs today: buckets are keyed by **`date: string`**, not `day:
 - Everywhere a date was built as `${year}-${month}-${day}`, use the bucket's `date` directly.
 
 ### 6.2 — `app/api/daily/prepare-next-month/route.ts` → `prepare-next-cycle`
-- Rename concept (keep or rename the path — see §7). Per user: `freq = getUserFrequency(...)`, `current = getCycleForDate(todayLocal, freq)`, `next = nextCycle(current)`.
+- Rename concept (keep or rename the path — see §7). Per user: `{ freq, enabled } = getUserReviewSettings(...)`. **If `!enabled`, `continue` to the next user** — disabled users are never portioned. Then `current = getCycleForDate(todayLocal, freq)`, `next = nextCycle(current)`.
 - **Guard:** only portion `next` when (a) today is within `LEAD_DAYS` (7) of `current.endDate`, **and** (b) `next` has zero `daily_summaries` yet (idempotency — daily cron must not re-portion). For `freq=1` this reproduces "prepare next month ~7 days before month end."
 - Build assignments with `packIntoDates(scored, next.dates, cycleSeed(next))`, filtering out highlights already in `highlight_months_reviewed` for `next.key`.
 - The delete-and-recreate of the target window now spans `next.startDate..next.endDate`.
 
 ### 6.3 — `app/api/daily/redistribute/route.ts` (highest-risk file)
-- `const freq = ...; const cycle = getCycleForDate(clientLocalDate, freq);`
+- `const { freq, enabled } = await getUserReviewSettings(...);` — **if `!enabled`, return early (no-op)**: a disabled user's newly-added highlights must not be placed anywhere.
+- `const cycle = getCycleForDate(clientLocalDate, freq);`
 - "remaining days in month" → cycle dates strictly after today within `cycle` (and the `isLastDayOfMonth` special-case → `today === cycle.endDate`).
 - The future-**months** loop (offset 1..6, breaking at the first month with no summaries) → a future-**cycles** loop: start at `nextCycle(cycle)`, walk forward (cap at ~3 cycles), break at the first cycle with no `daily_summaries`. Within each future cycle, dedup against `highlight_months_reviewed` for that cycle's key and pack with `cycleSeed(futureCycle)`.
 - All `${year}-${month}-${d}` date construction → iterate `cycle.dates`.
@@ -314,8 +346,9 @@ Note the key change vs today: buckets are keyed by **`date: string`**, not `day:
 - HMR deletion: delete rows where `month_year = cycle.key` (a single key per cycle now) for the user's highlight ids — same chunked delete, just one key instead of one calendar month.
 
 ### 6.5 — `app/api/review/widget/route.ts`
-- The catch-up branch computes `firstOfMonth = today.substring(0,8) + '01'`. Replace with the cycle start: `const freq = await getUserFrequency(supabase, userId); const start = getCycleForDate(today, freq).startDate;` then `.gte('daily_summary.date', start).lt('daily_summary.date', today)`. So "catch up on anything unreviewed earlier this **cycle**."
-- `review/next` has no catch-up branch → no change required (optionally add the same cycle catch-up for parity).
+- `const { freq, enabled } = await getUserReviewSettings(supabase, userId);` — **if `!enabled`, return an empty/off payload** (e.g. `{ enabled: false, items: [] }`) so the widget renders a calm "Daily review is off" state instead of stale assignments. The client should treat this as "nothing due," not an error.
+- The catch-up branch computes `firstOfMonth = today.substring(0,8) + '01'`. Replace with the cycle start: `const start = getCycleForDate(today, freq).startDate;` then `.gte('daily_summary.date', start).lt('daily_summary.date', today)`. So "catch up on anything unreviewed earlier this **cycle**."
+- `review/next` has no catch-up branch → it still needs the same `!enabled` early-out so it returns nothing for disabled users (optionally add the cycle catch-up for parity too).
 
 ### 6.6 — `app/api/stats/reviewed-count/route.ts` + `repair/route.ts`
 - Default window "previous calendar month" → "previous cycle": `prevCycle = getCycle(<a month before current cycle start>, freq)`; window `[prevCycle.startDate, prevCycle.endDate]`; HMR key `prevCycle.key`.
@@ -323,14 +356,18 @@ Note the key change vs today: buckets are keyed by **`date: string`**, not `day:
 - In `repair`, the "remove spurious current-**month** HMR rows" cleanup becomes "current-**cycle**." Keep this consistent or the "Last reviewed" card miscounts. Medium priority (stats only, not the core loop).
 
 ### 6.7 — `app/daily/page.tsx`
-- Load the user's frequency once on mount; thread it through.
-- `ensureDailySummary`: "assignments exist for this **month**?" → "for this **cycle**?" (query `[cycle.startDate, cycle.endDate]`); the assign call passes a month inside the cycle; the "prepare next month if `daysUntilMonthEnd <= 7`" branch → "prepare next **cycle** if today within 7 days of `cycle.endDate`."
+- Load the user's `{ freq, enabled }` once on mount; thread both through.
+- **When `!enabled`:** `ensureDailySummary` does nothing (no lazy assign, no prepare-next-cycle), and the page renders an "off" empty state — a short line ("Daily review is off") with a link to Settings to turn it back on — instead of the calendar/review UI. Existing rated history can still be browsable if desired, but no new work is generated.
+- `ensureDailySummary`: "assignments exist for this **month**?" → "for this **cycle**?" (query `[cycle.startDate, cycle.endDate]`); the assign call passes a month inside the cycle; the "prepare next month if `daysUntilMonthEnd <= 7`" branch → "prepare next **cycle** if today within 7 days of `cycle.endDate`." (All gated behind `enabled`.)
 - `handleRatingChange` — **two** HMR upsert sites (~L810 and ~L1573): today they derive `monthYear` from `summary.date`'s month. Change to `cycleKey(y, m, freq)` from `summary.date`. This is the write that makes dedup correct across a multi-month cycle — do not miss either site.
 - Calendar grid: keep month-by-month navigation as a pure **date browser**; days outside the active cycle simply have no assignments. `monthReviewStatus` / `monthsWithAssignments` are per-date and keep working. Optional polish: shade the active cycle's span or show a "Cycle: Jan–Mar 2026" label.
 - Copy: "this month" → "this cycle" where user-facing.
 
 ### 6.8 — `app/settings/page.tsx`
-- Add a **frequency selector**: Monthly (1) / Every 2 months (2) / Quarterly (3). Persists to `user_review_settings`.
+- Add a **"Daily review" on/off toggle** that persists `daily_review_enabled` to `user_review_settings`. Place it above the frequency selector and disable/grey-out the frequency selector when review is off (the cadence is meaningless while off, but the stored value is retained for when it's re-enabled).
+  - **Turning OFF:** confirm ("New highlights won't resurface until you turn this back on. Your past reviews are kept."), then clear *future, un-rated* assignments so the calendar isn't left showing stale work. Reuse `lib/removeFromFutureMonths.ts` (it already deletes `date >= today` assignments) — but only delete days/highlights with no rating; rated days stay as history. Then persist `daily_review_enabled = false`.
+  - **Turning ON:** persist `daily_review_enabled = true`, then lazily re-portion the current cycle via `assign` for a month inside the current cycle (same path `ensureDailySummary` uses). Resumes at the stored `frequency_months`.
+- Add a **frequency selector**: Monthly (1) / Every 2 months (2) / Quarterly (3). Persists to `user_review_settings`. (Hidden/disabled while review is off.)
 - **Changing frequency reshapes cycles**, so on change show a confirm and then re-portion: call `reset-cycle` + `assign` for the (new) current cycle, preserving already-rated days, and clear any future pre-portioned cycles that no longer align. Treat this as an explicit "Apply new frequency" action, not a silent toggle.
 - Reset button: `reset-month` → `reset-cycle`; assign passes the current cycle. Copy "month" → "cycle."
 - "Last month reviewed" card → "Last cycle reviewed"; stats fetch uses the cycle param. Update the `data.month` → label code (it currently formats a `YYYY-MM` as a single month; for a multi-month cycle, render a range using `cycle.startDate`/`endDate`).
@@ -357,7 +394,7 @@ Today: `vercel.json` runs `prepare-next-month` once a month (`0 0 24 * *`). That
 ```
 
 Inside the route, for each user:
-1. `freq = getUserFrequency(...)`
+1. `{ freq, enabled } = getUserReviewSettings(...)`. **If `!enabled`, skip this user entirely** — no portioning while review is off.
 2. `current = getCycleForDate(today, freq)`, `next = nextCycle(current)`
 3. If `today` is within `LEAD_DAYS` (7) of `current.endDate` **and** `next` has no summaries → portion `next`. Else skip.
 
@@ -378,6 +415,7 @@ These **must** hold so `frequency_months = 1` is a no-op for existing users:
 3. **`cycleSeed(getCycle(y, m, 1))` === `y*373 + m*31`** → identical bin-packing output (same shuffle, same per-day placement).
 4. **`nextCycle`** of a monthly cycle === the next calendar month → identical cron timing.
 5. Default everywhere is `1` when no `user_review_settings` row exists.
+6. **`daily_review_enabled` defaults to `true`** — a missing row, or a row with the column absent, reads as enabled. No existing user is silently turned off.
 
 Add a unit test asserting all five for a spread of months (incl. December→January and leap February). If any fails, monthly users would see their assignments reshuffle — the one outcome we must never ship.
 
@@ -387,7 +425,7 @@ Add a unit test asserting all five for a spread of months (incl. December→Janu
 
 **Phase 1 — Plumbing, invisible.** Run the migration. Add `lib/cycle.ts` + `lib/binPack.ts`. Refactor all routes + `daily/page.tsx` to read `getUserFrequency` and route through the cycle helpers. With no settings rows, every user is `freq=1` and behavior is provably identical (§8). Ship. Watch for regressions before any UI exists.
 
-**Phase 2 — Expose the control.** Add the settings selector + the "Apply new frequency" re-portion flow + the copy/label changes. Now a user can opt into bimonthly/quarterly.
+**Phase 2 — Expose the controls.** Add the settings frequency selector + the "Apply new frequency" re-portion flow + the **on/off toggle** + the copy/label changes. Now a user can opt into bimonthly/quarterly or turn review off. The on/off toggle is independent of and simpler than the frequency re-portion flow — it can ship first within this phase (it touches no cycle math, just the `enabled` guards and the future-assignment cleanup) if you want the lower-risk half of Phase 2 out the door earlier.
 
 **Phase 3 — Cron.** Switch `vercel.json` to the daily schedule with the per-user guard. (Can also ship in Phase 1 since it's equivalent for `freq=1`; just verify the idempotency guard first.)
 
@@ -411,6 +449,10 @@ Splitting like this means the risky distribution refactor lands and bakes *befor
 | Timezone | Cycle boundaries use the client `localDate` the routes already pass, not server UTC. |
 | Stats / "Last reviewed" | Counts a full cycle; label renders the month range. |
 | Cron idempotency | Running `prepare-next-cycle` twice in a day portions the next cycle exactly once. |
+| **Review disabled** | With `daily_review_enabled = false`: cron skips the user, `assign`/`redistribute` are no-ops, widget + `review/next` return empty, `/daily` shows the off state. No new `daily_summaries` rows created. |
+| Disable clears future | Turning off deletes future **un-rated** assignments but leaves past rated days, `daily_summary_highlights.rating`, and `highlight_months_reviewed` intact. |
+| Re-enable resumes | Turning back on re-portions the current cycle at the **stored** `frequency_months` (not reset to monthly); past stats unchanged. |
+| Enabled default | A user with no settings row (or pre-column row) reads as enabled — never silently off. |
 
 ---
 
@@ -421,5 +463,7 @@ Splitting like this means the risky distribution refactor lands and bakes *befor
 - **"Twice a month" cadence** — out of scope (D1); would be a sub-month split, a different mechanism.
 - **Mid-cycle frequency changes** are inherently lossy at the boundary (a partially-reviewed cycle can't cleanly re-tile). The "Apply new frequency" flow preserves rated days and re-portions the rest; communicate this in the confirm dialog.
 - **`offlineStore` field names** stay `month*` unless renamed; purely cosmetic.
+- **Turning review off mid-cycle is intentionally lossy for the *current* partial cycle's unreviewed items** — they're cleared, not parked. Re-enabling re-portions from scratch for the current cycle; it does not restore the exact pre-off assignment of un-rated highlights (rated history is always preserved). This matches the frequency-change boundary behavior and is communicated in the off confirm dialog.
+- **Streaks / "Last reviewed" while off.** With no new assignments, streak-style stats naturally go quiet. Decide whether the UI should freeze the streak or show "paused" — out of scope for the data layer, but flag it for the settings/stats copy so an off user isn't told they "broke their streak."
 </content>
 </invoke>
