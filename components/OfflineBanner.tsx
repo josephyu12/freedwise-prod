@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react'
 import Link from 'next/link'
 import { hasPendingActions } from '@/lib/offlineStore'
+import { useManualOffline } from '@/hooks/useManualOffline'
 
 interface OfflineBannerProps {
   isOnline: boolean
@@ -15,6 +16,8 @@ interface OfflineBannerProps {
 }
 
 export default function OfflineBanner({ isOnline, isSyncing, pendingCount, onLitePage }: OfflineBannerProps) {
+  const { manualOffline, setManualOffline } = useManualOffline()
+
   if (isOnline && !isSyncing) return null
 
   // Detect weak signal: our heartbeat says offline but navigator thinks we're online
@@ -28,7 +31,17 @@ export default function OfflineBanner({ isOnline, isSyncing, pendingCount, onLit
           : 'bg-amber-100 dark:bg-amber-900 text-amber-800 dark:text-amber-200'
       }`}
     >
-      {isSyncing ? (
+      {manualOffline && !isSyncing ? (
+        <span className="flex flex-wrap items-center justify-center gap-x-2 gap-y-1">
+          <span>🔌 Offline mode is on — changes save on this device and won&apos;t sync.</span>
+          <button
+            onClick={() => setManualOffline(false)}
+            className="underline font-semibold"
+          >
+            Go back online →
+          </button>
+        </span>
+      ) : isSyncing ? (
         <span className="flex items-center justify-center gap-2">
           <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none">
             <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
