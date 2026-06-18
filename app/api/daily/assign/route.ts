@@ -173,10 +173,19 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Pack non-preserved highlights onto the non-completed days at/after fromDate.
+    // Pack non-preserved highlights onto the days at/after fromDate. Prefer
+    // not-yet-completed days so finished days aren't disturbed.
     const highlightsToAssign = highlightsWithScore.filter((h) => !preservedAssignments.has(h.id))
-    const packDates = cycle.dates.filter((d) => d >= fromDate && !completedDays.has(d))
-    const buckets = packDates.length > 0 && highlightsToAssign.length > 0
+    let packDates = cycle.dates.filter((d) => d >= fromDate && !completedDays.has(d))
+    // SAFETY NET: every unreviewed highlight MUST land somewhere. If all remaining
+    // days are already "completed" — e.g. resuming after an off→on where clearing
+    // future un-rated rows left each reviewed-ahead day holding only its rated
+    // highlights — fall back to the full remaining window (re-opening those days by
+    // appending the backlog), then to the last day. Without this, a backlog of
+    // unreviewed highlights silently vanishes from the cycle.
+    if (packDates.length === 0) packDates = cycle.dates.filter((d) => d >= fromDate)
+    if (packDates.length === 0) packDates = [cycle.endDate]
+    const buckets = highlightsToAssign.length > 0
       ? packIntoDates(highlightsToAssign, packDates, cycleSeed(cycle))
       : []
 
@@ -199,8 +208,13 @@ export async function POST(request: NextRequest) {
       }
 
       if (summaryId) {
+        // Upsert (ignore duplicates): when the safety net appends a backlog onto an
+        // existing (completed) day's summary, a highlight could already be linked.
         const { error: linkError } = await (supabase.from('daily_summary_highlights') as any)
-          .insert(bucket.highlights.map((h) => ({ daily_summary_id: summaryId, highlight_id: h.id })))
+          .upsert(
+            bucket.highlights.map((h) => ({ daily_summary_id: summaryId, highlight_id: h.id })),
+            { onConflict: 'daily_summary_id,highlight_id', ignoreDuplicates: true }
+          )
         if (linkError) throw linkError
         createdAssignments.push({
           date: bucket.date,
