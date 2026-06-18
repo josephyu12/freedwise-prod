@@ -1564,7 +1564,10 @@ function ReviewPageContent() {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center gap-4 bg-gradient-to-br from-blue-50 to-indigo-100 dark:from-gray-900 dark:to-gray-800 px-6">
         <div className="text-xl text-gray-600 dark:text-gray-300">Loading...</div>
-        <Link href="/review/lite" className="text-sm text-blue-600 dark:text-blue-400 underline">
+        <Link
+          href={aheadMode ? '/review/lite?ahead=1' : '/review/lite'}
+          className="text-sm text-blue-600 dark:text-blue-400 underline"
+        >
           Slow connection? Switch to text-only →
         </Link>
       </div>
@@ -1648,7 +1651,7 @@ function ReviewPageContent() {
         </div>
         <div className="flex items-center gap-4">
           <Link
-            href="/review/lite"
+            href={aheadMode ? '/review/lite?ahead=1' : '/review/lite'}
             className="text-sm text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition"
             title="Minimal text-only view for weak connections"
           >

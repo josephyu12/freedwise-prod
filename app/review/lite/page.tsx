@@ -34,7 +34,24 @@ function localToday(tz: string | undefined): string {
 // Always render fresh per-request — this is per-user data behind auth.
 export const dynamic = 'force-dynamic'
 
-export default async function ReviewLitePage() {
+// Last day of the month containing `today` (YYYY-MM-DD), as a wire-format string.
+function endOfMonth(today: string): string {
+  const [y, m] = today.split('-').map(Number)
+  // Day 0 of the next month is the last day of this one.
+  const last = new Date(y, m, 0).getDate()
+  return `${today.substring(0, 8)}${String(last).padStart(2, '0')}`
+}
+
+export default async function ReviewLitePage({
+  searchParams,
+}: {
+  // Next 14 passes a plain object here. `ahead=1` switches from the catch-up
+  // list (this month through today) to the text-only "review ahead" list (the
+  // remaining days of the month), mirroring /review?ahead=1.
+  searchParams: { [key: string]: string | string[] | undefined }
+}) {
+  const aheadMode = searchParams.ahead === '1'
+
   const supabase = await createClient()
   const {
     data: { user },
@@ -54,28 +71,32 @@ export default async function ReviewLitePage() {
   const cookieTz = (await cookies()).get('tz')?.value
   const ipTz = (await headers()).get('x-vercel-ip-timezone') || undefined
   const today = localToday(cookieTz || ipTz)
-  // This month, from the 1st through today.
   const firstOfMonth = `${today.substring(0, 8)}01`
 
   // Text field only — the minimum payload. Unrated rows only (`rating IS NULL`)
-  // so the catch-up list doesn't re-surface highlights you've already rated;
-  // it's a plain column filter on this table, so it returns fewer rows, not
-  // more. Paginate to stay under Supabase's 1000-row cap.
+  // so the list doesn't re-surface highlights you've already rated; it's a plain
+  // column filter on this table, so it returns fewer rows, not more. Paginate to
+  // stay under Supabase's 1000-row cap.
+  //
+  // Catch-up (default): the 1st through today.
+  // Ahead: tomorrow through the end of the month (strictly after today).
   const PAGE = 1000
   let texts: string[] = []
   let from = 0
   try {
     while (true) {
-      const { data, error } = await supabase
+      let query = supabase
         .from('daily_summary_highlights')
         .select('daily_summaries!inner(date), highlight:highlights!inner(text, archived)')
-        .gte('daily_summaries.date', firstOfMonth)
-        .lte('daily_summaries.date', today)
         .eq('daily_summaries.user_id', user.id)
         .eq('highlight.archived', false)
         .is('rating', null)
         .order('id', { ascending: true })
         .range(from, from + PAGE - 1)
+      query = aheadMode
+        ? query.gt('daily_summaries.date', today).lte('daily_summaries.date', endOfMonth(today))
+        : query.gte('daily_summaries.date', firstOfMonth).lte('daily_summaries.date', today)
+      const { data, error } = await query
       if (error) throw error
       const list = data || []
       texts = texts.concat(list.map((sh: any) => sh.highlight?.text || '').filter(Boolean))
@@ -86,8 +107,42 @@ export default async function ReviewLitePage() {
     texts = []
   }
 
+  // Empty state — render a real (tiny) page instead of a blank list, so a slow
+  // connection landing here when there's nothing to show isn't a white screen.
+  if (texts.length === 0) {
+    return (
+      <main className="max-w-2xl mx-auto px-4 py-10 text-center">
+        {aheadMode ? (
+          <>
+            <p className="text-base text-gray-900 dark:text-gray-100 mb-4">
+              Nothing scheduled for the rest of the month.
+            </p>
+            <Link href="/review/lite" className="text-blue-600 dark:text-blue-400 underline">
+              Back to catch-up
+            </Link>
+          </>
+        ) : (
+          <>
+            <p className="text-base text-gray-900 dark:text-gray-100 mb-4">
+              You&apos;re all caught up 🎉
+            </p>
+            <Link
+              href="/review/lite?ahead=1"
+              className="text-blue-600 dark:text-blue-400 underline"
+            >
+              Review ahead →
+            </Link>
+          </>
+        )}
+      </main>
+    )
+  }
+
   return (
     <main className="max-w-2xl mx-auto px-4 py-6">
+      {aheadMode && (
+        <p className="mb-3 text-sm text-gray-500 dark:text-gray-400">Coming up this month</p>
+      )}
       <ul className="divide-y divide-gray-200 dark:divide-gray-700">
         {texts.map((text, i) => (
           <li
@@ -98,6 +153,16 @@ export default async function ReviewLitePage() {
           </li>
         ))}
       </ul>
+      {!aheadMode && (
+        <div className="mt-6 text-center">
+          <Link
+            href="/review/lite?ahead=1"
+            className="text-sm text-blue-600 dark:text-blue-400 underline"
+          >
+            Review ahead →
+          </Link>
+        </div>
+      )}
     </main>
   )
 }
