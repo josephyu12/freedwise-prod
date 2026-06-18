@@ -120,10 +120,12 @@ export default function SettingsPage() {
     loadReviewSettings()
   }, [loadReviewSettings])
 
-  // Toggle daily review on/off.
+  // Toggle daily review on/off. A PURE flag toggle: it never adds, deletes, or
+  // moves assignments, so turning off and back on leaves every highlight on the
+  // exact same day it was on before.
   const handleToggleReview = useCallback(async (next: boolean) => {
     if (!next) {
-      if (!confirm('Turn daily review off? New highlights won’t resurface until you turn it back on. Your past reviews are kept.')) {
+      if (!confirm('Turn daily review off? Your highlights stay scheduled exactly as they are — they just stop showing until you turn it back on.')) {
         return
       }
     }
@@ -133,24 +135,14 @@ export default function SettingsPage() {
       const res = await fetch('/api/daily/set-enabled', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enabled: next, localDate: localDateString() }),
+        body: JSON.stringify({ enabled: next }),
       })
       if (!res.ok) {
         const data = await res.json().catch(() => ({}))
         throw new Error(data.error || 'Failed to update setting')
       }
       setReviewEnabled(next)
-      // Turning ON: re-portion the current cycle at the stored frequency.
-      if (next) {
-        const today = localDateString()
-        const [y, m] = today.split('-').map(Number)
-        await fetch('/api/daily/assign', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ year: y, month: m, fromDate: today }),
-        })
-      }
-      setMessage({ type: 'success', text: next ? 'Daily review turned on.' : 'Daily review turned off. Your past reviews are kept.' })
+      setMessage({ type: 'success', text: next ? 'Daily review turned on — your schedule is exactly where you left it.' : 'Daily review turned off. Your schedule is preserved.' })
     } catch (error: any) {
       setMessage({ type: 'error', text: error.message || 'Failed to update setting' })
     } finally {
