@@ -10,6 +10,7 @@ import Link from 'next/link'
 import { cookies, headers } from 'next/headers'
 import { format } from 'date-fns'
 import { createClient } from '@/lib/supabase/server'
+import { getUserReviewSettings, getCycleForDate } from '@/lib/cycle'
 
 // "Today" in the user's local timezone, not the server's UTC. This is a server
 // component, so a bare `new Date()` would resolve in Vercel's UTC and roll the
@@ -33,14 +34,6 @@ function localToday(tz: string | undefined): string {
 
 // Always render fresh per-request — this is per-user data behind auth.
 export const dynamic = 'force-dynamic'
-
-// Last day of the month containing `today` (YYYY-MM-DD), as a wire-format string.
-function endOfMonth(today: string): string {
-  const [y, m] = today.split('-').map(Number)
-  // Day 0 of the next month is the last day of this one.
-  const last = new Date(y, m, 0).getDate()
-  return `${today.substring(0, 8)}${String(last).padStart(2, '0')}`
-}
 
 export default async function ReviewLitePage({
   searchParams,
@@ -71,7 +64,22 @@ export default async function ReviewLitePage({
   const cookieTz = (await cookies()).get('tz')?.value
   const ipTz = (await headers()).get('x-vercel-ip-timezone') || undefined
   const today = localToday(cookieTz || ipTz)
-  const firstOfMonth = `${today.substring(0, 8)}01`
+
+  // Daily review off: render a calm off state instead of stale assignments.
+  const { freq, enabled } = await getUserReviewSettings(supabase, user.id)
+  if (!enabled) {
+    return (
+      <main className="max-w-2xl mx-auto px-4 py-10 text-center">
+        <p className="text-base text-gray-900 dark:text-gray-100 mb-2">Daily review is off.</p>
+        <Link href="/settings" className="text-blue-600 dark:text-blue-400 underline">
+          Turn it on in Settings →
+        </Link>
+      </main>
+    )
+  }
+
+  const cycle = getCycleForDate(today, freq)
+  const firstOfCycle = cycle.startDate
 
   // Text field only — the minimum payload. Unrated rows only (`rating IS NULL`)
   // so the list doesn't re-surface highlights you've already rated; it's a plain
@@ -94,8 +102,8 @@ export default async function ReviewLitePage({
         .order('id', { ascending: true })
         .range(from, from + PAGE - 1)
       query = aheadMode
-        ? query.gt('daily_summaries.date', today).lte('daily_summaries.date', endOfMonth(today))
-        : query.gte('daily_summaries.date', firstOfMonth).lte('daily_summaries.date', today)
+        ? query.gt('daily_summaries.date', today).lte('daily_summaries.date', cycle.endDate)
+        : query.gte('daily_summaries.date', firstOfCycle).lte('daily_summaries.date', today)
       const { data, error } = await query
       if (error) throw error
       const list = data || []
@@ -115,7 +123,7 @@ export default async function ReviewLitePage({
         {aheadMode ? (
           <>
             <p className="text-base text-gray-900 dark:text-gray-100 mb-4">
-              Nothing scheduled for the rest of the month.
+              Nothing scheduled for the rest of the cycle.
             </p>
             <Link href="/review/lite" className="text-blue-600 dark:text-blue-400 underline">
               Back to catch-up
@@ -141,7 +149,7 @@ export default async function ReviewLitePage({
   return (
     <main className="max-w-2xl mx-auto px-4 py-6">
       {aheadMode && (
-        <p className="mb-3 text-sm text-gray-500 dark:text-gray-400">Coming up this month</p>
+        <p className="mb-3 text-sm text-gray-500 dark:text-gray-400">Coming up this cycle</p>
       )}
       <ul className="divide-y divide-gray-200 dark:divide-gray-700">
         {texts.map((text, i) => (

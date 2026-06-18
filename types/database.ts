@@ -264,6 +264,29 @@ export type Database = {
           updated_at?: string
         }
       }
+      user_review_settings: {
+        Row: {
+          user_id: string
+          frequency_months: number
+          daily_review_enabled: boolean
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          user_id: string
+          frequency_months?: number
+          daily_review_enabled?: boolean
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          user_id?: string
+          frequency_months?: number
+          daily_review_enabled?: boolean
+          created_at?: string
+          updated_at?: string
+        }
+      }
       notion_sync_queue: {
         Row: {
           id: string

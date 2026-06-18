@@ -1,14 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { getCycle, getCycleForDate, prevCycle, cycleLabel, getUserReviewSettings } from '@/lib/cycle'
 
 const PAGE = 1000
 const TEXT_SNIPPET_LENGTH = 120
 
 /**
- * GET /api/stats/reviewed-count?month=YYYY-MM
- * Returns how many highlights were reviewed for the given month, and a list of highlights
- * that were added before that month ended but were not reviewed, with assignment info.
- * Defaults to the previous calendar month if month is omitted.
+ * GET /api/stats/reviewed-count?cycle=YYYY-MM   (or legacy ?month=YYYY-MM)
+ * Returns how many highlights were reviewed for the given CYCLE, and a list of
+ * highlights that were added before that cycle ended but were not reviewed.
+ * Defaults to the previous cycle if no param is given.
  */
 export async function GET(request: NextRequest) {
   try {
@@ -19,25 +20,28 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
+    const { freq } = await getUserReviewSettings(supabase, user.id)
+
     const { searchParams } = new URL(request.url)
-    let monthYear = searchParams.get('month')
-    if (!monthYear) {
+    const param = searchParams.get('cycle') || searchParams.get('month')
+    let cycle
+    if (param) {
+      if (!/^\d{4}-\d{2}$/.test(param)) {
+        return NextResponse.json({ error: 'Invalid cycle; use YYYY-MM' }, { status: 400 })
+      }
+      const [py, pm] = param.split('-').map(Number)
+      cycle = getCycle(py, pm, freq)
+    } else {
       const now = new Date()
-      const lastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1)
-      monthYear = `${lastMonth.getFullYear()}-${String(lastMonth.getMonth() + 1).padStart(2, '0')}`
-    }
-    if (!/^\d{4}-\d{2}$/.test(monthYear)) {
-      return NextResponse.json({ error: 'Invalid month; use YYYY-MM' }, { status: 400 })
+      const todayIso = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
+      cycle = prevCycle(getCycleForDate(todayIso, freq))
     }
 
-    const [y, m] = monthYear.split('-').map(Number)
-    const startOfMonth = `${y}-${String(m).padStart(2, '0')}-01`
-    const daysInMonth = new Date(y, m, 0).getDate()
-    const endOfMonth = `${y}-${String(m).padStart(2, '0')}-${String(daysInMonth).padStart(2, '0')}`
-    // “Before the month ended” = strictly before the first day of the next month (UTC, consistent with rest of app)
-    const nextMonth = m === 12 ? 1 : m + 1
-    const nextYear = m === 12 ? y + 1 : y
-    const createdBefore = `${nextYear}-${String(nextMonth).padStart(2, '0')}-01T00:00:00.000Z`
+    const monthYear = cycle.key
+    const startOfMonth = cycle.startDate
+    const endOfMonth = cycle.endDate
+    // “Before the cycle ended” = strictly before the day after the cycle's last day.
+    const createdBefore = `${endOfMonth}T23:59:59.999Z`
 
     const userHighlightIds = new Set<string>()
     let from = 0
@@ -119,6 +123,10 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({
         count,
         month: monthYear,
+        cycleKey: monthYear,
+        cycleLabel: cycleLabel(cycle),
+        cycleStart: cycle.startDate,
+        cycleEnd: cycle.endDate,
         unreviewedHighlights: [],
       })
     }
@@ -168,6 +176,10 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({
       count,
       month: monthYear,
+      cycleKey: monthYear,
+      cycleLabel: cycleLabel(cycle),
+      cycleStart: cycle.startDate,
+      cycleEnd: cycle.endDate,
       unreviewedHighlights,
     })
   } catch (error: any) {

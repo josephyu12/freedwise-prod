@@ -16,6 +16,7 @@ import { callRedistribute } from '@/lib/redistribute'
 import { useOfflineStatus } from '@/hooks/useOfflineStatus'
 import { isEffectivelyOffline } from '@/hooks/useManualOffline'
 import { reconcileAheadOrder, readAheadOrder, writeAheadOrder } from '@/lib/aheadOrder'
+import { getUserReviewSettings, getCycleForDate, prevCycle, cycleKeyForDate } from '@/lib/cycle'
 import { useOfflineSyncState } from '@/hooks/useOfflineSyncState'
 import OfflineBanner from '@/components/OfflineBanner'
 import {
@@ -98,6 +99,11 @@ function ReviewPageContent() {
   const { isOnline } = useOfflineStatus()
   const { isSyncing, pendingCount: pendingSyncCount } = useOfflineSyncState()
   const [usingCachedData, setUsingCachedData] = useState(false)
+  // Review cadence: the cycle key/window for ledger writes + catch-up/ahead. Held
+  // in a ref so rating handlers read the latest without re-binding. Refreshed on
+  // each online load. `reviewDisabled` drives the calm "off" state.
+  const freqRef = useRef(1)
+  const [reviewDisabled, setReviewDisabled] = useState(false)
 
   // Inline-bold state: floating "B" button shown above any text selection
   // inside the highlight content. Lets users bold/unbold without entering edit mode.
@@ -222,6 +228,17 @@ function ReviewPageContent() {
         return
       }
 
+      // Resolve the user's review cadence + enabled state.
+      const settings = await getUserReviewSettings(supabase, user.id)
+      freqRef.current = settings.freq
+      setReviewDisabled(!settings.enabled)
+      if (!settings.enabled) {
+        // Daily review off: show a calm empty state, generate nothing.
+        setHighlights([])
+        setLoading(false)
+        return
+      }
+
       // Categories + pins in parallel. Highlights are fetched separately below
       // because they must be paginated (see note).
       const [catResult, pinResult] = await Promise.all([
@@ -244,11 +261,9 @@ function ReviewPageContent() {
       // because rows are ordered by rating/id (not date), today's highlights
       // get scattered across the cutoff, undercounting them on the all-done page.
       // In ahead mode, extend the upper bound from "today" to the last day of
-      // the month so the remaining days of the month are pulled in too.
-      const [ty, tm] = today.split('-').map(Number)
-      const lastDayOfMonth = new Date(ty, tm, 0).getDate()
-      const endOfMonth = `${today.substring(0, 8)}${String(lastDayOfMonth).padStart(2, '0')}`
-      const upperDate = aheadMode ? endOfMonth : today
+      // the CYCLE so the remaining days of the cycle are pulled in too.
+      const cycle = getCycleForDate(today, settings.freq)
+      const upperDate = aheadMode ? cycle.endDate : today
 
       const PAGE = 1000
       const fetchHighlightsPage = (from: number) =>
@@ -271,7 +286,7 @@ function ReviewPageContent() {
               )
             )
           `)
-          .gte('daily_summaries.date', `${today.substring(0, 8)}01`)
+          .gte('daily_summaries.date', cycle.startDate)
           .lte('daily_summaries.date', upperDate)
           .eq('daily_summaries.user_id', user.id)
           .eq('highlight.archived', false)
@@ -345,13 +360,13 @@ function ReviewPageContent() {
       const aheadRows: ReviewHighlight[] = []
       if (aheadMode) {
         const futureRows = allRows.filter((h) => h.date > today)
-        const month = today.substring(0, 7)
+        const cycleK = cycle.key
         const { ordered, frozenIds } = reconcileAheadOrder(
           futureRows,
-          readAheadOrder(user.id, month),
+          readAheadOrder(user.id, cycleK),
           (h) => h.highlight?.text?.length || 0
         )
-        writeAheadOrder(user.id, month, frozenIds)
+        writeAheadOrder(user.id, cycleK, frozenIds)
         aheadRows.push(...ordered)
       }
 
@@ -461,8 +476,7 @@ function ReviewPageContent() {
   const updateHighlightStats = async (
     highlightId: string,
     monthYear: string,
-    mo: number,
-    y: number
+    ratingDate: string
   ) => {
     const [{ data: allRatingsData }, { data: highlightData }, { data: lowRatingsWithDates }] = await Promise.all([
       supabase
@@ -489,13 +503,13 @@ function ReviewPageContent() {
       : 0
 
     const unarchivedAt = highlightData?.unarchived_at?.split('T')[0]
-    const lowMonths = new Set(
+    const lowCycles = new Set(
       ((lowRatingsWithDates || []) as Array<{ rating: string; daily_summary: { date: string } }>)
         .filter((r) => !unarchivedAt || r.daily_summary.date > unarchivedAt)
-        .map((r) => r.daily_summary.date.substring(0, 7))
+        .map((r) => cycleKeyForDate(r.daily_summary.date, freqRef.current))
     )
-    const prevMonth = mo === 1 ? `${y - 1}-12` : `${y}-${String(mo - 1).padStart(2, '0')}`
-    const shouldArchive = lowMonths.has(monthYear) && lowMonths.has(prevMonth)
+    const prevKey = prevCycle(getCycleForDate(ratingDate, freqRef.current)).key
+    const shouldArchive = lowCycles.has(monthYear) && lowCycles.has(prevKey)
 
     await (supabase.from('highlights') as any)
       .update({
@@ -519,10 +533,9 @@ function ReviewPageContent() {
       setHighlights((prev) => prev.map(applyRatingPatch))
       await updateCache((c) => ({ highlights: c.highlights.map(applyRatingPatch) }))
 
-      const [y, mo] = today.split('-').map(Number)
-      const monthYear = `${y}-${String(mo).padStart(2, '0')}`
+      const monthYear = cycleKeyForDate(today, freqRef.current)
 
-      // Critical path: save the rating AND mark this month as reviewed (source of truth).
+      // Critical path: save the rating AND mark this cycle as reviewed (source of truth).
       // Both must persist before we release the UI lock — otherwise closing the app
       // immediately after rating loses the highlight_months_reviewed row.
       await Promise.all([
@@ -545,7 +558,7 @@ function ReviewPageContent() {
       setRatingInProgress(false)
 
       // Background: stats/auto-archive (doesn't block UI)
-      updateHighlightStats(target.highlight_id, monthYear, mo, y).catch(console.error)
+      updateHighlightStats(target.highlight_id, monthYear, today).catch(console.error)
     } catch (error) {
       console.error('Error auto-rating highlight:', error)
       setHighlights((prev) =>
@@ -718,10 +731,9 @@ function ReviewPageContent() {
     }
 
     try {
-      const [y, mo] = today.split('-').map(Number)
-      const monthYear = `${y}-${String(mo).padStart(2, '0')}`
+      const monthYear = cycleKeyForDate(today, freqRef.current)
 
-      // Critical path: save the rating AND mark this month as reviewed (source of truth).
+      // Critical path: save the rating AND mark this cycle as reviewed (source of truth).
       // Both must persist before we release the UI lock — otherwise closing the app
       // immediately after rating loses the highlight_months_reviewed row.
       await Promise.all([
@@ -748,7 +760,7 @@ function ReviewPageContent() {
       setRatingInProgress(false)
 
       // Background: stats/auto-archive (doesn't block UI)
-      updateHighlightStats(current.highlight_id, monthYear, mo, y).catch(console.error)
+      updateHighlightStats(current.highlight_id, monthYear, today).catch(console.error)
     } catch (error) {
       console.error('Error rating highlight (falling back to offline queue):', error)
       // Network failed on weak signal — fall back to offline queueing
@@ -1574,6 +1586,25 @@ function ReviewPageContent() {
     )
   }
 
+  if (reviewDisabled) {
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center bg-gradient-to-br from-blue-50 to-indigo-100 dark:from-gray-900 dark:to-gray-800 px-6">
+        <p className="text-xl text-gray-600 dark:text-gray-300 mb-2 text-center">
+          Daily review is off.
+        </p>
+        <p className="text-sm text-gray-500 dark:text-gray-400 mb-6 text-center">
+          Turn it back on in Settings to resume resurfacing your highlights.
+        </p>
+        <Link
+          href="/settings"
+          className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition font-medium"
+        >
+          Go to Settings
+        </Link>
+      </div>
+    )
+  }
+
   if (highlights.length === 0) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center bg-gradient-to-br from-blue-50 to-indigo-100 dark:from-gray-900 dark:to-gray-800 px-6">
@@ -1599,10 +1630,10 @@ function ReviewPageContent() {
         </h2>
         <p className="text-gray-600 dark:text-gray-300 mb-6 text-center">
           {aheadMode
-            ? `You're ahead through the end of the month — all ${highlights.length} highlights reviewed.`
+            ? `You're ahead through the end of the cycle — all ${highlights.length} highlights reviewed.`
             : highlights.length === todayHighlights.length
             ? `You reviewed all ${todayHighlights.length} highlights for today.`
-            : `You're all caught up — ${todayHighlights.length} today plus ${highlights.length - todayHighlights.length} from earlier this month.`}
+            : `You're all caught up — ${todayHighlights.length} today plus ${highlights.length - todayHighlights.length} from earlier this cycle.`}
         </p>
         <div className="flex flex-col gap-3 w-full max-w-xs">
           {!aheadMode && (

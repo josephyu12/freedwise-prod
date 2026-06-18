@@ -1,16 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { getCycle, getCycleForDate, prevCycle, getUserReviewSettings } from '@/lib/cycle'
 
 const PAGE = 1000
 
 /**
  * POST /api/stats/reviewed-count/repair
- * Body: { month?: "YYYY-MM" }  (defaults to previous calendar month)
+ * Body: { cycle?: "YYYY-MM" }  (legacy: { month })  — defaults to previous cycle
  *
- * Backfills highlight_months_reviewed for the given month for any highlight that
- * has a rating in daily_summary_highlights for that month but no row in
- * highlight_months_reviewed. Use this after a failed sync (e.g. lost signal)
- * so "Last month reviewed" and other stats stay consistent.
+ * Backfills highlight_months_reviewed for the given CYCLE for any highlight that
+ * has a rating in daily_summary_highlights for that cycle but no ledger row. Use
+ * this after a failed sync (e.g. lost signal) so "Last cycle reviewed" stats stay
+ * consistent.
  */
 export async function POST(request: NextRequest) {
   try {
@@ -21,26 +22,32 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
-    let monthYear: string
+    const { freq } = await getUserReviewSettings(supabase, user.id)
+
+    let param = ''
     try {
       const body = await request.json().catch(() => ({}))
-      monthYear = body?.month
+      param = body?.cycle || body?.month || ''
     } catch {
-      monthYear = ''
-    }
-    if (!monthYear || typeof monthYear !== 'string') {
-      const now = new Date()
-      const lastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1)
-      monthYear = `${lastMonth.getFullYear()}-${String(lastMonth.getMonth() + 1).padStart(2, '0')}`
-    }
-    if (!/^\d{4}-\d{2}$/.test(monthYear)) {
-      return NextResponse.json({ error: 'Invalid month; use YYYY-MM' }, { status: 400 })
+      param = ''
     }
 
-    const [y, m] = monthYear.split('-').map(Number)
-    const startOfMonth = `${y}-${String(m).padStart(2, '0')}-01`
-    const daysInMonth = new Date(y, m, 0).getDate()
-    const endOfMonth = `${y}-${String(m).padStart(2, '0')}-${String(daysInMonth).padStart(2, '0')}`
+    let cycle
+    if (param && typeof param === 'string') {
+      if (!/^\d{4}-\d{2}$/.test(param)) {
+        return NextResponse.json({ error: 'Invalid cycle; use YYYY-MM' }, { status: 400 })
+      }
+      const [py, pm] = param.split('-').map(Number)
+      cycle = getCycle(py, pm, freq)
+    } else {
+      const now = new Date()
+      const todayIso = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
+      cycle = prevCycle(getCycleForDate(todayIso, freq))
+    }
+
+    const monthYear = cycle.key
+    const startOfMonth = cycle.startDate
+    const endOfMonth = cycle.endDate
 
     const { data: summaries } = await supabase
       .from('daily_summaries')
@@ -105,17 +112,16 @@ export async function POST(request: NextRequest) {
       )
     if (upsertError) throw upsertError
 
-    // Remove spurious current-month HMR rows: if the daily page previously used "today"
-    // when marking reviewed, it may have written the current month (e.g. 2026-02) while
-    // the user was actually reviewing last month (2026-01). Delete current-month HMR rows
-    // for highlights that have no rating in the current month's summaries.
+    // Remove spurious current-cycle HMR rows: if a rating path previously used "today"
+    // when marking reviewed, it may have written the current cycle key while the user was
+    // actually reviewing the previous cycle. Delete current-cycle HMR rows for highlights
+    // that have no rating in the current cycle's summaries.
     const now = new Date()
-    const currentYear = now.getFullYear()
-    const currentMonth = now.getMonth() + 1
-    const currentMonthYear = `${currentYear}-${String(currentMonth).padStart(2, '0')}`
-    const currentStart = `${currentYear}-${String(currentMonth).padStart(2, '0')}-01`
-    const currentEndDay = new Date(currentYear, currentMonth, 0).getDate()
-    const currentEnd = `${currentYear}-${String(currentMonth).padStart(2, '0')}-${String(currentEndDay).padStart(2, '0')}`
+    const todayIso = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
+    const currentCycle = getCycleForDate(todayIso, freq)
+    const currentMonthYear = currentCycle.key
+    const currentStart = currentCycle.startDate
+    const currentEnd = currentCycle.endDate
 
     const { data: currentSummaries } = await supabase
       .from('daily_summaries')

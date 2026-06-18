@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server'
 import { Client } from '@notionhq/client'
 import { createClient } from '@/lib/supabase/server'
 import { normalizeForBlockCompare } from '@/lib/notionBlocks'
+import { getCycleForDate, cycleSeed, getUserReviewSettings } from '@/lib/cycle'
+import { packIntoDates } from '@/lib/binPack'
 
 // Convert Notion rich text to HTML (same as in import route)
 function notionRichTextToHTML(richText: any[]): string {
@@ -417,260 +419,82 @@ export async function GET(request: NextRequest) {
       importedCount = newHighlights.length
     }
 
-    // Redistribute daily assignments if new highlights were imported
+    // Redistribute daily assignments if new highlights were imported.
+    // Re-tile the current review cycle: preserve rated days, re-pack all
+    // not-yet-reviewed highlights across the cycle's days. No-op when daily
+    // review is off for the user.
     if (importedCount > 0) {
       try {
-        const now = new Date()
-        const year = now.getFullYear()
-        const month = now.getMonth() + 1
-        const daysInMonth = new Date(year, month, 0).getDate()
-        const monthYear = `${year}-${String(month).padStart(2, '0')}`
+        const { freq, enabled } = await getUserReviewSettings(supabase, user.id)
+        if (enabled) {
+          const now = new Date()
+          const todayIso = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
+          const cycle = getCycleForDate(todayIso, freq)
 
-        // Redistribute so new imports get assigned to a day this month (including last day)
-        {
-
-          // Get all unarchived highlights for this user
-          const { data: allHighlightsData, error: highlightsError } = await supabase
+          const { data: allHighlightsData } = await supabase
             .from('highlights')
             .select('id, text, html_content')
             .eq('user_id', user.id)
             .eq('archived', false)
 
-          if (!highlightsError && allHighlightsData) {
-            // Get highlights that have already been reviewed for this month
-            const { data: reviewedHighlightsData } = await supabase
+          if (allHighlightsData) {
+            const { data: reviewedData } = await supabase
               .from('highlight_months_reviewed')
               .select('highlight_id')
-              .eq('month_year', monthYear)
+              .eq('month_year', cycle.key)
+            const reviewedIds = new Set((reviewedData || []).map((r: any) => r.highlight_id))
 
-            const reviewedHighlightIds = new Set(
-              (reviewedHighlightsData || []).map((r: any) => r.highlight_id)
-            )
-
-            // Get existing assignments to identify reviewed highlights (those with ratings)
-            const startDate = `${year}-${String(month).padStart(2, '0')}-01`
-            const endDate = `${year}-${String(month).padStart(2, '0')}-${String(daysInMonth).padStart(2, '0')}`
-
-            const { data: existingSummariesForFilter } = await supabase
+            const { data: existingSummaries } = await supabase
               .from('daily_summaries')
-              .select('id')
+              .select('id, date')
               .eq('user_id', user.id)
-              .gte('date', startDate)
-              .lte('date', endDate)
+              .gte('date', cycle.startDate)
+              .lte('date', cycle.endDate)
+            const typedSummaries = (existingSummaries || []) as Array<{ id: string; date: string }>
 
-            const reviewedHighlightIdsFromRatings = new Set<string>()
-            if (existingSummariesForFilter && existingSummariesForFilter.length > 0) {
-              const typedSummariesForFilter = existingSummariesForFilter as Array<{ id: string }>
-              const summaryIdsForFilter = typedSummariesForFilter.map((s) => s.id)
-              const { data: assignmentsWithRatings } = await supabase
+            const ratedIds = new Set<string>()
+            const nonRatedAssignmentIds: string[] = []
+            if (typedSummaries.length > 0) {
+              const summaryIds = typedSummaries.map((s) => s.id)
+              const { data: assignments } = await supabase
                 .from('daily_summary_highlights')
-                .select('highlight_id')
-                .in('daily_summary_id', summaryIdsForFilter)
-                .not('rating', 'is', null)
-              
-              if (assignmentsWithRatings) {
-                for (const assignment of assignmentsWithRatings as Array<{ highlight_id: string }>) {
-                  reviewedHighlightIdsFromRatings.add(assignment.highlight_id)
-                }
+                .select('id, highlight_id, rating')
+                .in('daily_summary_id', summaryIds)
+              for (const a of (assignments || []) as Array<{ id: string; highlight_id: string; rating: number | null }>) {
+                if (a.rating !== null) ratedIds.add(a.highlight_id)
+                else nonRatedAssignmentIds.push(a.id)
+              }
+              // Drop non-rated assignments so they can be re-packed across the cycle.
+              if (nonRatedAssignmentIds.length > 0) {
+                await supabase.from('daily_summary_highlights').delete().in('id', nonRatedAssignmentIds)
               }
             }
 
-            // Filter out highlights that have already been reviewed this month
-            // (either in highlight_months_reviewed or have a rating in daily_summary_highlights)
-            const allHighlights = (allHighlightsData as Array<{
-              id: string
-              text: string
-              html_content: string | null
-            }>).filter((h) => !reviewedHighlightIds.has(h.id) && !reviewedHighlightIdsFromRatings.has(h.id))
-
-            if (allHighlights.length > 0) {
-              // Calculate score (character count) for each highlight
-              const highlightsWithScore = allHighlights.map((h) => {
+            const toAssign = (allHighlightsData as Array<{ id: string; text: string; html_content: string | null }>)
+              .filter((h) => !reviewedIds.has(h.id) && !ratedIds.has(h.id))
+              .map((h) => {
                 const content = h.html_content || h.text || ''
-                const plainText = content.replace(/<[^>]*>/g, '')
-                const score = plainText.length
-                return { id: h.id, text: h.text, html_content: h.html_content, score }
+                return { id: h.id, text: h.text, html_content: h.html_content, score: content.replace(/<[^>]*>/g, '').length }
               })
 
-              // Seeded shuffle function for deterministic randomization
-              const seededShuffle = <T,>(array: T[], seed: number): T[] => {
-                const shuffled = [...array]
-                let random = seed
-                const seededRandom = () => {
-                  random = (random * 9301 + 49297) % 233280
-                  return random / 233280
-                }
-                for (let i = shuffled.length - 1; i > 0; i--) {
-                  const j = Math.floor(seededRandom() * (i + 1))
-                  ;[shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]]
-                }
-                return shuffled
-              }
-
-              const seed = year * 100 + month
-              const shuffledHighlights = seededShuffle(highlightsWithScore, seed)
-              const sortedHighlights = [...shuffledHighlights].sort((a, b) => b.score - a.score)
-              const totalScore = highlightsWithScore.reduce((sum, h) => sum + h.score, 0)
-              const targetScorePerDay = totalScore / daysInMonth
-
-              const days: Array<{
-                day: number
-                highlights: typeof highlightsWithScore
-                totalScore: number
-              }> = Array.from({ length: daysInMonth }, (_, i) => ({
-                day: i + 1,
-                highlights: [],
-                totalScore: 0,
-              }))
-
-              for (const highlight of sortedHighlights) {
-                let minDayIndex = 0
-                let minScore = days[0].totalScore
-                for (let i = 1; i < days.length; i++) {
-                  if (days[i].totalScore < minScore) {
-                    minScore = days[i].totalScore
-                    minDayIndex = i
-                  }
-                }
-                days[minDayIndex].highlights.push(highlight)
-                days[minDayIndex].totalScore += highlight.score
-              }
-
-              // Get existing assignments and preserve those for reviewed highlights
-              const { data: existingSummaries } = await supabase
-                .from('daily_summaries')
-                .select('id, date')
-                .eq('user_id', user.id)
-                .gte('date', startDate)
-                .lte('date', endDate)
-
-              // Get all existing assignments with their ratings to identify reviewed highlights
-              const preservedAssignments = new Map<string, { date: string; summaryId: string }>() // highlight_id -> { date, summaryId }
-              
-              // Type the summaries outside the if block so it's accessible later
-              const typedSummaries = (existingSummaries || []) as Array<{
-                id: string
-                date: string
-              }>
-              
-              if (existingSummaries && existingSummaries.length > 0) {
-                const summaryIds = typedSummaries.map((s) => s.id)
-                
-                // Get all assignments with ratings (reviewed highlights)
-                const { data: existingAssignments } = await supabase
-                  .from('daily_summary_highlights')
-                  .select('id, highlight_id, daily_summary_id, rating')
-                  .in('daily_summary_id', summaryIds)
-
-                // Preserve assignments for highlights that have been reviewed (have a rating)
-                let nonReviewedAssignmentIds: string[] = []
-                if (existingAssignments) {
-                  const typedAssignments = existingAssignments as Array<{
-                    id: string
-                    highlight_id: string
-                    daily_summary_id: string
-                    rating: number | null
-                  }>
-                  for (const assignment of typedAssignments) {
-                    if (assignment.rating !== null) {
-                      // This highlight has been reviewed, preserve its assignment
-                      const summary = typedSummaries.find((s) => s.id === assignment.daily_summary_id)
-                      if (summary) {
-                        preservedAssignments.set(assignment.highlight_id, {
-                          date: summary.date,
-                          summaryId: summary.id,
-                        })
-                      }
-                    }
-                  }
-
-                  // Remove assignments for non-reviewed highlights only
-                  nonReviewedAssignmentIds = typedAssignments
-                    .filter((a) => a.rating === null)
-                    .map((a) => a.id)
-                }
-
-                if (nonReviewedAssignmentIds.length > 0) {
-                  await supabase
-                    .from('daily_summary_highlights')
-                    .delete()
-                    .in('id', nonReviewedAssignmentIds)
-                }
-
-                // Delete daily_summaries that no longer have any assignments
-                const { data: remainingAssignments } = await supabase
-                  .from('daily_summary_highlights')
-                  .select('daily_summary_id')
-                  .in('daily_summary_id', summaryIds)
-
-                const typedRemainingAssignments = (remainingAssignments || []) as Array<{
-                  daily_summary_id: string
-                }>
-                const summariesWithAssignments = new Set(
-                  typedRemainingAssignments.map((a) => a.daily_summary_id)
-                )
-
-                const summariesToDelete = typedSummaries
-                  .filter((s) => !summariesWithAssignments.has(s.id))
-                  .map((s) => s.id)
-
-                if (summariesToDelete.length > 0) {
-                  await supabase
-                    .from('daily_summaries')
-                    .delete()
-                    .in('id', summariesToDelete)
-                }
-              }
-
-              // Account for preserved assignments when redistributing
-              const daysWithPreserved = days.map((day) => {
-                const date = `${year}-${String(month).padStart(2, '0')}-${String(day.day).padStart(2, '0')}`
-                
-                // Check if there are preserved assignments for this day
-                let preservedScore = 0
-                for (const [highlightId, preserved] of preservedAssignments.entries()) {
-                  if (preserved.date === date) {
-                    const highlight = highlightsWithScore.find((h) => h.id === highlightId)
-                    if (highlight) {
-                      preservedScore += highlight.score
-                    }
-                  }
-                }
-
-                return {
-                  ...day,
-                  totalScore: day.totalScore + preservedScore,
-                }
-              })
-
-              // Recreate assignments for non-reviewed highlights
-              for (const assignment of daysWithPreserved) {
-                if (assignment.highlights.length === 0) continue
-                const date = `${year}-${String(month).padStart(2, '0')}-${String(assignment.day).padStart(2, '0')}`
-                
-                // Check if summary already exists (might have preserved assignments)
-                let summaryId: string | null = null
-                const existingSummary = typedSummaries?.find((s) => s.date === date)
-                
-                if (existingSummary) {
-                  summaryId = existingSummary.id
-                } else {
+            if (toAssign.length > 0) {
+              const buckets = packIntoDates(toAssign, cycle.dates, cycleSeed(cycle))
+              for (const bucket of buckets) {
+                if (bucket.highlights.length === 0) continue
+                let summaryId: string | null = typedSummaries.find((s) => s.date === bucket.date)?.id ?? null
+                if (!summaryId) {
                   const { data: summaryData } = await (supabase
                     .from('daily_summaries') as any)
-                    .insert([{ date, user_id: user.id }])
+                    .insert([{ date: bucket.date, user_id: user.id }])
                     .select()
                     .single()
-                  if (summaryData) {
-                    summaryId = summaryData.id
-                  }
+                  if (summaryData) summaryId = summaryData.id
                 }
-                
                 if (summaryId) {
-                  const summaryHighlights = assignment.highlights.map((h) => ({
-                    daily_summary_id: summaryId,
-                    highlight_id: h.id,
-                  }))
-                  await (supabase.from('daily_summary_highlights') as any).insert(summaryHighlights)
+                  await (supabase.from('daily_summary_highlights') as any).upsert(
+                    bucket.highlights.map((h) => ({ daily_summary_id: summaryId, highlight_id: h.id })),
+                    { onConflict: 'daily_summary_id,highlight_id', ignoreDuplicates: true }
+                  )
                 }
               }
             }

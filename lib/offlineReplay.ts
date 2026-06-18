@@ -18,6 +18,7 @@ import { getPendingActions, removeAction } from './offlineStore'
 import { isEffectivelyOffline } from '@/hooks/useManualOffline'
 import { callRedistribute } from './redistribute'
 import { removeFromFutureMonths } from './removeFromFutureMonths'
+import { getUserFrequency, getCycleForDate, prevCycle, cycleKeyForDate } from './cycle'
 
 const REPLAYABLE = new Set<string>([
   'rate-review',
@@ -79,6 +80,15 @@ export async function replayPendingActions(
   }
   if (!userId) return idle()
 
+  // The user's cadence drives the ledger key + auto-archive window for rating
+  // replays (cycles, not bare months — identical when frequency = 1).
+  let freq = 1
+  try {
+    freq = await getUserFrequency(supabase, userId)
+  } catch {
+    /* default monthly */
+  }
+
   const all = await getPendingActions()
   const actions = all.filter((a) => REPLAYABLE.has(a.type))
 
@@ -88,7 +98,7 @@ export async function replayPendingActions(
 
   for (const action of actions) {
     try {
-      const touched = await replayOne(supabase, action, userId)
+      const touched = await replayOne(supabase, action, userId, freq)
       if (touched) touchedHighlights = true
       await removeAction(action.id!)
       processed++
@@ -115,13 +125,12 @@ export async function replayPendingActions(
 
 // Replay a single action. Returns true if it changed highlight content (so the
 // caller can refresh the Notion badge). Throws on any write/read failure.
-async function replayOne(supabase: any, action: any, userId: string): Promise<boolean> {
+async function replayOne(supabase: any, action: any, userId: string, freq: number): Promise<boolean> {
   switch (action.type) {
     case 'rate-review': {
-      // Archive rule: low in BOTH this month and the previous one.
+      // Archive rule: low in BOTH this cycle and the previous one.
       const { summaryHighlightId, highlightId, rating, today: actionToday } = action.params
-      const [y, mo] = actionToday.split('-').map(Number)
-      const monthYear = `${y}-${String(mo).padStart(2, '0')}`
+      const monthYear = cycleKeyForDate(actionToday, freq)
 
       const { error: rateError } = await supabase
         .from('daily_summary_highlights')
@@ -162,13 +171,13 @@ async function replayOne(supabase: any, action: any, userId: string): Promise<bo
         ratingValues.length > 0 ? ratingValues.reduce((a, b) => a + b, 0) / ratingValues.length : 0
 
       const unarchivedAt = (highlightRes.data as any)?.unarchived_at?.split('T')[0]
-      const lowMonths = new Set(
+      const lowCycles = new Set(
         ((lowRatingsRes.data || []) as Array<{ rating: string; daily_summary: { date: string } }>)
           .filter((r) => !unarchivedAt || r.daily_summary.date > unarchivedAt)
-          .map((r) => r.daily_summary.date.substring(0, 7))
+          .map((r) => cycleKeyForDate(r.daily_summary.date, freq))
       )
-      const prevMonth = mo === 1 ? `${y - 1}-12` : `${y}-${String(mo - 1).padStart(2, '0')}`
-      const shouldArchive = lowMonths.has(monthYear) && lowMonths.has(prevMonth)
+      const prevKey = prevCycle(getCycleForDate(actionToday, freq)).key
+      const shouldArchive = lowCycles.has(monthYear) && lowCycles.has(prevKey)
 
       const { error: statsError } = await supabase
         .from('highlights')
@@ -193,8 +202,7 @@ async function replayOne(supabase: any, action: any, userId: string): Promise<bo
       if (rateError) throw rateError
 
       if (rating !== null && summaryDate) {
-        const [y, mo] = summaryDate.split('-').map(Number)
-        const monthYear = `${y}-${String(mo).padStart(2, '0')}`
+        const monthYear = cycleKeyForDate(summaryDate, freq)
         const { error: reviewedError } = await supabase
           .from('highlight_months_reviewed')
           .upsert(

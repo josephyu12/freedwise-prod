@@ -3,6 +3,7 @@ import { createServerClient } from '@supabase/ssr'
 import { NextRequest, NextResponse } from 'next/server'
 import { format } from 'date-fns'
 import { Database } from '@/types/database'
+import { getUserReviewSettings } from '@/lib/cycle'
 
 // GET: Get the next unrated highlight for today's daily summary
 // Supports cookie auth (browser) and Bearer token auth (widget)
@@ -47,6 +48,12 @@ export async function GET(request: NextRequest) {
     // convention in app/api/review/widget/route.ts.
     const dateParam = request.nextUrl.searchParams.get('date')
     const today = dateParam || format(new Date(), 'yyyy-MM-dd')
+
+    // Daily review off: return nothing (calm "off" state), not stale assignments.
+    const { enabled } = await getUserReviewSettings(supabase, user.id)
+    if (!enabled) {
+      return NextResponse.json({ highlight: null, total: 0, reviewed: 0, enabled: false, allDone: true })
+    }
 
     // Get today's daily summary
     const { data: summaryData, error: summaryError } = await supabase

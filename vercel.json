@@ -1,8 +1,8 @@
 {
   "crons": [
     {
-      "path": "/api/daily/prepare-next-month",
-      "schedule": "0 0 24 * *"
+      "path": "/api/daily/prepare-next-cycle",
+      "schedule": "0 0 * * *"
     }
   ]
 }

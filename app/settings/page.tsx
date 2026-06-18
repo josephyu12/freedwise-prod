@@ -4,12 +4,18 @@ import { useState, useEffect, useCallback } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { useRouter } from 'next/navigation'
 import NotionSyncButton from '@/components/NotionSyncButton'
+import { getUserReviewSettings, FREQUENCY_OPTIONS } from '@/lib/cycle'
 
 interface NotionSettings {
   id?: string
   notion_api_key: string
   notion_page_id: string
   enabled: boolean
+}
+
+function localDateString(): string {
+  const n = new Date()
+  return `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, '0')}-${String(n.getDate()).padStart(2, '0')}`
 }
 
 export default function SettingsPage() {
@@ -29,6 +35,11 @@ export default function SettingsPage() {
   const [lastMonthReviewedCount, setLastMonthReviewedCount] = useState<number | null>(null)
   const [lastMonthLabel, setLastMonthLabel] = useState<string>('')
   const [syncingRepair, setSyncingRepair] = useState(false)
+  // Review cadence + on/off.
+  const [reviewEnabled, setReviewEnabled] = useState(true)
+  const [frequency, setFrequency] = useState(1)
+  const [reviewBusy, setReviewBusy] = useState(false)
+  const [showFreqConfirm, setShowFreqConfirm] = useState<number | null>(null)
   const [unreviewedHighlights, setUnreviewedHighlights] = useState<Array<{
     id: string
     textSnippet: string
@@ -81,7 +92,9 @@ export default function SettingsPage() {
       const data = await res.json()
       setLastMonthReviewedCount(data.count ?? 0)
       setUnreviewedHighlights(Array.isArray(data.unreviewedHighlights) ? data.unreviewedHighlights : [])
-      if (data.month) {
+      if (data.cycleLabel) {
+        setLastMonthLabel(data.cycleLabel)
+      } else if (data.month) {
         const [y, m] = data.month.split('-')
         const d = new Date(parseInt(y, 10), parseInt(m, 10) - 1, 1)
         setLastMonthLabel(d.toLocaleString('default', { month: 'long', year: 'numeric' }))
@@ -90,6 +103,83 @@ export default function SettingsPage() {
       // ignore
     }
   }, [])
+
+  const loadReviewSettings = useCallback(async () => {
+    try {
+      const { data: { user } } = await supabase.auth.getUser()
+      if (!user) return
+      const s = await getUserReviewSettings(supabase, user.id)
+      setReviewEnabled(s.enabled)
+      setFrequency(s.freq)
+    } catch {
+      /* keep defaults */
+    }
+  }, [supabase])
+
+  useEffect(() => {
+    loadReviewSettings()
+  }, [loadReviewSettings])
+
+  // Toggle daily review on/off.
+  const handleToggleReview = useCallback(async (next: boolean) => {
+    if (!next) {
+      if (!confirm('Turn daily review off? New highlights won’t resurface until you turn it back on. Your past reviews are kept.')) {
+        return
+      }
+    }
+    setReviewBusy(true)
+    setMessage(null)
+    try {
+      const res = await fetch('/api/daily/set-enabled', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: next, localDate: localDateString() }),
+      })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        throw new Error(data.error || 'Failed to update setting')
+      }
+      setReviewEnabled(next)
+      // Turning ON: re-portion the current cycle at the stored frequency.
+      if (next) {
+        const today = localDateString()
+        const [y, m] = today.split('-').map(Number)
+        await fetch('/api/daily/assign', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ year: y, month: m, fromDate: today }),
+        })
+      }
+      setMessage({ type: 'success', text: next ? 'Daily review turned on.' : 'Daily review turned off. Your past reviews are kept.' })
+    } catch (error: any) {
+      setMessage({ type: 'error', text: error.message || 'Failed to update setting' })
+    } finally {
+      setReviewBusy(false)
+    }
+  }, [])
+
+  // Apply a new review frequency (re-tiles the current cycle, D7).
+  const handleApplyFrequency = useCallback(async (value: number) => {
+    setShowFreqConfirm(null)
+    setReviewBusy(true)
+    setMessage(null)
+    try {
+      const res = await fetch('/api/daily/apply-frequency', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ frequency: value, localDate: localDateString() }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.error || 'Failed to apply frequency')
+      setFrequency(value)
+      await loadLastMonthReviewedCount()
+      setMessage({ type: 'success', text: 'Review frequency updated.' })
+    } catch (error: any) {
+      setMessage({ type: 'error', text: error.message || 'Failed to apply frequency' })
+    } finally {
+      setReviewBusy(false)
+    }
+  }, [loadLastMonthReviewedCount])
 
   const handleSyncReviewedStatus = useCallback(async () => {
     setSyncingRepair(true)
@@ -107,8 +197,8 @@ export default function SettingsPage() {
       }
       await loadLastMonthReviewedCount()
       const parts = []
-      if (data.repaired > 0) parts.push(`${data.repaired} highlight(s) marked as reviewed for last month`)
-      if (data.removedSpuriousCurrentMonth > 0) parts.push(`${data.removedSpuriousCurrentMonth} incorrect current-month entries removed`)
+      if (data.repaired > 0) parts.push(`${data.repaired} highlight(s) marked as reviewed for last cycle`)
+      if (data.removedSpuriousCurrentMonth > 0) parts.push(`${data.removedSpuriousCurrentMonth} incorrect current-cycle entries removed`)
       setMessage({
         type: 'success',
         text: parts.length > 0 ? `Synced: ${parts.join('. ')}.` : (data.message || 'No missing entries to sync.'),
@@ -176,16 +266,18 @@ export default function SettingsPage() {
     setShowResetConfirm(false)
 
     try {
-      const res1 = await fetch('/api/daily/reset-month', { method: 'POST' })
+      const today = localDateString()
+      const res1 = await fetch('/api/daily/reset-cycle', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ localDate: today }),
+      })
       if (!res1.ok) {
         const data = await res1.json()
         throw new Error(data.error || 'Reset failed')
       }
 
-      const now = new Date()
-      const year = now.getFullYear()
-      const month = now.getMonth() + 1
-
+      const [year, month] = today.split('-').map(Number)
       const res2 = await fetch('/api/daily/assign', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -196,7 +288,7 @@ export default function SettingsPage() {
         throw new Error(data.error || 'Reassign failed')
       }
 
-      setMessage({ type: 'success', text: 'Daily highlights reset and reassigned for this month.' })
+      setMessage({ type: 'success', text: 'Daily highlights reset and reassigned for this cycle.' })
     } catch (error: any) {
       setMessage({ type: 'error', text: error.message || 'Failed to reset daily highlights' })
     } finally {
@@ -418,7 +510,98 @@ export default function SettingsPage() {
             )}
           </div>
 
-          {/* Last month reviewed */}
+          {/* Daily review cadence */}
+          <div className="glass-card p-6 sm:p-8 mb-6">
+            <div className="flex items-center gap-3 mb-1">
+              <div className="w-9 h-9 rounded-lg bg-blue-50 dark:bg-blue-500/10 flex items-center justify-center">
+                <svg className="w-5 h-5 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                </svg>
+              </div>
+              <h2 className="text-xl font-semibold" style={{ color: 'var(--text-primary)' }}>Daily review</h2>
+            </div>
+            <p className="text-sm mb-5 ml-12" style={{ color: 'var(--text-tertiary)' }}>
+              Choose how often your whole library cycles through daily review — or turn it off entirely.
+            </p>
+
+            {/* On/off toggle */}
+            <div className="flex items-center justify-between mb-5">
+              <div>
+                <label htmlFor="review-enabled" className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>
+                  Enable daily review
+                </label>
+                <p className="text-xs mt-0.5" style={{ color: 'var(--text-tertiary)' }}>
+                  When off, no new highlights are resurfaced. Past reviews are kept.
+                </p>
+              </div>
+              <button
+                type="button"
+                id="review-enabled"
+                disabled={reviewBusy}
+                onClick={() => handleToggleReview(!reviewEnabled)}
+                className={`toggle-switch ${reviewEnabled ? 'active' : ''}`}
+                role="switch"
+                aria-checked={reviewEnabled}
+              />
+            </div>
+
+            {/* Frequency selector */}
+            <div className={reviewEnabled ? '' : 'opacity-50 pointer-events-none'}>
+              <label className="block text-sm font-medium mb-2" style={{ color: 'var(--text-primary)' }}>
+                Review frequency
+              </label>
+              <div className="flex flex-wrap gap-2">
+                {FREQUENCY_OPTIONS.map((opt) => (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    disabled={reviewBusy || !reviewEnabled}
+                    onClick={() => {
+                      if (opt.value === frequency) return
+                      setShowFreqConfirm(opt.value)
+                    }}
+                    className={`px-3 py-1.5 rounded-full text-sm transition ${
+                      opt.value === frequency
+                        ? 'bg-blue-600 text-white'
+                        : 'bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-600'
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+              {showFreqConfirm !== null && (
+                <div className="mt-4 p-4 rounded-lg bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/20">
+                  <p className="text-sm text-amber-800 dark:text-amber-300 mb-3">
+                    Change review frequency to{' '}
+                    <strong>{FREQUENCY_OPTIONS.find((o) => o.value === showFreqConfirm)?.label}</strong>?
+                    Highlights you’ve already reviewed this period stay done; the rest are re-spread
+                    across the new cycle. A partially-reviewed cycle can’t be re-tiled perfectly.
+                  </p>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      disabled={reviewBusy}
+                      onClick={() => handleApplyFrequency(showFreqConfirm)}
+                      className="btn-primary !px-4 !py-2 text-sm"
+                    >
+                      {reviewBusy ? 'Applying…' : 'Apply new frequency'}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={reviewBusy}
+                      onClick={() => setShowFreqConfirm(null)}
+                      className="btn-secondary text-sm"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Last cycle reviewed */}
           <div className="glass-card p-6 sm:p-8 mb-6">
             <div className="flex items-center gap-3 mb-4">
               <div className="w-9 h-9 rounded-lg bg-violet-50 dark:bg-violet-500/10 flex items-center justify-center">
@@ -426,7 +609,7 @@ export default function SettingsPage() {
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
                 </svg>
               </div>
-              <h2 className="text-xl font-semibold" style={{ color: 'var(--text-primary)' }}>Last month reviewed</h2>
+              <h2 className="text-xl font-semibold" style={{ color: 'var(--text-primary)' }}>Last cycle reviewed</h2>
             </div>
             <p className="text-sm mb-4" style={{ color: 'var(--text-secondary)' }}>
               {lastMonthLabel ? (
@@ -493,7 +676,7 @@ export default function SettingsPage() {
                   disabled={syncingRepair}
                   className="btn-secondary text-xs"
                 >
-                  {syncingRepair ? 'Syncing…' : 'Sync reviewed status for last month'}
+                  {syncingRepair ? 'Syncing…' : 'Sync reviewed status for last cycle'}
                 </button>
               </div>
             )}
@@ -510,15 +693,15 @@ export default function SettingsPage() {
               <h2 className="text-xl font-semibold" style={{ color: 'var(--text-primary)' }}>Reset daily highlights</h2>
             </div>
             <p className="text-sm mb-4" style={{ color: 'var(--text-secondary)' }}>
-              This will remove all ratings and &quot;reviewed&quot; status for the current month, then reassign all highlights evenly. You will need to review them again.
+              This will remove all ratings and &quot;reviewed&quot; status for the current cycle, then reassign all highlights evenly. You will need to review them again.
             </p>
             <div className="px-3 py-2 rounded-lg text-xs mb-4 bg-amber-50 dark:bg-amber-500/10 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-500/20">
-              ⚠️ This cannot be undone. All progress for this month will be lost.
+              ⚠️ This cannot be undone. All progress for this cycle will be lost.
             </div>
             {showResetConfirm && (
               <div className="mb-4 p-4 rounded-lg bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/20">
                 <p className="text-sm text-red-700 dark:text-red-300 mb-3">
-                  Click &quot;Yes, reset monthly highlights&quot; again to confirm.
+                  Click &quot;Yes, reset this cycle&apos;s highlights&quot; again to confirm.
                 </p>
                 <div className="flex gap-2">
                   <button
@@ -527,7 +710,7 @@ export default function SettingsPage() {
                     disabled={resettingDaily}
                     className="btn-danger text-sm"
                   >
-                    {resettingDaily ? 'Resetting…' : 'Yes, reset monthly highlights'}
+                    {resettingDaily ? 'Resetting…' : 'Yes, reset this cycle’s highlights'}
                   </button>
                   <button
                     type="button"
@@ -547,7 +730,7 @@ export default function SettingsPage() {
                 disabled={resettingDaily}
                 className="btn-danger"
               >
-                {resettingDaily ? 'Resetting…' : 'Reset all daily highlights for this month'}
+                {resettingDaily ? 'Resetting…' : 'Reset all daily highlights for this cycle'}
               </button>
             )}
           </div>

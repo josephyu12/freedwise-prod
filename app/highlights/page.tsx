@@ -10,6 +10,7 @@ import { useUnsavedChanges } from '@/hooks/useUnsavedChanges'
 import { Pin, PinOff } from 'lucide-react'
 import { addToNotionSyncQueue } from '@/lib/notionSyncQueue'
 import NotionSyncButton from '@/components/NotionSyncButton'
+import { getUserReviewSettings, getCycleForDate } from '@/lib/cycle'
 import { callRedistribute } from '@/lib/redistribute'
 import { parseIntoParagraphs, groupParagraphsByDividers, ParagraphBlock, splitHtmlByBlankLines } from '@/lib/splitHighlightText'
 import { renderHighlightHtml } from '@/lib/renderHighlightHtml'
@@ -228,15 +229,17 @@ export default function HighlightsPage() {
 
       const data = allHighlights
 
-      // Get current month for filtering (using local timezone)
+      // Current review CYCLE for filtering (using local timezone). For monthly
+      // cadence the cycle key/window is the calendar month, identical to before.
       const now = new Date()
-      const year = now.getFullYear()
-      const month = now.getMonth() + 1
-      const currentMonth = `${year}-${String(month).padStart(2, '0')}`
-      const currentMonthStart = `${year}-${String(month).padStart(2, '0')}-01`
-      const currentMonthEnd = `${year}-${String(month).padStart(2, '0')}-${String(new Date(year, month, 0).getDate()).padStart(2, '0')}`
+      const todayIso = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
+      const { freq } = await getUserReviewSettings(supabase, user.id)
+      const currentCycle = getCycleForDate(todayIso, freq)
+      const currentMonth = currentCycle.key
+      const currentMonthStart = currentCycle.startDate
+      const currentMonthEnd = currentCycle.endDate
 
-      // Small focused query: only this month's daily_summaries + their assignments.
+      // Small focused query: only this cycle's daily_summaries + their assignments.
       // Replaces the heavy nested join from the previous version of loadHighlights.
       const currentAssignments = new Map<string, { date: string; rating: 'low' | 'med' | 'high' | null }>()
       try {

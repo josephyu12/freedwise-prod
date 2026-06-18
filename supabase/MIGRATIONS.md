@@ -59,13 +59,24 @@ These migrations can be applied individually to update existing databases:
      dedup fetch, which used to dominate save latency.
    - **Date:** 2026-05-11
 
-9. **`migration_user_id_not_null.sql`** (Latest)
+9. **`migration_user_id_not_null.sql`**
    - Enforces `NOT NULL` on `user_id` for `highlights`, `daily_summaries`, and
      `categories`. A NULL `user_id` is invisible under RLS (matches no caller),
      so it's both silent data loss and a sign of an owner-less write path.
    - Safe on dirty data: skips any table that still has orphan rows and reports
      the count instead of failing. Idempotent — re-run after cleanup.
    - **Date:** 2026-06-05
+
+10. **`migration_review_frequency.sql`** (Latest)
+   - Adds `user_review_settings` (`frequency_months` 1–12, `daily_review_enabled`)
+     for configurable per-user review cadence (monthly … yearly) and an on/off
+     switch for daily review.
+   - Reinterprets `highlight_months_reviewed.month_year` as a generic "cycle key"
+     (the cycle's start month). For `frequency_months = 1` (the default) the cycle
+     key IS the calendar month, so **all existing rows stay valid — no data
+     migration**. Defaults (monthly + enabled) mean existing users are unaffected.
+   - Idempotent; RLS-correct.
+   - **Date:** 2026-06-18
 
 ## Migration Order
 
@@ -81,6 +92,7 @@ If applying migrations incrementally, use this order:
 8. `migration_fix_last_resurfaced_tz.sql`
 9. `migration_dedupe_text_unique.sql`
 10. `migration_user_id_not_null.sql`
+11. `migration_review_frequency.sql`
 
 ## Usage
 
@@ -102,6 +114,7 @@ If applying migrations incrementally, use this order:
 \i migration_fix_last_resurfaced_tz.sql
 \i migration_dedupe_text_unique.sql
 \i migration_user_id_not_null.sql
+\i migration_review_frequency.sql
 ```
 
 ## Notes
