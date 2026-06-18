@@ -4,6 +4,8 @@
 // offline queue) so the lite page can rate via a plain <form> server action
 // with zero client JS — the point of the weak-signal mode.
 
+import { getCycleForDate, prevCycle, cycleKeyForDate, getUserFrequency } from '@/lib/cycle'
+
 type Rating = 'low' | 'med' | 'high'
 
 export async function rateHighlightServer(
@@ -14,14 +16,23 @@ export async function rateHighlightServer(
     highlightId: string
     rating: Rating
     // The date (YYYY-MM-DD) of the daily summary this assignment belongs to.
-    // The review month is derived from this, matching /daily's behavior so a
-    // catch-up/ahead day records its own month rather than "today".
+    // The review cycle is derived from this, matching /daily's behavior so a
+    // catch-up/ahead day records its own cycle rather than "today".
     summaryDate: string
   }
 ) {
   const { summaryHighlightId, highlightId, rating, summaryDate } = params
-  const [y, mo] = summaryDate.split('-').map(Number)
-  const monthYear = `${y}-${String(mo).padStart(2, '0')}`
+
+  // Resolve the user's cadence so the ledger key + auto-archive use cycles, not
+  // bare calendar months (identical to months when frequency = 1).
+  let freq = 1
+  try {
+    const { data } = await supabase.auth.getUser()
+    if (data?.user?.id) freq = await getUserFrequency(supabase, data.user.id)
+  } catch {
+    /* default monthly */
+  }
+  const monthYear = cycleKeyForDate(summaryDate, freq)
 
   // Critical path: save the rating AND mark this month reviewed. RLS ensures the
   // update only touches rows the user owns, so the id alone is a safe key.
@@ -72,13 +83,13 @@ export async function rateHighlightServer(
       : 0
 
   const unarchivedAt = (highlightRes.data as any)?.unarchived_at?.split('T')[0]
-  const lowMonths = new Set(
+  const lowCycles = new Set(
     ((lowRatingsRes.data || []) as Array<{ rating: string; daily_summary: { date: string } }>)
       .filter((r) => !unarchivedAt || r.daily_summary.date > unarchivedAt)
-      .map((r) => r.daily_summary.date.substring(0, 7))
+      .map((r) => cycleKeyForDate(r.daily_summary.date, freq))
   )
-  const prevMonth = mo === 1 ? `${y - 1}-12` : `${y}-${String(mo - 1).padStart(2, '0')}`
-  const shouldArchive = lowMonths.has(monthYear) && lowMonths.has(prevMonth)
+  const prevKey = prevCycle(getCycleForDate(summaryDate, freq)).key
+  const shouldArchive = lowCycles.has(monthYear) && lowCycles.has(prevKey)
 
   const { error: statsError } = await supabase
     .from('highlights')

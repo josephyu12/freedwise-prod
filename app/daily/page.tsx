@@ -15,6 +15,7 @@ import { callRedistribute } from '@/lib/redistribute'
 import { parseIntoParagraphs, groupParagraphsByDividers, ParagraphBlock } from '@/lib/splitHighlightText'
 import { renderHighlightHtml } from '@/lib/renderHighlightHtml'
 import { computeMonthReviewStatus } from '@/lib/monthReviewStatus'
+import { getUserReviewSettings, getCycleForDate, nextCycle, cycleKeyForDate } from '@/lib/cycle'
 import { useOfflineStatus } from '@/hooks/useOfflineStatus'
 import { isEffectivelyOffline } from '@/hooks/useManualOffline'
 import { useOfflineSyncState } from '@/hooks/useOfflineSyncState'
@@ -236,6 +237,10 @@ export default function DailyPage() {
     setDisplayMonth(startOfMonth(newMonth))
   }, [])
   const [monthsWithAssignments, setMonthsWithAssignments] = useState<Set<string>>(new Set())
+  // Review cadence + on/off. freq is held in a ref so async helpers read the
+  // latest without re-binding; reviewEnabled drives the "off" empty state.
+  const freqRef = useRef(1)
+  const [reviewEnabled, setReviewEnabled] = useState(true)
   const supabase = createClient()
   const router = useRouter()
 
@@ -314,6 +319,12 @@ export default function DailyPage() {
       const { data: { user } } = await supabase.auth.getUser()
       if (!user) return
 
+      // Resolve cadence + on/off. When review is OFF, generate nothing.
+      const { freq, enabled } = await getUserReviewSettings(supabase, user.id)
+      freqRef.current = freq
+      setReviewEnabled(enabled)
+      if (!enabled) return
+
       // Check if summary exists
       const { data: existing, error: checkError } = await supabase
         .from('daily_summaries')
@@ -325,79 +336,65 @@ export default function DailyPage() {
       if (checkError && checkError.code !== 'PGRST116') throw checkError
       if (existing) return
 
-      // Get the current month in YYYY-MM format
-      const date = new Date(selectedDate)
-      const year = date.getFullYear()
-      const month = date.getMonth() + 1
-      const currentMonth = `${year}-${String(month).padStart(2, '0')}`
-      const daysInMonth = new Date(year, month, 0).getDate()
-      const dayOfMonth = date.getDate()
+      // The cycle that contains the selected date.
+      const cycle = getCycleForDate(selectedDate, freq)
+      const [cy, cm] = cycle.key.split('-').map(Number)
 
-      // Check if assignments exist for this month
-      const startDate = `${year}-${String(month).padStart(2, '0')}-01`
-      const endDate = `${year}-${String(month).padStart(2, '0')}-${String(daysInMonth).padStart(2, '0')}`
-      
-      const { data: monthSummaries, error: monthError } = await supabase
+      // Are there assignments anywhere in this cycle yet?
+      const { data: cycleSummaries, error: cycleError } = await supabase
         .from('daily_summaries')
         .select('id, date')
         .eq('user_id', user.id)
-        .gte('date', startDate)
-        .lte('date', endDate)
+        .gte('date', cycle.startDate)
+        .lte('date', cycle.endDate)
+      if (cycleError) throw cycleError
 
-      if (monthError) throw monthError
-
-      // If no assignments exist for this month, create them
-      if (!monthSummaries || monthSummaries.length === 0) {
-        // If we're building the real current month for the first time mid-month, only
-        // distribute across remaining days (today → end of month) so highlights aren't
-        // wasted on days that have already passed — same behavior as adding highlights
-        // incrementally via /redistribute. For past/future months, build the full month.
+      if (!cycleSummaries || cycleSummaries.length === 0) {
+        // Building the current cycle for the first time mid-cycle: only distribute
+        // across remaining days (today → end of cycle) so highlights aren't wasted
+        // on days that have already passed. For a past/future cycle, build it whole.
         const now = new Date()
-        const isCurrentMonth = year === now.getFullYear() && month === now.getMonth() + 1
-        const startDay = isCurrentMonth ? now.getDate() : 1
+        const todayIso = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
+        const isCurrentCycle = todayIso >= cycle.startDate && todayIso <= cycle.endDate
+        const fromDate = isCurrentCycle ? todayIso : cycle.startDate
 
-        // Call the assignment API to create assignments for the month
         const response = await fetch('/api/daily/assign', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ year, month, startDay }),
+          body: JSON.stringify({ year: cy, month: cm, fromDate }),
         })
-
         if (!response.ok) {
           const error = await response.json()
           throw new Error(error.error || 'Failed to create assignments')
         }
       }
 
-      // Also check and prepare next month if we're in the last week of the current month
-      const daysUntilMonthEnd = daysInMonth - dayOfMonth
-      if (daysUntilMonthEnd <= 7) {
-        // Prepare next month's assignments
-        const nextMonthDate = new Date(year, month, 1) // First day of next month
-        const nextYear = nextMonthDate.getFullYear()
-        const nextMonth = nextMonthDate.getMonth() + 1
-        const nextMonthDays = new Date(nextYear, nextMonth, 0).getDate()
-        const nextMonthStart = `${nextYear}-${String(nextMonth).padStart(2, '0')}-01`
-        const nextMonthEnd = `${nextYear}-${String(nextMonth).padStart(2, '0')}-${String(nextMonthDays).padStart(2, '0')}`
-
-        const { data: nextMonthSummaries } = await supabase
+      // Lazily prepare the NEXT cycle when we're within the last week of this one.
+      const now = new Date()
+      const todayIso = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
+      const msPerDay = 86400000
+      const daysUntilCycleEnd = Math.round(
+        (new Date(`${cycle.endDate}T00:00:00`).getTime() - new Date(`${todayIso}T00:00:00`).getTime()) / msPerDay
+      )
+      if (daysUntilCycleEnd >= 0 && daysUntilCycleEnd <= 7) {
+        const next = nextCycle(cycle)
+        const [ny, nm] = next.key.split('-').map(Number)
+        const { data: nextSummaries } = await supabase
           .from('daily_summaries')
           .select('id')
           .eq('user_id', user.id)
-          .gte('date', nextMonthStart)
-          .lte('date', nextMonthEnd)
-
-        // If next month doesn't have assignments yet, create them
-        if (!nextMonthSummaries || nextMonthSummaries.length === 0) {
+          .gte('date', next.startDate)
+          .lte('date', next.endDate)
+          .limit(1)
+        if (!nextSummaries || nextSummaries.length === 0) {
           try {
             await fetch('/api/daily/assign', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ year: nextYear, month: nextMonth }),
+              body: JSON.stringify({ year: ny, month: nm }),
             })
           } catch (error) {
-            console.warn('Failed to prepare next month assignments:', error)
-            // Don't block current month's summary if next month prep fails
+            console.warn('Failed to prepare next cycle assignments:', error)
           }
         }
       }
@@ -744,6 +741,23 @@ export default function DailyPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [date]) // Only depend on date - we check displayMonth inside but don't want to re-run when it changes
 
+  // Load review cadence + on/off on mount so the "off" state renders even before
+  // (or without) a network load. ensureDailySummary keeps these fresh online.
+  useEffect(() => {
+    const loadReviewSettings = async () => {
+      try {
+        const { data: { user } } = await supabase.auth.getUser()
+        if (!user) return
+        const s = await getUserReviewSettings(supabase, user.id)
+        freqRef.current = s.freq
+        setReviewEnabled(s.enabled)
+      } catch {
+        /* keep defaults (monthly, enabled) */
+      }
+    }
+    loadReviewSettings()
+  }, [supabase])
+
   // Load pinned highlights
   useEffect(() => {
     const loadPinnedHighlights = async () => {
@@ -855,11 +869,11 @@ export default function DailyPage() {
 
       if (updateError) throw updateError
 
-      // Mark highlight as reviewed for the month of the summary being reviewed (not "today"),
-      // so reviewing January's assignments in February records 2026-01, not 2026-02.
+      // Mark highlight as reviewed for the CYCLE of the summary being reviewed (not
+      // "today"), so reviewing an earlier day's assignment records that day's cycle.
+      // For monthly cadence the cycle key is the calendar month, identical to before.
       if (rating !== null && summary?.date) {
-        const [y, mo] = summary.date.split('-').map(Number)
-        const monthYear = `${y}-${String(mo).padStart(2, '0')}`
+        const monthYear = cycleKeyForDate(summary.date, freqRef.current)
         await (supabase
           .from('highlight_months_reviewed') as any)
           .upsert(
@@ -1608,6 +1622,33 @@ export default function DailyPage() {
       <div className="min-h-screen flex items-center justify-center">
         <div className="text-xl">Loading...</div>
       </div>
+    )
+  }
+
+  if (!reviewEnabled) {
+    return (
+      <main className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 dark:from-gray-900 dark:to-gray-800">
+        <div className="container mx-auto px-4 py-8">
+          <div className="max-w-4xl mx-auto">
+            <h1 className="text-2xl sm:text-3xl lg:text-4xl font-bold text-gray-900 dark:text-white mb-6">
+              Daily Summary
+            </h1>
+            <div className="bg-white dark:bg-gray-800 p-8 rounded-lg shadow-lg text-center">
+              <p className="text-lg text-gray-700 dark:text-gray-200 mb-2">Daily review is off.</p>
+              <p className="text-sm text-gray-500 dark:text-gray-400 mb-6">
+                Your past reviews are kept. Turn daily review back on to resume resurfacing
+                your highlights.
+              </p>
+              <Link
+                href="/settings"
+                className="inline-block px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition font-medium"
+              >
+                Go to Settings
+              </Link>
+            </div>
+          </div>
+        </div>
+      </main>
     )
   }
 

@@ -2,6 +2,7 @@ import { createClient } from '@supabase/supabase-js'
 import { NextRequest, NextResponse } from 'next/server'
 import { format } from 'date-fns'
 import { Database } from '@/types/database'
+import { getUserReviewSettings, getCycleForDate } from '@/lib/cycle'
 import crypto from 'crypto'
 
 // Verify the HMAC-signed widget token and extract the user ID
@@ -63,6 +64,12 @@ export async function GET(request: NextRequest) {
 
     // Use date from client (their local timezone) or fall back to server time
     const today = dateParam || format(new Date(), 'yyyy-MM-dd')
+
+    // Daily review off: render a calm "off" state, not stale assignments.
+    const { freq, enabled } = await getUserReviewSettings(supabase, userId)
+    if (!enabled) {
+      return NextResponse.json({ highlight: null, total: 0, reviewed: 0, enabled: false, allDone: true })
+    }
 
     // Get today's daily summary
     const { data: summaryData, error: summaryError } = await supabase
@@ -128,8 +135,8 @@ export async function GET(request: NextRequest) {
     if (nextError) throw nextError
 
     if (!unratedHighlights || unratedHighlights.length === 0) {
-      // Today is done — look for unrated highlights from earlier in the month
-      const firstOfMonth = `${today.substring(0, 8)}01`
+      // Today is done — look for unrated highlights from earlier in the CYCLE
+      const cycleStart = getCycleForDate(today, freq).startDate
 
       const { data: catchUp, error: catchUpError } = await supabase
         .from('daily_summary_highlights')
@@ -153,7 +160,7 @@ export async function GET(request: NextRequest) {
         `
         )
         .eq('daily_summary.user_id', userId)
-        .gte('daily_summary.date', firstOfMonth)
+        .gte('daily_summary.date', cycleStart)
         .lt('daily_summary.date', today)
         .eq('highlight.archived', false)
         .is('rating', null)
