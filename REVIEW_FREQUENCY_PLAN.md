@@ -1,7 +1,7 @@
 # Configurable Review Frequency — Implementation Plan
 
 **Status:** Design / not yet implemented
-**Goal:** Let a user review their highlights on a cadence other than monthly — e.g. **every 2 months (bimonthly)** or **every 3 months (quarterly)** — instead of the hardcoded one-calendar-month cycle. And let a user **turn daily review off entirely** if they don't want any resurfacing.
+**Goal:** Let a user review their highlights on a cadence other than monthly — e.g. **every 2 months (bimonthly)**, **every 3 months (quarterly)**, all the way up to **once a year** — instead of the hardcoded one-calendar-month cycle. And let a user **turn daily review off entirely** if they don't want any resurfacing.
 **Author:** prepared as a future-implementation spec. Read this top-to-bottom before writing any code.
 
 ---
@@ -10,7 +10,7 @@
 
 Today the app equates **one review cycle == one calendar month**. Every highlight resurfaces exactly once per calendar month, bin-packed across the days of that month by character count. That equivalence is hardcoded in ~17 places.
 
-The change is to introduce a **cycle abstraction** (`frequency_months ∈ {1, 2, 3, …}`) and replace "calendar month" with "cycle" everywhere. A cycle is `N` contiguous, **calendar-aligned** months. Each highlight resurfaces once per cycle, spread across all days of the cycle (so a quarterly cycle is ~90 days and each day is ~⅓ as heavy — exactly the lighter cadence you want).
+The change is to introduce a **cycle abstraction** (`frequency_months ∈ {1, 2, 3, …, 12}`, monthly through yearly) and replace "calendar month" with "cycle" everywhere. A cycle is `N` contiguous, **calendar-aligned** months. Each highlight resurfaces once per cycle, spread across all days of the cycle (so a quarterly cycle is ~90 days and each day is ~⅓ as heavy — exactly the lighter cadence you want).
 
 A second, **orthogonal** control lets a user disable resurfacing altogether: `daily_review_enabled ∈ {true, false}`. When `false`, no new assignments are ever generated for that user — the cron skips them, lazy assignment on `/daily` is a no-op, and the widget shows a calm "off" state. Frequency and enabled are independent: turning review off does not lose your chosen cadence, and turning it back on resumes at that cadence.
 
@@ -96,6 +96,20 @@ Disabling daily review is modeled as `daily_review_enabled BOOLEAN NOT NULL DEFA
 - The "enabled?" check is a single early `return`/skip at each entry point (cron, lazy assign, redistribute, widget) — additive, not a rewrite of the distribution logic.
 
 **Off does not delete reviewed history.** It stops generating *new* assignments and clears *future, un-rated* assignments (so the calendar doesn't show stale work). Past `daily_summaries` and all `daily_summary_highlights.rating` / `highlight_months_reviewed` rows are left intact, so stats and resurface counts are preserved and re-enabling is lossless.
+
+### D6 — `frequency_months` ranges 1–12 (monthly … yearly) — **confirmed**
+The supported range is **1 through 12**, so a user can go all the way to a **one-year cycle** (the calendar year). The `CHECK (frequency_months BETWEEN 1 AND 12)` already permits it; this decision makes yearly a first-class, exposed choice rather than just a tolerated value.
+- `freq = 12` aligns to the January epoch (D3), so a yearly cycle is exactly **Jan 1 – Dec 31** of the containing year. `nextCycle` rolls to the next calendar year. `cycleSeed` = `startYear*373 + 1*31` (start month is always January), distinct per year. Each highlight resurfaces once across ~365–366 days — the lightest cadence.
+- **Selector restricts to divisors of 12: `{1, 2, 3, 4, 6, 12}`.** The cycle math works for *any* 1–12, but only divisors of 12 produce cycles that align to year boundaries; a non-divisor like 5 yields cycles that drift across the calendar year (e.g. Nov–Mar), which is correct-but-confusing. Offer Monthly / Every 2 months / Every 3 months / Every 4 months / Every 6 months / Yearly.
+- The bin-packer already handles a 365/366-element date list (it packs explicit dates, §6.0). The redistribute future-cycles cap (§6.3) stays at ~3 cycles regardless of length.
+
+### D7 — Mid-cycle frequency change: greedy past-fill + deterministic restore — **confirmed**
+Changing frequency mid-cycle re-tiles the library onto a differently-shaped cycle. Two properties govern the re-portion (the "Apply new frequency" flow, §6.8):
+
+1. **Already-rated highlights greedily back-fill the past days of the new cycle.** When the new cycle's span differs from the old one, any highlight the user *already reviewed* this period must register as **done** — it must never resurface as "due." So rated highlights are packed onto the new cycle's **past days** (`date < today`), earliest-and-lightest first, and an `highlight_months_reviewed` row is written under the **new** cycle key. Only genuinely-unreviewed highlights get packed onto the **remaining** days (`date >= today … endDate`). This concentrates outstanding work on the future and leaves the past reading as completed.
+2. **Switching back to a prior frequency restores the prior per-day distribution as closely as possible.** Because `packIntoDates` is a pure function of (item set, date list, seed) and `cycleSeed` depends only on the cycle's start month (not on "today" or call time), re-packing an unchanged library for a previously-used frequency reproduces the earlier layout **byte-identically for the unreviewed portion**; preserved rated days are literally the same rows. A freq round-trip (A→B→A) is therefore as close to lossless as the rated/unrated split allows. The re-portion must rely on this determinism — i.e. *preserve* rated day-assignments and *re-pack* only the unrated remainder — rather than reshuffling everything, or the round-trip property is lost.
+
+These two are in mild tension (greedy past-fill deviates from a pure full re-pack), so the contract is **best-effort**: rated days are preserved/relocated faithfully; the unrated remainder is restored deterministically. The confirm dialog should still note that a partially-reviewed cycle can't be re-tiled perfectly.
 
 ---
 
@@ -318,6 +332,8 @@ export function packIntoDates(items: Scored[], dates: string[], seed: number): D
 
 Note the key change vs today: buckets are keyed by **`date: string`**, not `day: number (1..31)`. A cycle spans months, so a 1..31 index is meaningless — every assignment must carry its real ISO date. This ripples through assign/prepare (see below).
 
+**For the frequency-change re-portion (D7), `packIntoDates` is enough** — call it twice over disjoint date sub-ranges: once over the cycle's *past* dates with the already-rated items (greedy back-fill), once over the *remaining* dates with the unrated items, both seeded by `cycleSeed(newCycle)`. No separate pinned-packer is needed; just feed it the two date slices. Because the second call uses the full-cycle seed, the unrated layout matches what a clean full re-pack of that frequency would produce over those same remaining dates (the D7 round-trip property).
+
 ### 6.1 — `app/api/daily/assign/route.ts`
 - Input: keep accepting `{ year, month }` (a month *inside* the target cycle) to minimize caller churn. Internally: `const { freq, enabled } = await getUserReviewSettings(supabase, user.id);` — **if `!enabled`, return early with an empty result (HTTP 200, e.g. `{ assigned: 0, disabled: true }`)** rather than packing anything. Otherwise `const cycle = getCycle(year, month, freq);`
 - Replace `daysInMonth` / `startDate` / `endDate` with `cycle.dates`, `cycle.startDate`, `cycle.endDate`.
@@ -367,8 +383,20 @@ Note the key change vs today: buckets are keyed by **`date: string`**, not `day:
 - Add a **"Daily review" on/off toggle** that persists `daily_review_enabled` to `user_review_settings`. Place it above the frequency selector and disable/grey-out the frequency selector when review is off (the cadence is meaningless while off, but the stored value is retained for when it's re-enabled).
   - **Turning OFF:** confirm ("New highlights won't resurface until you turn this back on. Your past reviews are kept."), then clear *future, un-rated* assignments so the calendar isn't left showing stale work. Reuse `lib/removeFromFutureMonths.ts` (it already deletes `date >= today` assignments) — but only delete days/highlights with no rating; rated days stay as history. Then persist `daily_review_enabled = false`.
   - **Turning ON:** persist `daily_review_enabled = true`, then lazily re-portion the current cycle via `assign` for a month inside the current cycle (same path `ensureDailySummary` uses). Resumes at the stored `frequency_months`.
-- Add a **frequency selector**: Monthly (1) / Every 2 months (2) / Quarterly (3). Persists to `user_review_settings`. (Hidden/disabled while review is off.)
-- **Changing frequency reshapes cycles**, so on change show a confirm and then re-portion: call `reset-cycle` + `assign` for the (new) current cycle, preserving already-rated days, and clear any future pre-portioned cycles that no longer align. Treat this as an explicit "Apply new frequency" action, not a silent toggle.
+- Add a **frequency selector** over the divisors of 12 (D6): Monthly (1) / Every 2 months (2) / Every 3 months (3) / Every 4 months (4) / Every 6 months (6) / **Yearly (12)**. Persists to `user_review_settings`. (Hidden/disabled while review is off.)
+- **Changing frequency reshapes cycles**, so on change show a confirm and then run the **"Apply new frequency" re-portion** (the D7 algorithm below). Treat this as an explicit action, not a silent toggle.
+
+#### "Apply new frequency" re-portion (D7)
+Given `freq_old → freq_new` and the client's `today`:
+1. `newCycle = getCycleForDate(today, freq_new)`.
+2. **Determine the done-set R.** R = unarchived highlights that already have a `daily_summary_highlights.rating` on some `date` in `[newCycle.startDate, today]` (ground truth is the per-day rating, which survives any key change). U = remaining unarchived highlights (the unreviewed remainder).
+3. **Preserve rated day-assignments in place** when their `date` already lies within `[newCycle.startDate, today]` — do not move a highlight off a past day the user actually reviewed it on. (Monthly→longer is a superset, so every rated day is preserved untouched.)
+4. **Greedily back-fill the rest of R onto past days.** For rated highlights whose original day now falls *outside* `newCycle` (longer→shorter shrinks the span), pack them onto `newCycle`'s past dates (`date < today`) via `packIntoDates(thoseItems, pastDates, cycleSeed(newCycle))`, lightest-first, so they register as completed and never resurface.
+5. **Re-pack U onto the remaining days.** `packIntoDates(U, remainingDates, cycleSeed(newCycle))` where `remainingDates = newCycle.dates.filter(d => d >= today)`. Using the full-cycle seed is what gives the D7 round-trip property (switching back reproduces this layout).
+6. **Re-key the dedup ledger.** Ensure every highlight in R has a `highlight_months_reviewed` row keyed to `newCycle.key`, so it's excluded from re-assignment this cycle. (See §11 for the `resurface_count` interaction — re-keying can add a distinct cycle key; acceptable, documented.)
+7. **Clear future pre-portioned cycles** whose boundaries no longer align with `freq_new` (delete future, un-rated `daily_summaries` past `newCycle.endDate`; the daily cron will re-portion the next cycle when due).
+
+Implementation: `reset-cycle` (clears the current-cycle window + its HMR key) followed by an `assign` variant that accepts the precomputed R/U split, rather than a blind full re-pack — `assign` already preserves completed days, so the main addition is steps 4 + 6.
 - Reset button: `reset-month` → `reset-cycle`; assign passes the current cycle. Copy "month" → "cycle."
 - "Last month reviewed" card → "Last cycle reviewed"; stats fetch uses the cycle param. Update the `data.month` → label code (it currently formats a `YYYY-MM` as a single month; for a multi-month cycle, render a range using `cycle.startDate`/`endDate`).
 
@@ -445,6 +473,10 @@ Splitting like this means the risky distribution refactor lands and bakes *befor
 | Add highlight mid-cycle | `redistribute` places it on remaining cycle days + future portioned cycles only. |
 | Last day of cycle | Orphans (never assigned this cycle) land on the final day. |
 | Switch freq mid-cycle | Re-portion preserves rated days; future misaligned cycles cleared. |
+| **Greedy past-fill (D7)** | Switch longer→shorter mid-cycle: already-rated highlights land on the new cycle's **past** days (`< today`) and get an HMR row for the new key; none reappear as "due." Unrated highlights occupy only `>= today`. |
+| **Freq round-trip (D7)** | A→B→A with an unchanged library: after returning to A, the unreviewed remainder's per-day layout is byte-identical to the original A layout (determinism of `packIntoDates` + `cycleSeed`); preserved rated days are the same rows. |
+| **Yearly cycle (freq=12)** | Cycle spans Jan 1–Dec 31; each highlight appears exactly once across the year; `nextCycle` rolls to next Jan; leap-year date list has 366 days. |
+| Selector range | Only divisors of 12 `{1,2,3,4,6,12}` are offered; each produces year-boundary-aligned cycles. |
 | Widget catch-up | Pulls unreviewed items from cycle start (not calendar-month start). |
 | Timezone | Cycle boundaries use the client `localDate` the routes already pass, not server UTC. |
 | Stats / "Last reviewed" | Counts a full cycle; label renders the month range. |
@@ -458,10 +490,10 @@ Splitting like this means the risky distribution refactor lands and bakes *befor
 
 ## 11. Known caveats / out of scope
 
-- **`resurface_count` after a frequency change.** The live trigger computes `COUNT(*)` of `highlight_months_reviewed` rows per highlight, which is "distinct cycles reviewed" — correct going forward. The *one-time backfill* in `migration_resurface_stats.sql` used `to_char(date,'YYYY-MM')` (calendar months); it has already run and is not re-run, so no action needed unless you want to recompute historical counts as cycles (would require cycle math in SQL — low value, document and skip).
+- **`resurface_count` after a frequency change.** The live trigger computes `COUNT(*)` of `highlight_months_reviewed` rows per highlight, i.e. "distinct cycles reviewed" — correct going forward. The D7 re-key step (§6.8 step 6) can write a *new* cycle-key HMR row for a highlight that was already rated under the old key, nudging its `resurface_count` up by one. This is acceptable (the user genuinely reviewed it across a key boundary) and rare; document it rather than special-casing. The *one-time backfill* in `migration_resurface_stats.sql` used `to_char(date,'YYYY-MM')` (calendar months); it has already run and is not re-run, so no action needed unless you want to recompute historical counts as cycles (would require cycle math in SQL — low value, document and skip).
 - **Per-highlight / per-category cadence** — explicitly out of scope (D2).
 - **"Twice a month" cadence** — out of scope (D1); would be a sub-month split, a different mechanism.
-- **Mid-cycle frequency changes** are inherently lossy at the boundary (a partially-reviewed cycle can't cleanly re-tile). The "Apply new frequency" flow preserves rated days and re-portions the rest; communicate this in the confirm dialog.
+- **Mid-cycle frequency changes** can't re-tile a partially-reviewed cycle *perfectly* — but D7 makes the behavior principled, not arbitrary: already-rated highlights greedily back-fill the new cycle's past days (so they read as done), the unreviewed remainder is packed deterministically onto the remaining days, and switching back to a prior frequency restores the earlier per-day layout for that remainder. The residual loss is only at the rated/unrated boundary; communicate this in the confirm dialog.
 - **`offlineStore` field names** stay `month*` unless renamed; purely cosmetic.
 - **Turning review off mid-cycle is intentionally lossy for the *current* partial cycle's unreviewed items** — they're cleared, not parked. Re-enabling re-portions from scratch for the current cycle; it does not restore the exact pre-off assignment of un-rated highlights (rated history is always preserved). This matches the frequency-change boundary behavior and is communicated in the off confirm dialog.
 - **Streaks / "Last reviewed" while off.** With no new assignments, streak-style stats naturally go quiet. Decide whether the UI should freeze the streak or show "paused" — out of scope for the data layer, but flag it for the settings/stats copy so an off user isn't told they "broke their streak."

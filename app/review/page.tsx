@@ -15,6 +15,7 @@ import { removeFromFutureMonths } from '@/lib/removeFromFutureMonths'
 import { callRedistribute } from '@/lib/redistribute'
 import { useOfflineStatus } from '@/hooks/useOfflineStatus'
 import { isEffectivelyOffline } from '@/hooks/useManualOffline'
+import { reconcileAheadOrder, readAheadOrder, writeAheadOrder } from '@/lib/aheadOrder'
 import { useOfflineSyncState } from '@/hooks/useOfflineSyncState'
 import OfflineBanner from '@/components/OfflineBanner'
 import {
@@ -333,44 +334,25 @@ function ReviewPageContent() {
       // so the user gets a spread across the rest of the month rather than
       // finishing one day at a time. Only populated in ahead mode.
       //
-      // The round-robin includes BOTH rated and unrated rows (no rating filter)
-      // and breaks length ties by id, so the resulting order is fixed and
-      // identical on every load regardless of what's already been rated. That's
-      // what makes review resumable: firstUnrated below lands on the next item in
-      // that stable sequence (e.g. June 15 after you rated through June 14),
-      // instead of snapping back to tomorrow. If we bucketed only unrated rows,
-      // each reload would re-pack the queue and the earliest future day would
-      // always resurface at the front.
+      // The order is FROZEN: computed round-robin once, then persisted per
+      // user+month and reconciled on every later load (survivors stay put, gone
+      // rows drop out, new rows append). Recomputing from scratch each load —
+      // the old behavior — let an auto-archive of a just-rated highlight re-pack
+      // the dense round-robin and pull a later highlight ahead of the resume
+      // point ("a couple of dots jumped earlier"). Freezing makes each row's
+      // position independent of what was removed, so firstUnrated below can
+      // never move backwards. See lib/aheadOrder.ts.
       const aheadRows: ReviewHighlight[] = []
       if (aheadMode) {
-        const byDate = new Map<string, ReviewHighlight[]>()
-        for (const h of allRows) {
-          if (h.date > today) {
-            const bucket = byDate.get(h.date) || []
-            bucket.push(h)
-            byDate.set(h.date, bucket)
-          }
-        }
-        const futureDates = Array.from(byDate.keys()).sort()
-        for (const d of futureDates) {
-          byDate.get(d)!.sort((a, b) => {
-            const aLen = a.highlight?.text?.length || 0
-            const bLen = b.highlight?.text?.length || 0
-            if (aLen !== bLen) return aLen - bLen
-            return a.id < b.id ? -1 : a.id > b.id ? 1 : 0
-          })
-        }
-        for (let round = 0; ; round++) {
-          let addedThisRound = false
-          for (const d of futureDates) {
-            const bucket = byDate.get(d)!
-            if (round < bucket.length) {
-              aheadRows.push(bucket[round])
-              addedThisRound = true
-            }
-          }
-          if (!addedThisRound) break
-        }
+        const futureRows = allRows.filter((h) => h.date > today)
+        const month = today.substring(0, 7)
+        const { ordered, frozenIds } = reconcileAheadOrder(
+          futureRows,
+          readAheadOrder(user.id, month),
+          (h) => h.highlight?.text?.length || 0
+        )
+        writeAheadOrder(user.id, month, frozenIds)
+        aheadRows.push(...ordered)
       }
 
       const processed = [...todayRows, ...catchUpRows, ...aheadRows]

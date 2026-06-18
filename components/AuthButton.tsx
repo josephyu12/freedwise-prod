@@ -4,6 +4,7 @@ import { useState, useEffect, useRef } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
+import { clearAheadOrder } from '@/lib/aheadOrder'
 
 type AuthButtonProps = {
   // 'down' for the desktop header (default); 'up' for the mobile drawer
@@ -62,6 +63,10 @@ export default function AuthButton({ dropdownDirection = 'down' }: AuthButtonPro
     if (typeof caches !== 'undefined') {
       caches.delete('freedwise-pages-v1').catch(() => {})
     }
+
+    // Drop the frozen review-ahead sequences so the next user on this device
+    // doesn't inherit them (they're per-user keyed, but clearing is tidier).
+    clearAheadOrder()
 
     router.push('/login')
     router.refresh()
