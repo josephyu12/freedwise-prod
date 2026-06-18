@@ -455,6 +455,20 @@ These **must** hold so `frequency_months = 1` is a no-op for existing users:
 
 Add a unit test asserting all five for a spread of months (incl. December→January and leap February). If any fails, monthly users would see their assignments reshuffle — the one outcome we must never ship.
 
+### 8a. Data-safety invariant (rated rows are sacred)
+
+A **rated `daily_summary_highlights` row** and its matching **`highlight_months_reviewed` (ledger) row** are the permanent record of a review. They are coupled and must **always move together**:
+
+- **No reassignment path may delete a rated row** (`rating IS NOT NULL`) on its own. Deleting the day-row while the ledger still flags the highlight "reviewed" makes it excluded from every future re-pack *and* present on no day → **stranded / invisible** (this caused the off→on data loss and the empty June 1/17 days).
+- The **only** path allowed to remove a rated row is `reset-cycle`, and it deletes the ledger row in the same operation (an explicit user reset of the whole cycle).
+- All repack paths (`assign`, `redistribute`, `apply-frequency`, including any future cycle-frequency change) must therefore:
+  - delete **only** unrated rows (`.is('rating', null)`), or be purely additive;
+  - **preserve every rated row in place** and exclude already-rated highlights from re-packing;
+  - seed per-day load with the preserved rated score (`packIntoDates(..., initialLoads)`) so day **totals** stay balanced.
+- **Postcondition** to uphold: for any cycle, *every* highlight in `highlight_months_reviewed[cycleKey]` has a rated row somewhere in that cycle's days. (Verify with a count of "reviewed-but-not-on-calendar" == 0.)
+
+Current status: `assign` enforces this (rated-only-preserve + unrated-only-delete); `apply-frequency` deletes only unrated and re-keys the ledger; `redistribute` is additive; `reset-cycle` deletes both together. ✓
+
 ---
 
 ## 9. Rollout phases

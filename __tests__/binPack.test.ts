@@ -117,3 +117,45 @@ describe('packIntoDates general properties', () => {
     expect(buckets.every((b) => b.highlights.length === 0)).toBe(true)
   })
 })
+
+describe('packIntoDates load-aware (initialLoads)', () => {
+  it('an all-zero initialLoads map is byte-identical to omitting it', () => {
+    const items = makeItems(200)
+    const cycle = getCycle(2026, 6, 1)
+    const zeros = new Map(cycle.dates.map((d) => [d, 0]))
+    const a = packIntoDates(items, cycle.dates, cycleSeed(cycle))
+    const b = packIntoDates(items, cycle.dates, cycleSeed(cycle), zeros)
+    expect(b.map((x) => x.highlights.map((h) => h.id))).toEqual(a.map((x) => x.highlights.map((h) => h.id)))
+    expect(b.map((x) => x.totalScore)).toEqual(a.map((x) => x.totalScore))
+  })
+
+  it('seeded day load steers new items toward the lighter days (even TOTALS)', () => {
+    const items = makeItems(200)
+    const cycle = getCycle(2026, 6, 1)
+    // Pre-load the first half of the month very heavily (as if already reviewed).
+    const loads = new Map<string, number>()
+    cycle.dates.forEach((d, i) => loads.set(d, i < 15 ? 5000 : 0))
+    const buckets = packIntoDates(items, cycle.dates, cycleSeed(cycle), loads)
+
+    // Newly-placed score should pile onto the originally-light (later) days.
+    const placedEarly = buckets.slice(0, 15).reduce((s, b) => s + b.highlights.reduce((t, h) => t + h.score, 0), 0)
+    const placedLate = buckets.slice(15).reduce((s, b) => s + b.highlights.reduce((t, h) => t + h.score, 0), 0)
+    expect(placedLate).toBeGreaterThan(placedEarly)
+
+    // And the resulting per-day TOTALS (preload + placed) should be far flatter
+    // than they'd be if we ignored the preload.
+    const totals = buckets.map((b) => b.totalScore)
+    const spread = Math.max(...totals) - Math.min(...totals)
+    const naiveSpread = 5000 // the preload gap alone, if new items were spread evenly
+    expect(spread).toBeLessThan(naiveSpread)
+  })
+
+  it('still places every item exactly once with initialLoads', () => {
+    const items = makeItems(120)
+    const cycle = getCycle(2026, 7, 3)
+    const loads = new Map(cycle.dates.map((d, i) => [d, (i % 5) * 1000]))
+    const buckets = packIntoDates(items, cycle.dates, cycleSeed(cycle), loads)
+    const placed = buckets.flatMap((b) => b.highlights.map((h) => h.id)).sort()
+    expect(placed).toEqual(items.map((i) => i.id).sort())
+  })
+})

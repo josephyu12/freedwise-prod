@@ -117,123 +117,112 @@ export async function POST(request: NextRequest) {
     if (existingError) throw existingError
 
     const typedSummaries = (existingSummaries || []) as Array<{ id: string; date: string }>
+    const scoreById = new Map(highlightsWithScore.map((h) => [h.id, h.score]))
 
-    // Identify completed days (all highlights rated) — preserve them untouched.
-    const completedDays = new Set<string>()
-    const preservedAssignments = new Map<string, { date: string; summaryId: string }>()
-    const deletedSummaryIds = new Set<string>()
-
+    // CRITICAL INVARIANT: a rated daily_summary_highlights row and its
+    // highlight_months_reviewed (ledger) row are the permanent record of a review
+    // and MUST move together. Only reset-cycle (an explicit user reset) removes
+    // both. Every other path — including this one — must NEVER delete a rated row
+    // on its own: doing so leaves the highlight flagged "reviewed" in the ledger
+    // (so it's excluded from re-packing) yet present on no day, i.e. stranded /
+    // invisible. This was the bug behind the off→on data loss and the empty days.
+    //
+    // So: load every RATED row (a) to leave it exactly in place and (b) to seed
+    // per-day load for a balanced re-pack; then delete ONLY unrated rows.
+    const ratedHighlightIds = new Set<string>()
+    const ratedScoreByDate = new Map<string, number>()
     if (typedSummaries.length > 0) {
       const summaryIds = typedSummaries.map((s) => s.id)
+      const dateById = new Map(typedSummaries.map((s) => [s.id, s.date]))
 
-      let existingAssignments: Array<{ id: string; highlight_id: string; daily_summary_id: string; rating: number | null }> = []
       let aFrom = 0
       while (true) {
         const { data: aPage, error: assignmentsError } = await supabase
           .from('daily_summary_highlights')
-          .select('id, highlight_id, daily_summary_id, rating')
+          .select('highlight_id, daily_summary_id, rating')
           .in('daily_summary_id', summaryIds)
+          .not('rating', 'is', null)
           .range(aFrom, aFrom + PAGE - 1)
         if (assignmentsError) throw assignmentsError
-        const page = (aPage || []) as Array<{ id: string; highlight_id: string; daily_summary_id: string; rating: number | null }>
-        existingAssignments = existingAssignments.concat(page)
+        const page = (aPage || []) as Array<{ highlight_id: string; daily_summary_id: string }>
+        for (const a of page) {
+          ratedHighlightIds.add(a.highlight_id)
+          const d = dateById.get(a.daily_summary_id)
+          if (d) ratedScoreByDate.set(d, (ratedScoreByDate.get(d) ?? 0) + (scoreById.get(a.highlight_id) ?? 0))
+        }
         if (page.length < PAGE) break
         aFrom += PAGE
       }
 
-      const assignmentsByDate = new Map<string, Array<{ highlight_id: string; rating: number | null }>>()
-      for (const a of existingAssignments) {
-        const summary = typedSummaries.find((s) => s.id === a.daily_summary_id)
-        if (!summary) continue
-        if (!assignmentsByDate.has(summary.date)) assignmentsByDate.set(summary.date, [])
-        assignmentsByDate.get(summary.date)!.push({ highlight_id: a.highlight_id, rating: a.rating })
-      }
-
-      for (const [date, dateAssignments] of assignmentsByDate.entries()) {
-        const total = dateAssignments.length
-        const rated = dateAssignments.filter((a) => a.rating !== null).length
-        if (total > 0 && rated === total) {
-          completedDays.add(date)
-          const summary = typedSummaries.find((s) => s.date === date)
-          if (summary) {
-            for (const a of dateAssignments) {
-              preservedAssignments.set(a.highlight_id, { date: summary.date, summaryId: summary.id })
-            }
-          }
-        }
-      }
-
-      // Delete assignments + summaries for non-completed days (recreated below).
-      const summariesToModify = typedSummaries.filter((s) => !completedDays.has(s.date))
-      const summaryIdsToModify = summariesToModify.map((s) => s.id)
-      for (const id of summaryIdsToModify) deletedSummaryIds.add(id)
-      if (summaryIdsToModify.length > 0) {
-        await supabase.from('daily_summary_highlights').delete().in('daily_summary_id', summaryIdsToModify)
-        await supabase.from('daily_summaries').delete().in('id', summaryIdsToModify)
-      }
+      // Delete only the reshuffleable (unrated) rows. Rated rows stay put, so no
+      // reviewed highlight can ever be stranded by a re-pack. Summaries are kept
+      // (a summary keeping rated rows must survive); empty ones get reused below.
+      await supabase
+        .from('daily_summary_highlights')
+        .delete()
+        .in('daily_summary_id', summaryIds)
+        .is('rating', null)
     }
 
-    // Pack non-preserved highlights onto the days at/after fromDate. Prefer
-    // not-yet-completed days so finished days aren't disturbed.
-    const highlightsToAssign = highlightsWithScore.filter((h) => !preservedAssignments.has(h.id))
-    let packDates = cycle.dates.filter((d) => d >= fromDate && !completedDays.has(d))
-    // SAFETY NET: every unreviewed highlight MUST land somewhere. If all remaining
-    // days are already "completed" — e.g. resuming after an off→on where clearing
-    // future un-rated rows left each reviewed-ahead day holding only its rated
-    // highlights — fall back to the full remaining window (re-opening those days by
-    // appending the backlog), then to the last day. Without this, a backlog of
-    // unreviewed highlights silently vanishes from the cycle.
-    if (packDates.length === 0) packDates = cycle.dates.filter((d) => d >= fromDate)
+    // Pack the unreviewed remainder onto the days at/after fromDate. Exclude
+    // anything already rated this cycle (its row is preserved above) on top of the
+    // ledger-reviewed exclusion already applied to highlightsWithScore — this also
+    // self-heals any rated-without-ledger row by not double-placing it.
+    const highlightsToAssign = highlightsWithScore.filter((h) => !ratedHighlightIds.has(h.id))
+    let packDates = cycle.dates.filter((d) => d >= fromDate)
     if (packDates.length === 0) packDates = [cycle.endDate]
+    // Seed each pack day with the score of the rated rows already on it, so days
+    // that are partially/fully reviewed receive proportionally fewer new
+    // highlights and the per-day TOTAL stays even (prevents the "one overloaded
+    // day" symptom). For a clean build (no rated rows) all seeds are 0, so the
+    // layout is byte-identical to the original packer.
+    const initialLoads = new Map<string, number>()
+    for (const d of packDates) initialLoads.set(d, ratedScoreByDate.get(d) ?? 0)
+
     const buckets = highlightsToAssign.length > 0
-      ? packIntoDates(highlightsToAssign, packDates, cycleSeed(cycle))
+      ? packIntoDates(highlightsToAssign, packDates, cycleSeed(cycle), initialLoads)
       : []
 
     const createdAssignments: any[] = []
+    const summaryIdByDate = new Map(typedSummaries.map((s) => [s.date, s.id]))
     for (const bucket of buckets) {
       if (bucket.highlights.length === 0) continue
 
-      let summaryId: string | null = null
-      const existingSummary = typedSummaries.find((s) => s.date === bucket.date)
-      if (existingSummary && !deletedSummaryIds.has(existingSummary.id)) {
-        summaryId = existingSummary.id
-      } else {
+      let summaryId: string | null = summaryIdByDate.get(bucket.date) ?? null
+      if (!summaryId) {
         const { data: summaryData, error: summaryError } = await (supabase
           .from('daily_summaries') as any)
           .insert([{ date: bucket.date, user_id: user.id }])
           .select()
           .single()
         if (summaryError) throw summaryError
-        summaryId = summaryData.id
+        summaryId = summaryData.id as string
+        summaryIdByDate.set(bucket.date, summaryId)
       }
 
-      if (summaryId) {
-        // Upsert (ignore duplicates): when the safety net appends a backlog onto an
-        // existing (completed) day's summary, a highlight could already be linked.
-        const { error: linkError } = await (supabase.from('daily_summary_highlights') as any)
-          .upsert(
-            bucket.highlights.map((h) => ({ daily_summary_id: summaryId, highlight_id: h.id })),
-            { onConflict: 'daily_summary_id,highlight_id', ignoreDuplicates: true }
-          )
-        if (linkError) throw linkError
-        createdAssignments.push({
-          date: bucket.date,
-          highlightCount: bucket.highlights.length,
-          totalScore: bucket.totalScore,
-        })
-      }
+      // Ignore duplicates: a highlight could already be linked to a surviving
+      // (rated) summary for this date.
+      const { error: linkError } = await (supabase.from('daily_summary_highlights') as any)
+        .upsert(
+          bucket.highlights.map((h) => ({ daily_summary_id: summaryId!, highlight_id: h.id })),
+          { onConflict: 'daily_summary_id,highlight_id', ignoreDuplicates: true }
+        )
+      if (linkError) throw linkError
+      createdAssignments.push({
+        date: bucket.date,
+        highlightCount: bucket.highlights.length,
+        totalScore: bucket.totalScore,
+      })
     }
 
-    const preservedCount = preservedAssignments.size
-    const completedDaysCount = completedDays.size
+    const preservedCount = ratedHighlightIds.size
 
     return NextResponse.json({
-      message: `Assigned ${highlightsToAssign.length} highlights across the cycle (${cycle.key})${completedDaysCount > 0 ? ` (preserved ${completedDaysCount} completed days)` : ''}`,
+      message: `Assigned ${highlightsToAssign.length} highlights across the cycle (${cycle.key})${preservedCount > 0 ? ` (preserved ${preservedCount} rated highlights in place)` : ''}`,
       assignments: createdAssignments,
       cycleKey: cycle.key,
       totalHighlights: highlightsToAssign.length,
       preservedCount,
-      completedDaysCount,
     })
   } catch (error: any) {
     console.error('Error assigning highlights to cycle:', error)

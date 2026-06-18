@@ -66,9 +66,25 @@ const dayOfMonth = (isoDate: string): number => Number(isoDate.slice(8, 10))
  * Returns one bucket PER date in `dates` (in the same order; buckets may be
  * empty). `seed` should be `cycleSeed(cycle)` so the layout is stable for a
  * given cycle and fresh across cycles.
+ *
+ * `initialLoads` (optional) seeds each day's starting score WITHOUT emitting any
+ * highlights for it — use it to account for rows already sitting on a day (e.g.
+ * preserved rated highlights) so a re-pack stays balanced across the day TOTALS,
+ * not just the newly-placed items. When omitted (or all zero) the result is
+ * byte-identical to the original packer, preserving the freq=1 backward-compat
+ * invariant above.
  */
-export function packIntoDates(items: Scored[], dates: string[], seed: number): DayBucket[] {
-  const buckets: DayBucket[] = dates.map((date) => ({ date, highlights: [], totalScore: 0 }))
+export function packIntoDates(
+  items: Scored[],
+  dates: string[],
+  seed: number,
+  initialLoads?: Map<string, number>
+): DayBucket[] {
+  const buckets: DayBucket[] = dates.map((date) => ({
+    date,
+    highlights: [],
+    totalScore: initialLoads?.get(date) ?? 0,
+  }))
   if (buckets.length === 0) return buckets
 
   const shuffled = seededShuffle(items, seed)
