@@ -5,6 +5,7 @@ import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import AuthButton from './AuthButton'
 import ScrollToTop from './ScrollToTop'
+import OfflineModeToggle from './OfflineModeToggle'
 
 const NAV_LINKS = [
   { href: '/daily', label: 'Daily', icon: (
@@ -106,6 +107,7 @@ export default function AppHeader() {
           {/* Right side: ScrollToTop + Auth + Mobile hamburger */}
           <div className="app-header-right">
             <ScrollToTop />
+            <OfflineModeToggle />
             <div className="hidden md:block">
               <AuthButton />
             </div>
@@ -165,6 +167,9 @@ export default function AppHeader() {
             </Link>
           ))}
         </nav>
+        <div className="px-1 pt-2">
+          <OfflineModeToggle variant="full" />
+        </div>
         <div className="mobile-nav-auth">
           <AuthButton dropdownDirection="up" />
         </div>

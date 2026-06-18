@@ -84,11 +84,17 @@ export async function GET(request: NextRequest) {
 
     const summary = summaryData as { id: string }
 
-    // Get all highlights for the summary
+    // Count only reviewable highlights: non-archived and not orphaned
+    // (highlights!inner drops rows whose highlight was deleted). This MUST match
+    // the archived/inner filter on the "next highlight" queries below. Counting
+    // raw daily_summary_highlights rows instead let an archived or deleted
+    // highlight inflate `total` (the denominator) while never being presentable
+    // for review — stranding the widget at e.g. 45/46 forever.
     const { data: allHighlights, error: allError } = await supabase
       .from('daily_summary_highlights')
-      .select('id, highlight_id, rating')
+      .select('id, rating, highlight:highlights!inner(id, archived)')
       .eq('daily_summary_id', summary.id)
+      .eq('highlight.archived', false)
 
     if (allError) throw allError
 
