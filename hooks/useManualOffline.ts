@@ -25,6 +25,25 @@ export function readManualOffline(): boolean {
   }
 }
 
+/**
+ * The single source of truth for "should we behave as offline right now?".
+ *
+ * True when EITHER the user has flipped the manual switch OR the browser reports
+ * no connection. Pressing the manual switch is therefore indistinguishable from
+ * a real disconnect everywhere this is used: no network reads, no queue drains,
+ * no background sync. Every non-React connectivity branch (page loads, the
+ * replay drainer, the Notion processor) should gate on this rather than reading
+ * navigator.onLine directly, so the two cases can never diverge.
+ *
+ * For React components, prefer useOfflineStatus().isOnline, which additionally
+ * folds in the heartbeat's weak-signal detection.
+ */
+export function isEffectivelyOffline(): boolean {
+  if (readManualOffline()) return true
+  if (typeof navigator !== 'undefined' && !navigator.onLine) return true
+  return false
+}
+
 function writeManualOffline(enabled: boolean) {
   try {
     if (enabled) window.localStorage.setItem(STORAGE_KEY, '1')

@@ -16,6 +16,7 @@ import { parseIntoParagraphs, groupParagraphsByDividers, ParagraphBlock } from '
 import { renderHighlightHtml } from '@/lib/renderHighlightHtml'
 import { computeMonthReviewStatus } from '@/lib/monthReviewStatus'
 import { useOfflineStatus } from '@/hooks/useOfflineStatus'
+import { isEffectivelyOffline } from '@/hooks/useManualOffline'
 import { useOfflineSyncState } from '@/hooks/useOfflineSyncState'
 import OfflineBanner from '@/components/OfflineBanner'
 import {
@@ -408,6 +409,30 @@ export default function DailyPage() {
   const loadDailySummary = useCallback(async (selectedDate: string) => {
     setLoading(true)
     setUsingCachedData(false)
+
+    // Offline (manual switch OR a real cut): serve the IndexedDB cache and skip
+    // the network entirely, mirroring /review. Pressing the manual switch is
+    // treated exactly like a real disconnect. Avoids both reverting queued edits
+    // (a weak-signal network query would succeed and return stale server truth)
+    // and a doomed round-trip before falling back to the same cache.
+    if (isEffectivelyOffline()) {
+      try {
+        const cached = await getCachedDailyData(selectedDate)
+        if (cached) {
+          setSummary(cached.summary)
+          if (cached.categories) setCategories(cached.categories as any[])
+          if (cached.pinnedHighlightIds) setPinnedHighlightIds(new Set(cached.pinnedHighlightIds))
+          setUsingCachedData(true)
+          setLoading(false)
+          return
+        }
+        // No cache yet (first visit while offline) — fall through to the network
+        // attempt below, which degrades to the same cache fallback on failure.
+      } catch (e) {
+        console.warn('Failed to load cached daily data (offline):', e)
+      }
+    }
+
     try {
       const { data: { user } } = await supabase.auth.getUser()
       if (!user) {
@@ -416,7 +441,7 @@ export default function DailyPage() {
       }
 
       // First, ensure today's summary exists (skip when offline)
-      if (navigator.onLine) {
+      if (!isEffectivelyOffline()) {
         await ensureDailySummary(selectedDate)
       }
 
@@ -513,8 +538,10 @@ export default function DailyPage() {
     } catch (error) {
       console.error('Error loading daily summary:', error)
 
-      // If offline, try to load from cache
-      if (!navigator.onLine) {
+      // Network failed — fall back to cache. Don't gate on navigator.onLine: a
+      // weak signal (or manual offline with a live connection) can throw here
+      // while the browser still reports "online", and we want the cache anyway.
+      {
         try {
           const cached = await getCachedDailyData(selectedDate)
           if (cached) {

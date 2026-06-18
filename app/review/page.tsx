@@ -14,6 +14,7 @@ import { addToNotionSyncQueue } from '@/lib/notionSyncQueue'
 import { removeFromFutureMonths } from '@/lib/removeFromFutureMonths'
 import { callRedistribute } from '@/lib/redistribute'
 import { useOfflineStatus } from '@/hooks/useOfflineStatus'
+import { isEffectivelyOffline } from '@/hooks/useManualOffline'
 import { useOfflineSyncState } from '@/hooks/useOfflineSyncState'
 import OfflineBanner from '@/components/OfflineBanner'
 import {
@@ -179,6 +180,38 @@ function ReviewPageContent() {
   const loadHighlights = useCallback(async () => {
     setLoading(true)
     setUsingCachedData(false)
+
+    // Offline (manual switch OR a genuinely-cut connection): serve the IndexedDB
+    // cache and skip the network entirely. Pressing the manual switch is treated
+    // exactly like a real disconnect. Two reasons to short-circuit rather than
+    // hit the network:
+    //   • Manual offline usually still has a (weak) connection, so a network
+    //     query would succeed and return server truth — silently reverting
+    //     ratings that are queued but not yet drained.
+    //   • For a real cut it avoids a doomed network round-trip (and its timeout)
+    //     before falling back to the same cache.
+    // The cache is patched on every offline rating, so a pull-to-refresh while
+    // offline preserves them either way.
+    if (isEffectivelyOffline()) {
+      try {
+        const cached = await getCachedReviewData()
+        if (cached) {
+          setHighlights(cached.highlights)
+          setCategories(cached.categories || [])
+          setPinnedHighlightIds(new Set(cached.pinnedHighlightIds || []))
+          setUsingCachedData(true)
+          const firstUnrated = cached.highlights.findIndex((h: any) => h.rating === null)
+          setCurrentIndex(firstUnrated >= 0 ? firstUnrated : 0)
+          setLoading(false)
+          return
+        }
+        // No cache yet (first visit while offline) — fall through to the network
+        // attempt below, which will gracefully degrade to the cache fallback.
+      } catch (e) {
+        console.warn('Failed to load cached review data (offline):', e)
+      }
+    }
+
     try {
       // getSession reads from local cookie — no network call needed
       const { data: { session } } = await supabase.auth.getSession()

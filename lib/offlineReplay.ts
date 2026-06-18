@@ -15,6 +15,7 @@
 // queued for the next retry. Nothing is ever dropped.
 
 import { getPendingActions, removeAction } from './offlineStore'
+import { isEffectivelyOffline } from '@/hooks/useManualOffline'
 import { callRedistribute } from './redistribute'
 import { removeFromFutureMonths } from './removeFromFutureMonths'
 
@@ -60,10 +61,13 @@ export async function replayPendingActions(
     return { processed: 0, remaining, touchedHighlights: false, stalled: remaining > 0 }
   }
 
-  // Guard the mount race / offline state: if the browser knows we're offline,
-  // bail before any removeAction so we never empty the queue against a dead
-  // network. The real reconnect re-runs this.
-  if (typeof navigator !== 'undefined' && !navigator.onLine) return idle()
+  // Guard the mount race / offline state: if we're effectively offline — the
+  // browser reports no connection OR the user flipped the manual switch — bail
+  // before any removeAction so we never empty the queue against a connection
+  // we're meant to ignore. The real reconnect (or toggling the switch off)
+  // re-runs this. Defense in depth: <OfflineSync> already gates on this, but
+  // replay must be self-protecting in case it's ever called from elsewhere.
+  if (isEffectivelyOffline()) return idle()
 
   // RLS needs an authenticated user; if signed out, leave the queue untouched.
   let userId: string | undefined

@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { createClient } from '@/lib/supabase/client'
+import { isEffectivelyOffline, MANUAL_OFFLINE_EVENT } from '@/hooks/useManualOffline'
 
 export default function NotionSyncProcessor() {
   const [isOnline, setIsOnline] = useState(true)
@@ -9,7 +10,8 @@ export default function NotionSyncProcessor() {
   const supabase = createClient()
 
   const processQueue = useCallback(async () => {
-    if (isProcessingRef.current || !navigator.onLine) return
+    // Manual offline is treated exactly like a real disconnect: no Notion push.
+    if (isProcessingRef.current || isEffectivelyOffline()) return
 
     isProcessingRef.current = true
 
@@ -60,10 +62,10 @@ export default function NotionSyncProcessor() {
   }, [supabase])
 
   useEffect(() => {
-    setIsOnline(navigator.onLine)
+    setIsOnline(!isEffectivelyOffline())
 
     const handleOnline = () => {
-      setIsOnline(true)
+      setIsOnline(!isEffectivelyOffline())
       processQueue()
     }
 
@@ -71,8 +73,21 @@ export default function NotionSyncProcessor() {
       setIsOnline(false)
     }
 
+    // Toggling the manual switch off must resume the Notion push immediately,
+    // not wait for the next 10s tick — mirrors how the browser 'online' event
+    // is handled. Toggling it on flips the indicator off.
+    const handleManualChange = () => {
+      if (isEffectivelyOffline()) {
+        setIsOnline(false)
+      } else {
+        setIsOnline(true)
+        processQueue()
+      }
+    }
+
     window.addEventListener('online', handleOnline)
     window.addEventListener('offline', handleOffline)
+    window.addEventListener(MANUAL_OFFLINE_EVENT, handleManualChange)
 
     // Process queue once on mount to handle any pending items
     processQueue()
@@ -80,7 +95,7 @@ export default function NotionSyncProcessor() {
     // Process queue periodically (every 10 seconds) to handle new items
     // This is for Supabase -> Notion sync only, not for importing
     const interval = setInterval(() => {
-      if (navigator.onLine) {
+      if (!isEffectivelyOffline()) {
         processQueue()
       }
     }, 10000) // Check every 10 seconds
@@ -88,6 +103,7 @@ export default function NotionSyncProcessor() {
     return () => {
       window.removeEventListener('online', handleOnline)
       window.removeEventListener('offline', handleOffline)
+      window.removeEventListener(MANUAL_OFFLINE_EVENT, handleManualChange)
       clearInterval(interval)
     }
   }, [processQueue])

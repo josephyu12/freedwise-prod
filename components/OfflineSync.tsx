@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { useOfflineStatus } from '@/hooks/useOfflineStatus'
+import { isEffectivelyOffline } from '@/hooks/useManualOffline'
 import { replayPendingActions, countReplayable } from '@/lib/offlineReplay'
 
 // Global, headless offline-queue drainer. Mounted once in the root layout so the
@@ -25,7 +26,14 @@ export default function OfflineSync() {
     // Single-flight: a flapping connection (or a burst of enqueues) must not run
     // two overlapping replays over the same queue snapshot.
     if (inFlight.current) return
-    if (typeof navigator !== 'undefined' && !navigator.onLine) return
+    // Offline (manual switch OR a real disconnect) means do not drain. The
+    // manual case matters most: the user opted out of sync typically BECAUSE
+    // they still have a (weak/flapping) connection, so navigator.onLine is
+    // usually true. Without this, every queued rating would fire
+    // `offline-action-enqueued` → drain immediately → `offline-sync-complete` →
+    // a page reload after each rating, which is exactly what offline mode is
+    // meant to prevent.
+    if (isEffectivelyOffline()) return
     inFlight.current = true
     try {
       const pending = await countReplayable()

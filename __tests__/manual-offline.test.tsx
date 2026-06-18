@@ -12,9 +12,9 @@
  *   2. useOfflineStatus reports offline AND never pings /api/health while the
  *      manual switch is on — that "never pings" is the whole point.
  */
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { renderHook, act, waitFor } from '@testing-library/react'
-import { useManualOffline } from '@/hooks/useManualOffline'
+import { useManualOffline, isEffectivelyOffline } from '@/hooks/useManualOffline'
 import { useOfflineStatus } from '@/hooks/useOfflineStatus'
 
 beforeEach(() => {
@@ -22,6 +22,31 @@ beforeEach(() => {
   // Heartbeat would otherwise hit /api/health; spy so we can assert it is NOT
   // called while manually offline, and resolve ok when it is.
   global.fetch = vi.fn(async () => ({ ok: true } as Response)) as any
+})
+
+describe('isEffectivelyOffline — the system-wide source of truth', () => {
+  // navigator.onLine is read-only; redefine it per-test so we can simulate a cut.
+  const setNavigatorOnline = (value: boolean) => {
+    Object.defineProperty(navigator, 'onLine', { value, configurable: true })
+  }
+
+  afterEach(() => setNavigatorOnline(true))
+
+  it('is offline when the manual switch is on, even with a live connection', () => {
+    setNavigatorOnline(true)
+    window.localStorage.setItem('freedwise:manual-offline', '1')
+    expect(isEffectivelyOffline()).toBe(true)
+  })
+
+  it('is offline when the browser reports a real cut, switch off', () => {
+    setNavigatorOnline(false)
+    expect(isEffectivelyOffline()).toBe(true)
+  })
+
+  it('is online only when both the switch is off AND the browser is connected', () => {
+    setNavigatorOnline(true)
+    expect(isEffectivelyOffline()).toBe(false)
+  })
 })
 
 describe('useManualOffline', () => {
