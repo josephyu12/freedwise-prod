@@ -2,28 +2,34 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import {
   getCycleForDate,
-  cycleSeed,
-  cycleKeyForDate,
   getUserReviewSettings,
   normalizeFreq,
 } from '@/lib/cycle'
-import { packIntoDates, Scored } from '@/lib/binPack'
+import { Scored } from '@/lib/binPack'
+import { computeToDoLayout } from '@/lib/retile'
 
 /**
  * POST /api/daily/apply-frequency
  * Body { frequency: number, localDate?: string }
  *
- * Changes the user's review frequency and re-tiles the CURRENT cycle onto the new
- * shape (REVIEW_FREQUENCY_PLAN.md D7), best-effort:
- *   1. Persist the new frequency.
- *   2. Already-reviewed-this-period highlights stay done — their rated rows are
- *      preserved, and their ledger row is re-keyed to the new cycle key (one row
- *      replaced by one row, so resurface_count is unchanged).
- *   3. The unreviewed remainder is re-packed deterministically across the new
- *      cycle's remaining days (today → end), seeded by cycleSeed(newCycle) so
- *      switching back to a prior frequency reproduces the earlier layout.
- *   4. Future, misaligned pre-portioned days (unrated, past the new cycle's end)
- *      are cleared; the daily cron re-portions the next cycle when due.
+ * Re-tiles the user's schedule onto a new review cadence. ONE unified operation
+ * for every change (grow or shrink) — the direction falls out of which cycle
+ * `today` lands in. See REVIEW_FREQUENCY_PLAN.md (anchored/reversible model).
+ *
+ * MODEL — rated rows are immutable anchors:
+ *   • A rated daily_summary_highlights row is NEVER moved or deleted here. It is
+ *     the permanent record of a review and its date is the truth.
+ *   • A highlight is "done for the new cycle" iff it has a rated row dated inside
+ *     the cycle. (When GROWING, this is the duplicate check: a highlight that was
+ *     still to-do in the current month but was already reviewed in another month
+ *     of the larger cycle is found here and stays done — never re-queued.)
+ *   • Only UNRATED (to-do) rows are recomputed: cleared, then the unreviewed
+ *     remainder is packed deterministically across [today … cycle end].
+ *
+ * Because every input to the pack (the unreviewed set, the day range, the fixed
+ * cycleSeed, and the per-day load seeded from immutable rated rows) is a pure
+ * function of the cycle + immutable history + today, switching back and forth
+ * reproduces the exact same layout (reversible) and nothing is ever lost.
  */
 export async function POST(request: NextRequest) {
   try {
@@ -46,7 +52,8 @@ export async function POST(request: NextRequest) {
       /* defaults */
     }
 
-    const { freq: oldFreq } = await getUserReviewSettings(supabase, user.id)
+    // Keep the on/off flag; only the frequency changes here.
+    const { enabled } = await getUserReviewSettings(supabase, user.id)
 
     const now = new Date()
     const today = localDate && /^\d{4}-\d{2}-\d{2}$/.test(localDate)
@@ -61,169 +68,176 @@ export async function POST(request: NextRequest) {
     const newCycle = getCycleForDate(today, frequency)
     const PAGE = 1000
 
-    // 2. Rated highlights in [newCycle.start, today] → latest rating date each.
-    //    (Ground truth is the per-day rating, which survives any key change.)
-    const ratedLatestDate = new Map<string, string>()
+    // Load active highlights once (needed for scores and the unreviewed set).
+    let allHighlightsData: Array<{ id: string; text: string; html_content: string | null }> = []
     {
-      const { data: winSummaries } = await supabase
-        .from('daily_summaries')
-        .select('id, date')
-        .eq('user_id', user.id)
-        .gte('date', newCycle.startDate)
-        .lte('date', today)
-      const winTyped = (winSummaries || []) as Array<{ id: string; date: string }>
-      if (winTyped.length > 0) {
-        const dateById = new Map(winTyped.map((s) => [s.id, s.date]))
-        let aFrom = 0
-        while (true) {
-          const { data: aPage, error: aErr } = await supabase
-            .from('daily_summary_highlights')
-            .select('highlight_id, daily_summary_id, rating')
-            .in('daily_summary_id', winTyped.map((s) => s.id))
-            .not('rating', 'is', null)
-            .range(aFrom, aFrom + PAGE - 1)
-          if (aErr) throw aErr
-          const page = (aPage || []) as Array<{ highlight_id: string; daily_summary_id: string }>
-          for (const a of page) {
-            const d = dateById.get(a.daily_summary_id)
-            if (!d) continue
-            const prev = ratedLatestDate.get(a.highlight_id)
-            if (!prev || d > prev) ratedLatestDate.set(a.highlight_id, d)
-          }
-          if (page.length < PAGE) break
-          aFrom += PAGE
+      let from = 0
+      while (true) {
+        const { data, error } = await supabase
+          .from('highlights')
+          .select('id, text, html_content')
+          .eq('user_id', user.id)
+          .eq('archived', false)
+          .range(from, from + PAGE - 1)
+        if (error) throw error
+        const page = (data || []) as Array<{ id: string; text: string; html_content: string | null }>
+        allHighlightsData = allHighlightsData.concat(page)
+        if (page.length < PAGE) break
+        from += PAGE
+      }
+    }
+    const scoreById = new Map<string, number>(
+      allHighlightsData.map((h) => {
+        const content = h.html_content || h.text || ''
+        return [h.id, content.replace(/<[^>]*>/g, '').length]
+      })
+    )
+
+    // Summaries spanning the whole new cycle (may be 1–12 calendar months).
+    const { data: cycleSummariesData, error: csErr } = await supabase
+      .from('daily_summaries')
+      .select('id, date')
+      .eq('user_id', user.id)
+      .gte('date', newCycle.startDate)
+      .lte('date', newCycle.endDate)
+    if (csErr) throw csErr
+    const cycleSummaries = (cycleSummariesData || []) as Array<{ id: string; date: string }>
+    const cycleSummaryIds = cycleSummaries.map((s) => s.id)
+    const dateById = new Map(cycleSummaries.map((s) => [s.id, s.date]))
+
+    // 2/3. doneIds = highlights with a RATED row dated anywhere in the cycle
+    //      (the cross-month duplicate check), plus per-day rated load for balance.
+    const doneIds = new Set<string>()
+    const ratedScoreByDate = new Map<string, number>()
+    if (cycleSummaryIds.length > 0) {
+      let aFrom = 0
+      while (true) {
+        const { data: aPage, error: aErr } = await supabase
+          .from('daily_summary_highlights')
+          .select('highlight_id, daily_summary_id, rating')
+          .in('daily_summary_id', cycleSummaryIds)
+          .not('rating', 'is', null)
+          .range(aFrom, aFrom + PAGE - 1)
+        if (aErr) throw aErr
+        const page = (aPage || []) as Array<{ highlight_id: string; daily_summary_id: string }>
+        for (const a of page) {
+          doneIds.add(a.highlight_id)
+          const d = dateById.get(a.daily_summary_id)
+          if (d) ratedScoreByDate.set(d, (ratedScoreByDate.get(d) ?? 0) + (scoreById.get(a.highlight_id) ?? 0))
         }
+        if (page.length < PAGE) break
+        aFrom += PAGE
       }
     }
 
-    // Re-key the dedup ledger in place: rename old cycle key → new cycle key.
-    let reKeyed = 0
-    for (const [highlightId, ratingDate] of ratedLatestDate.entries()) {
-      const oldKey = cycleKeyForDate(ratingDate, oldFreq)
-      if (oldKey !== newCycle.key) {
-        await supabase
+    // 4. Rebuild the dedup ledger for this cycle key so the daily cron / assign
+    //    treat exactly the done highlights as reviewed. Minimal diff (preserve
+    //    existing rows' created_at): delete stale, insert missing.
+    {
+      const existing = new Set<string>()
+      let rFrom = 0
+      while (true) {
+        const { data: rPage, error: rErr } = await supabase
+          .from('highlight_months_reviewed')
+          .select('highlight_id')
+          .eq('month_year', newCycle.key)
+          .range(rFrom, rFrom + PAGE - 1)
+        if (rErr) throw rErr
+        const page = (rPage || []) as Array<{ highlight_id: string }>
+        for (const r of page) existing.add(r.highlight_id)
+        if (page.length < PAGE) break
+        rFrom += PAGE
+      }
+      const toDelete = [...existing].filter((id) => !doneIds.has(id))
+      const toInsert = [...doneIds].filter((id) => !existing.has(id))
+      for (let i = 0; i < toDelete.length; i += 200) {
+        const { error } = await supabase
           .from('highlight_months_reviewed')
           .delete()
-          .eq('highlight_id', highlightId)
-          .eq('month_year', oldKey)
+          .eq('month_year', newCycle.key)
+          .in('highlight_id', toDelete.slice(i, i + 200))
+        if (error) throw error
       }
-      await (supabase.from('highlight_months_reviewed') as any).upsert(
-        { highlight_id: highlightId, month_year: newCycle.key },
-        { onConflict: 'highlight_id,month_year' }
-      )
-      reKeyed++
+      for (let i = 0; i < toInsert.length; i += 500) {
+        const rows = toInsert.slice(i, i + 500).map((id) => ({ highlight_id: id, month_year: newCycle.key }))
+        const { error } = await (supabase.from('highlight_months_reviewed') as any)
+          .upsert(rows, { onConflict: 'highlight_id,month_year', ignoreDuplicates: true })
+        if (error) throw error
+      }
     }
 
-    // 4. Clear unrated assignments from the current cycle start onward (current
-    //    cycle remaining + any misaligned future), preserving rated rows. Then
-    //    drop emptied summaries.
-    {
-      const { data: fwdSummaries } = await supabase
-        .from('daily_summaries')
-        .select('id, date')
-        .eq('user_id', user.id)
-        .gte('date', newCycle.startDate)
-      const fwdTyped = (fwdSummaries || []) as Array<{ id: string; date: string }>
-      if (fwdTyped.length > 0) {
-        const ids = fwdTyped.map((s) => s.id)
-        // Delete unrated assignment rows.
-        await supabase
+    // 5. Clear ONLY unrated rows in the cycle (the stale to-do); rated rows stay
+    //    put. Then drop summaries left with no rows.
+    if (cycleSummaryIds.length > 0) {
+      for (let i = 0; i < cycleSummaryIds.length; i += 200) {
+        const { error } = await supabase
           .from('daily_summary_highlights')
           .delete()
-          .in('daily_summary_id', ids)
+          .in('daily_summary_id', cycleSummaryIds.slice(i, i + 200))
           .is('rating', null)
-        // Drop summaries that now have no assignments at all.
-        const { data: remaining } = await supabase
+        if (error) throw error
+      }
+      const withRows = new Set<string>()
+      for (let i = 0; i < cycleSummaryIds.length; i += 200) {
+        const { data: rem } = await supabase
           .from('daily_summary_highlights')
           .select('daily_summary_id')
-          .in('daily_summary_id', ids)
-        const withRows = new Set((remaining || []).map((r: any) => r.daily_summary_id))
-        const emptyIds = ids.filter((id) => !withRows.has(id))
-        if (emptyIds.length > 0) {
-          await supabase.from('daily_summaries').delete().in('id', emptyIds)
-        }
+          .in('daily_summary_id', cycleSummaryIds.slice(i, i + 200))
+        for (const r of (rem || []) as Array<{ daily_summary_id: string }>) withRows.add(r.daily_summary_id)
+      }
+      const emptyIds = cycleSummaryIds.filter((id) => !withRows.has(id))
+      for (let i = 0; i < emptyIds.length; i += 200) {
+        const { error } = await supabase.from('daily_summaries').delete().in('id', emptyIds.slice(i, i + 200))
+        if (error) throw error
       }
     }
 
-    // 5. Re-pack the unreviewed remainder across the new cycle's remaining days.
-    let allHighlightsData: Array<{ id: string; text: string; html_content: string | null }> = []
-    let from = 0
-    while (true) {
-      const { data, error: pErr } = await supabase
-        .from('highlights')
-        .select('id, text, html_content')
-        .eq('user_id', user.id)
-        .eq('archived', false)
-        .range(from, from + PAGE - 1)
-      if (pErr) throw pErr
-      const page = (data || []) as Array<{ id: string; text: string; html_content: string | null }>
-      allHighlightsData = allHighlightsData.concat(page)
-      if (page.length < PAGE) break
-      from += PAGE
-    }
+    // 6/7. Pack the unreviewed remainder across [today … cycle end], balancing
+    //      per-day TOTAL by seeding each pack day with its rated load. (Pure,
+    //      reversible — see lib/retile.ts.)
+    const highlights: Scored[] = allHighlightsData.map((h) => ({
+      id: h.id,
+      text: h.text,
+      html_content: h.html_content,
+      score: scoreById.get(h.id) ?? 0,
+    }))
+    const buckets = computeToDoLayout({
+      today,
+      cycle: newCycle,
+      highlights,
+      doneIds,
+      ratedScoreByDate,
+    })
 
-    // Reviewed-this-cycle (ledger, now re-keyed) — excluded from the re-pack.
-    const reviewedIds = new Set<string>()
-    let rFrom = 0
-    while (true) {
-      const { data: rPage, error: rErr } = await supabase
-        .from('highlight_months_reviewed')
-        .select('highlight_id')
-        .eq('month_year', newCycle.key)
-        .range(rFrom, rFrom + PAGE - 1)
-      if (rErr) throw rErr
-      const page = (rPage || []) as Array<{ highlight_id: string }>
-      for (const r of page) reviewedIds.add(r.highlight_id)
-      if (page.length < PAGE) break
-      rFrom += PAGE
-    }
-
-    const U: Scored[] = allHighlightsData
-      .filter((h) => !reviewedIds.has(h.id) && !ratedLatestDate.has(h.id))
-      .map((h) => {
-        const content = h.html_content || h.text || ''
-        return { id: h.id, text: h.text, html_content: h.html_content, score: content.replace(/<[^>]*>/g, '').length }
-      })
-
-    const remainingDates = newCycle.dates.filter((d) => d >= today)
+    // 8. Insert the new unrated rows (reuse existing summaries by date, else create).
+    const summaryIdByDate = new Map(cycleSummaries.map((s) => [s.date, s.id]))
     let packed = 0
-    if (U.length > 0 && remainingDates.length > 0) {
-      // Existing (rated) summaries in the remaining window, to reuse their ids.
-      const { data: existing } = await supabase
-        .from('daily_summaries')
-        .select('id, date')
-        .eq('user_id', user.id)
-        .gte('date', today)
-        .lte('date', newCycle.endDate)
-      const existingByDate = new Map((existing || []).map((s: any) => [s.date, s.id]))
-
-      const buckets = packIntoDates(U, remainingDates, cycleSeed(newCycle))
-      for (const bucket of buckets) {
-        if (bucket.highlights.length === 0) continue
-        let summaryId: string | null = existingByDate.get(bucket.date) ?? null
-        if (!summaryId) {
-          const { data: summaryData, error: sErr } = await (supabase.from('daily_summaries') as any)
-            .insert([{ date: bucket.date, user_id: user.id }])
-            .select()
-            .single()
-          if (sErr) throw sErr
-          summaryId = summaryData.id
-        }
-        const { error: linkError } = await (supabase.from('daily_summary_highlights') as any)
-          .upsert(
-            bucket.highlights.map((h) => ({ daily_summary_id: summaryId, highlight_id: h.id })),
-            { onConflict: 'daily_summary_id,highlight_id', ignoreDuplicates: true }
-          )
-        if (linkError) throw linkError
-        packed += bucket.highlights.length
+    for (const bucket of buckets) {
+      if (bucket.highlights.length === 0) continue
+      let summaryId: string | null = summaryIdByDate.get(bucket.date) ?? null
+      if (!summaryId) {
+        const { data: sd, error: se } = await (supabase.from('daily_summaries') as any)
+          .insert([{ date: bucket.date, user_id: user.id }])
+          .select()
+          .single()
+        if (se) throw se
+        summaryId = sd.id as string
+        summaryIdByDate.set(bucket.date, summaryId)
       }
+      const { error: le } = await (supabase.from('daily_summary_highlights') as any).upsert(
+        bucket.highlights.map((h) => ({ daily_summary_id: summaryId!, highlight_id: h.id })),
+        { onConflict: 'daily_summary_id,highlight_id', ignoreDuplicates: true }
+      )
+      if (le) throw le
+      packed += bucket.highlights.length
     }
 
     return NextResponse.json({
       message: `Applied frequency ${frequency}. Re-tiled cycle ${newCycle.key}.`,
       frequency,
+      enabled,
       cycleKey: newCycle.key,
-      reKeyed,
+      doneCount: doneIds.size,
       repacked: packed,
     })
   } catch (error: any) {

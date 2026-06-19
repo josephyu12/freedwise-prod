@@ -467,7 +467,18 @@ A **rated `daily_summary_highlights` row** and its matching **`highlight_months_
   - seed per-day load with the preserved rated score (`packIntoDates(..., initialLoads)`) so day **totals** stay balanced.
 - **Postcondition** to uphold: for any cycle, *every* highlight in `highlight_months_reviewed[cycleKey]` has a rated row somewhere in that cycle's days. (Verify with a count of "reviewed-but-not-on-calendar" == 0.)
 
-Current status: `assign` enforces this (rated-only-preserve + unrated-only-delete); `apply-frequency` deletes only unrated and re-keys the ledger; `redistribute` is additive; `reset-cycle` deletes both together. ✓
+Current status: `assign` enforces this (rated-only-preserve + unrated-only-delete); `apply-frequency` follows the anchored model below; `redistribute` is additive; `reset-cycle` deletes both together. ✓
+
+### 8b. Cadence change — anchored & reversible model (`apply-frequency`)
+
+A frequency change is **one unified operation** for both grow and shrink; the direction just falls out of which cycle `today` lands in. It rests on a single principle that subsumes §8a:
+
+- **A rated row is an immutable anchor** — never moved, never deleted (its date is the truth of when you reviewed it). Only **unrated (to-do) rows** are ever recomputed.
+- **"Done for cycle C" = the highlight has a rated row dated inside C.** When *growing*, scanning the whole (larger) cycle is the **cross-month duplicate check**: a highlight still to-do in the current month but already reviewed in another month of the bigger cycle is found here, kept done, and never re-queued.
+- The unreviewed remainder (`active − doneIds`) is packed across `[today … cycle end]` by `cycleSeed(cycle)`, each pack day pre-loaded with the score of the rated rows already on it (`packIntoDates(..., initialLoads)`) so per-day **totals** stay balanced. Done highlights pool naturally in the past (they were reviewed on earlier dates); to-do sits ahead.
+- The ledger for the cycle key is rebuilt to equal `doneIds` (minimal diff) so the cron/`assign` agree on what's done.
+
+**Reversibility (plan requirement):** the to-do layout is a *pure function* of `(cycle, today, active highlights, doneIds, ratedScoreByDate)` — extracted as `lib/retile.ts#computeToDoLayout`. `doneIds` and `ratedScoreByDate` derive only from immutable rated rows, so returning to a cadence with no new reviews reproduces its exact layout. Round-trips (`1→3→1`, `3→1→3`, `1→3→12→3→1`) are asserted in `__tests__/retile.test.ts`. Consequence: a longer cadence genuinely means each highlight resurfaces less often; nothing is ever deleted.
 
 ---
 

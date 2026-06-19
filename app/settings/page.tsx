@@ -120,9 +120,10 @@ export default function SettingsPage() {
     loadReviewSettings()
   }, [loadReviewSettings])
 
-  // Toggle daily review on/off. A PURE flag toggle: it never adds, deletes, or
-  // moves assignments, so turning off and back on leaves every highlight on the
-  // exact same day it was on before.
+  // Toggle daily review on/off. OFF preserves the current schedule exactly.
+  // ON additionally clears any unreviewed backlog left in cycles that elapsed
+  // while review was off, so re-enabling resumes from the current cycle instead
+  // of greeting you with months of stale "waiting" highlights.
   const handleToggleReview = useCallback(async (next: boolean) => {
     if (!next) {
       if (!confirm('Turn daily review off? Your highlights stay scheduled exactly as they are — they just stop showing until you turn it back on.')) {
@@ -135,7 +136,7 @@ export default function SettingsPage() {
       const res = await fetch('/api/daily/set-enabled', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enabled: next }),
+        body: JSON.stringify({ enabled: next, localDate: localDateString() }),
       })
       if (!res.ok) {
         const data = await res.json().catch(() => ({}))
@@ -567,8 +568,9 @@ export default function SettingsPage() {
                   <p className="text-sm text-amber-800 dark:text-amber-300 mb-3">
                     Change review frequency to{' '}
                     <strong>{FREQUENCY_OPTIONS.find((o) => o.value === showFreqConfirm)?.label}</strong>?
-                    Highlights you’ve already reviewed this period stay done; the rest are re-spread
-                    across the new cycle. A partially-reviewed cycle can’t be re-tiled perfectly.
+                    Highlights already reviewed in the new cycle stay done on their dates; everything
+                    else is re-spread across the days left. A longer cadence means each highlight comes
+                    up less often. Nothing is deleted, and switching back restores the same layout.
                   </p>
                   <div className="flex gap-2">
                     <button
