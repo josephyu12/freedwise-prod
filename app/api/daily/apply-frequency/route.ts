@@ -93,15 +93,30 @@ export async function POST(request: NextRequest) {
       })
     )
 
-    // Summaries spanning the whole new cycle (may be 1–12 calendar months).
-    const { data: cycleSummariesData, error: csErr } = await supabase
-      .from('daily_summaries')
-      .select('id, date')
-      .eq('user_id', user.id)
-      .gte('date', newCycle.startDate)
-      .lte('date', newCycle.endDate)
-    if (csErr) throw csErr
-    const cycleSummaries = (cycleSummariesData || []) as Array<{ id: string; date: string }>
+    // ALL of the user's summaries (paginated). We need the full set because a
+    // re-tile must clear EVERY unrated (to-do) row, not just those inside the new
+    // cycle: a previous, larger cycle may have scattered to-do rows into months
+    // that now fall outside the (smaller) cycle, and those must not linger or
+    // double-place.
+    let allSummaries: Array<{ id: string; date: string }> = []
+    {
+      let from = 0
+      while (true) {
+        const { data, error } = await supabase
+          .from('daily_summaries')
+          .select('id, date')
+          .eq('user_id', user.id)
+          .range(from, from + PAGE - 1)
+        if (error) throw error
+        const page = (data || []) as Array<{ id: string; date: string }>
+        allSummaries = allSummaries.concat(page)
+        if (page.length < PAGE) break
+        from += PAGE
+      }
+    }
+    const allSummaryIds = allSummaries.map((s) => s.id)
+    // Subset inside the new cycle (used for the done-gate + per-day rated load).
+    const cycleSummaries = allSummaries.filter((s) => s.date >= newCycle.startDate && s.date <= newCycle.endDate)
     const cycleSummaryIds = cycleSummaries.map((s) => s.id)
     const dateById = new Map(cycleSummaries.map((s) => [s.id, s.date]))
 
@@ -166,26 +181,43 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // 5. Clear ONLY unrated rows in the cycle (the stale to-do); rated rows stay
-    //    put. Then drop summaries left with no rows.
-    if (cycleSummaryIds.length > 0) {
-      for (let i = 0; i < cycleSummaryIds.length; i += 200) {
+    // 5. Clear EVERY unrated (to-do) row — across the whole library, not just the
+    //    new cycle — so to-do scattered by a previous larger cycle can't linger or
+    //    double-place. Rated rows are NEVER touched. Then drop summaries left with
+    //    no rows.
+    const droppedIds = new Set<string>()
+    if (allSummaryIds.length > 0) {
+      for (let i = 0; i < allSummaryIds.length; i += 200) {
         const { error } = await supabase
           .from('daily_summary_highlights')
           .delete()
-          .in('daily_summary_id', cycleSummaryIds.slice(i, i + 200))
+          .in('daily_summary_id', allSummaryIds.slice(i, i + 200))
           .is('rating', null)
         if (error) throw error
       }
+      // Which summaries still have ANY row — paginated EXHAUSTIVELY. A plain
+      // .in().select() caps at 1000 rows; with many summaries that falsely marks
+      // most "empty", and since daily_summaries → daily_summary_highlights is
+      // ON DELETE CASCADE, deleting them would destroy their RATED rows. Never.
       const withRows = new Set<string>()
-      for (let i = 0; i < cycleSummaryIds.length; i += 200) {
-        const { data: rem } = await supabase
-          .from('daily_summary_highlights')
-          .select('daily_summary_id')
-          .in('daily_summary_id', cycleSummaryIds.slice(i, i + 200))
-        for (const r of (rem || []) as Array<{ daily_summary_id: string }>) withRows.add(r.daily_summary_id)
+      for (let i = 0; i < allSummaryIds.length; i += 200) {
+        const chunkIds = allSummaryIds.slice(i, i + 200)
+        let rFrom = 0
+        while (true) {
+          const { data, error } = await supabase
+            .from('daily_summary_highlights')
+            .select('daily_summary_id')
+            .in('daily_summary_id', chunkIds)
+            .range(rFrom, rFrom + PAGE - 1)
+          if (error) throw error
+          const page = (data || []) as Array<{ daily_summary_id: string }>
+          for (const r of page) withRows.add(r.daily_summary_id)
+          if (page.length < PAGE) break
+          rFrom += PAGE
+        }
       }
-      const emptyIds = cycleSummaryIds.filter((id) => !withRows.has(id))
+      const emptyIds = allSummaryIds.filter((id) => !withRows.has(id))
+      for (const id of emptyIds) droppedIds.add(id)
       for (let i = 0; i < emptyIds.length; i += 200) {
         const { error } = await supabase.from('daily_summaries').delete().in('id', emptyIds.slice(i, i + 200))
         if (error) throw error
@@ -209,8 +241,11 @@ export async function POST(request: NextRequest) {
       ratedScoreByDate,
     })
 
-    // 8. Insert the new unrated rows (reuse existing summaries by date, else create).
-    const summaryIdByDate = new Map(cycleSummaries.map((s) => [s.date, s.id]))
+    // 8. Insert the new unrated rows (reuse SURVIVING summaries by date, else
+    //    create — summaries dropped in step 5 must not be referenced).
+    const summaryIdByDate = new Map(
+      allSummaries.filter((s) => !droppedIds.has(s.id)).map((s) => [s.date, s.id])
+    )
     let packed = 0
     for (const bucket of buckets) {
       if (bucket.highlights.length === 0) continue
