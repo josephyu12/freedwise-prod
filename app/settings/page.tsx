@@ -143,13 +143,17 @@ export default function SettingsPage() {
         throw new Error(data.error || 'Failed to update setting')
       }
       setReviewEnabled(next)
+      // Refresh the cadence-dependent UI (reviewed count, unreviewed list,
+      // cycle label) and revalidate the route so nothing is stale.
+      await loadLastMonthReviewedCount()
+      router.refresh()
       setMessage({ type: 'success', text: next ? 'Daily review turned on — your schedule is exactly where you left it.' : 'Daily review turned off. Your schedule is preserved.' })
     } catch (error: any) {
       setMessage({ type: 'error', text: error.message || 'Failed to update setting' })
     } finally {
       setReviewBusy(false)
     }
-  }, [])
+  }, [loadLastMonthReviewedCount, router])
 
   // Apply a new review frequency (re-tiles the current cycle, D7).
   const handleApplyFrequency = useCallback(async (value: number) => {
@@ -165,14 +169,16 @@ export default function SettingsPage() {
       const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(data.error || 'Failed to apply frequency')
       setFrequency(value)
+      // Refresh the cadence-dependent UI and revalidate the route.
       await loadLastMonthReviewedCount()
+      router.refresh()
       setMessage({ type: 'success', text: 'Review frequency updated.' })
     } catch (error: any) {
       setMessage({ type: 'error', text: error.message || 'Failed to apply frequency' })
     } finally {
       setReviewBusy(false)
     }
-  }, [loadLastMonthReviewedCount])
+  }, [loadLastMonthReviewedCount, router])
 
   const handleSyncReviewedStatus = useCallback(async () => {
     setSyncingRepair(true)
