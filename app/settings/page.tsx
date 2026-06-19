@@ -85,6 +85,20 @@ export default function SettingsPage() {
     loadSettings()
   }, [loadSettings])
 
+  // Surface any flash message stashed before a hard reload (e.g. after a
+  // cadence change, which reloads so all cadence-dependent state re-fetches).
+  useEffect(() => {
+    try {
+      const raw = sessionStorage.getItem('settingsFlash')
+      if (raw) {
+        sessionStorage.removeItem('settingsFlash')
+        setMessage(JSON.parse(raw))
+      }
+    } catch {
+      /* ignore */
+    }
+  }, [])
+
   const loadLastMonthReviewedCount = useCallback(async () => {
     try {
       const res = await fetch('/api/stats/reviewed-count')
@@ -168,17 +182,21 @@ export default function SettingsPage() {
       })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(data.error || 'Failed to apply frequency')
-      setFrequency(value)
-      // Refresh the cadence-dependent UI and revalidate the route.
-      await loadLastMonthReviewedCount()
-      router.refresh()
-      setMessage({ type: 'success', text: 'Review frequency updated.' })
+      // The cycle was re-tiled server-side. This is a pure client component, so
+      // router.refresh() won't re-fetch our local state (frequency, cycle
+      // label, reviewed counts). Do a full reload so everything reflects the
+      // new cadence, carrying the success message across via sessionStorage.
+      try {
+        sessionStorage.setItem('settingsFlash', JSON.stringify({ type: 'success', text: 'Review frequency updated.' }))
+      } catch {
+        /* ignore */
+      }
+      window.location.reload()
     } catch (error: any) {
       setMessage({ type: 'error', text: error.message || 'Failed to apply frequency' })
-    } finally {
       setReviewBusy(false)
     }
-  }, [loadLastMonthReviewedCount, router])
+  }, [])
 
   const handleSyncReviewedStatus = useCallback(async () => {
     setSyncingRepair(true)
