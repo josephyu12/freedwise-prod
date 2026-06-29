@@ -4,9 +4,21 @@ import {
   getCycleForDate,
   getUserReviewSettings,
   normalizeFreq,
+  nextCycle,
+  cycleSeed,
 } from '@/lib/cycle'
-import { Scored } from '@/lib/binPack'
+import { Scored, DayBucket, packIntoDates } from '@/lib/binPack'
 import { computeToDoLayout } from '@/lib/retile'
+
+// Mirror /api/daily/prepare-next-cycle: it portions the NEXT cycle once today is
+// within this many days of the current cycle's end (e.g. past the 24th of a
+// 31-day month). A cadence change must honor the same window so the upcoming
+// cycle isn't dropped.
+const LEAD_DAYS = 7
+const daysBetween = (aIso: string, bIso: string): number =>
+  Math.round(
+    (new Date(`${bIso}T00:00:00Z`).getTime() - new Date(`${aIso}T00:00:00Z`).getTime()) / 86400000
+  )
 
 /**
  * POST /api/daily/apply-frequency
@@ -241,13 +253,97 @@ export async function POST(request: NextRequest) {
       ratedScoreByDate,
     })
 
+    // 7b. NEXT-CYCLE CARRY-OVER. When today is within the lead window of the new
+    //     cycle's end, the daily cron (/api/daily/prepare-next-cycle) would have
+    //     already portioned the NEXT cycle. Step 5 cleared EVERY unrated row
+    //     library-wide — including those next-cycle to-do rows — so without this a
+    //     cadence change made "past the 24th" silently drops the upcoming cycle.
+    //     Re-portion it here for the new cadence, mirroring that cron's gating and
+    //     packing: the FULL next-cycle dates (today is not in it), cycleSeed(next)
+    //     for a reversible layout, done-gated by immutable rated rows.
+    let nextBuckets: DayBucket[] = []
+    let nextCycleKey: string | null = null
+    if (enabled && daysBetween(today, newCycle.endDate) <= LEAD_DAYS) {
+      const next = nextCycle(newCycle)
+      nextCycleKey = next.key
+      const nextSummaries = allSummaries.filter((s) => s.date >= next.startDate && s.date <= next.endDate)
+      const nextSummaryIds = nextSummaries.map((s) => s.id)
+      const nextDateById = new Map(nextSummaries.map((s) => [s.id, s.date]))
+
+      // done-gate for the next cycle: highlights with a RATED row dated inside it,
+      // plus per-day rated load for balance (identical model to steps 2/3).
+      const nextDoneIds = new Set<string>()
+      const nextRatedScoreByDate = new Map<string, number>()
+      if (nextSummaryIds.length > 0) {
+        let aFrom = 0
+        while (true) {
+          const { data: aPage, error: aErr } = await supabase
+            .from('daily_summary_highlights')
+            .select('highlight_id, daily_summary_id, rating')
+            .in('daily_summary_id', nextSummaryIds)
+            .not('rating', 'is', null)
+            .range(aFrom, aFrom + PAGE - 1)
+          if (aErr) throw aErr
+          const page = (aPage || []) as Array<{ highlight_id: string; daily_summary_id: string }>
+          for (const a of page) {
+            nextDoneIds.add(a.highlight_id)
+            const d = nextDateById.get(a.daily_summary_id)
+            if (d) nextRatedScoreByDate.set(d, (nextRatedScoreByDate.get(d) ?? 0) + (scoreById.get(a.highlight_id) ?? 0))
+          }
+          if (page.length < PAGE) break
+          aFrom += PAGE
+        }
+      }
+
+      // Rebuild the dedup ledger for the next cycle key (same minimal diff as step 4)
+      // so the daily cron / assign treat exactly its done highlights as reviewed.
+      {
+        const existing = new Set<string>()
+        let rFrom = 0
+        while (true) {
+          const { data: rPage, error: rErr } = await supabase
+            .from('highlight_months_reviewed')
+            .select('highlight_id')
+            .eq('month_year', next.key)
+            .range(rFrom, rFrom + PAGE - 1)
+          if (rErr) throw rErr
+          const page = (rPage || []) as Array<{ highlight_id: string }>
+          for (const r of page) existing.add(r.highlight_id)
+          if (page.length < PAGE) break
+          rFrom += PAGE
+        }
+        const toDelete = [...existing].filter((id) => !nextDoneIds.has(id))
+        const toInsert = [...nextDoneIds].filter((id) => !existing.has(id))
+        for (let i = 0; i < toDelete.length; i += 200) {
+          const { error } = await supabase
+            .from('highlight_months_reviewed')
+            .delete()
+            .eq('month_year', next.key)
+            .in('highlight_id', toDelete.slice(i, i + 200))
+          if (error) throw error
+        }
+        for (let i = 0; i < toInsert.length; i += 500) {
+          const rows = toInsert.slice(i, i + 500).map((id) => ({ highlight_id: id, month_year: next.key }))
+          const { error } = await (supabase.from('highlight_months_reviewed') as any)
+            .upsert(rows, { onConflict: 'highlight_id,month_year', ignoreDuplicates: true })
+          if (error) throw error
+        }
+      }
+
+      const nextUnreviewed = highlights.filter((h) => !nextDoneIds.has(h.id))
+      const nextInitial = new Map<string, number>()
+      for (const d of next.dates) nextInitial.set(d, nextRatedScoreByDate.get(d) ?? 0)
+      nextBuckets = packIntoDates(nextUnreviewed, next.dates, cycleSeed(next), nextInitial)
+    }
+
     // 8. Insert the new unrated rows (reuse SURVIVING summaries by date, else
-    //    create — summaries dropped in step 5 must not be referenced).
+    //    create — summaries dropped in step 5 must not be referenced). Covers both
+    //    the re-tiled current cycle and (when in the lead window) the next cycle.
     const summaryIdByDate = new Map(
       allSummaries.filter((s) => !droppedIds.has(s.id)).map((s) => [s.date, s.id])
     )
     let packed = 0
-    for (const bucket of buckets) {
+    for (const bucket of [...buckets, ...nextBuckets]) {
       if (bucket.highlights.length === 0) continue
       let summaryId: string | null = summaryIdByDate.get(bucket.date) ?? null
       if (!summaryId) {
@@ -274,6 +370,7 @@ export async function POST(request: NextRequest) {
       cycleKey: newCycle.key,
       doneCount: doneIds.size,
       repacked: packed,
+      nextCycleKey,
     })
   } catch (error: any) {
     console.error('Error applying frequency:', error)
