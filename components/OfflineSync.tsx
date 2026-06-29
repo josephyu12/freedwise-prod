@@ -3,8 +3,7 @@
 import { useCallback, useEffect, useRef } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { useOfflineStatus } from '@/hooks/useOfflineStatus'
-import { isEffectivelyOffline } from '@/hooks/useManualOffline'
-import { replayPendingActions, countReplayable } from '@/lib/offlineReplay'
+import { drainOfflineQueue } from '@/lib/offlineReplay'
 
 // Global, headless offline-queue drainer. Mounted once in the root layout so the
 // entire offline action queue replays from ANY page — not just /review and
@@ -20,32 +19,24 @@ export default function OfflineSync() {
   const { isOnline } = useOfflineStatus()
   const supabaseRef = useRef<ReturnType<typeof createClient> | null>(null)
   if (!supabaseRef.current) supabaseRef.current = createClient()
-  const inFlight = useRef(false)
 
-  const runSync = useCallback(async () => {
-    // Single-flight: a flapping connection (or a burst of enqueues) must not run
-    // two overlapping replays over the same queue snapshot.
-    if (inFlight.current) return
-    // Offline (manual switch OR a real disconnect) means do not drain. The
-    // manual case matters most: the user opted out of sync typically BECAUSE
-    // they still have a (weak/flapping) connection, so navigator.onLine is
-    // usually true. Without this, every queued rating would fire
-    // `offline-action-enqueued` → drain immediately → `offline-sync-complete` →
-    // a page reload after each rating, which is exactly what offline mode is
-    // meant to prevent.
-    if (isEffectivelyOffline()) return
-    inFlight.current = true
-    try {
-      const pending = await countReplayable()
-      if (pending === 0) return
-      window.dispatchEvent(new CustomEvent('offline-sync-start', { detail: { pending } }))
-      const result = await replayPendingActions(supabaseRef.current, (remaining) => {
-        window.dispatchEvent(new CustomEvent('offline-sync-progress', { detail: { remaining } }))
-      })
-      window.dispatchEvent(new CustomEvent('offline-sync-complete', { detail: result }))
-    } finally {
-      inFlight.current = false
-    }
+  // Delegate to the shared, single-flight drain in lib/offlineReplay so this
+  // global drainer and any page that drains-before-read go through ONE guard
+  // (joining an in-flight drain, never overlapping it). The drain's
+  // single-flight + dirty-reloop also guarantees an action enqueued mid-drain
+  // (e.g. an edit made on a flapping connection while the reconnect drain is
+  // still running) gets picked up in the same cycle instead of being swallowed
+  // and sitting unsynced — which surfaced as "the edit didn't sync / I still see
+  // the original highlight without its review".
+  const runSync = useCallback(() => {
+    drainOfflineQueue(supabaseRef.current, {
+      onStart: (pending) =>
+        window.dispatchEvent(new CustomEvent('offline-sync-start', { detail: { pending } })),
+      onProgress: (remaining) =>
+        window.dispatchEvent(new CustomEvent('offline-sync-progress', { detail: { remaining } })),
+      onComplete: (result) =>
+        window.dispatchEvent(new CustomEvent('offline-sync-complete', { detail: result })),
+    })
   }, [])
 
   // Drain on reconnect / initial load.

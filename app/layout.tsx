@@ -4,6 +4,7 @@ import './globals.css'
 import AppHeader from '@/components/AppHeader'
 import ServiceWorkerRegistrar from '@/components/ServiceWorkerRegistrar'
 import OfflineSync from '@/components/OfflineSync'
+import DiscardedChangesBanner from '@/components/DiscardedChangesBanner'
 
 const inter = Inter({ subsets: ['latin'], display: 'swap' })
 import Link from 'next/link'
@@ -48,6 +49,7 @@ export default function RootLayout({
       <body className={`${inter.className} flex flex-col min-h-screen`}>
         <ServiceWorkerRegistrar />
         <OfflineSync />
+        <DiscardedChangesBanner />
         <AppHeader />
         <div className="flex-1">
           {children}

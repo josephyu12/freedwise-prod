@@ -14,11 +14,12 @@
 // it). On any failure we stop and leave that action — and everything after it —
 // queued for the next retry. Nothing is ever dropped.
 
-import { getPendingActions, removeAction } from './offlineStore'
+import { getPendingActions, removeAction, incrementActionAttempts } from './offlineStore'
 import { isEffectivelyOffline } from '@/hooks/useManualOffline'
 import { callRedistribute } from './redistribute'
 import { removeFromFutureMonths } from './removeFromFutureMonths'
 import { getUserFrequency, getCycleForDate, prevCycle, cycleKeyForDate } from './cycle'
+import { recordDiscardedChange, describeDiscardedAction } from './discardedChanges'
 
 const REPLAYABLE = new Set<string>([
   'rate-review',
@@ -32,11 +33,28 @@ const REPLAYABLE = new Set<string>([
   'unpin-highlight',
 ])
 
+// A "poison" action — one the SERVER keeps rejecting (an orphaned row, a
+// constraint it can never satisfy, an RLS denial) — is dropped after this many
+// failed attempts so it stops blocking everything queued behind it forever.
+const MAX_ATTEMPTS = 5
+
+// Only a server-side rejection counts toward the poison threshold. A thrown
+// Supabase error carries a PostgREST/Postgres code; a transient network failure
+// (fetch threw, request aborted/timed out) does not. Counting only coded errors
+// keeps the long-standing data-safety guarantee intact: a flaky connection never
+// burns down a perfectly good action's attempt budget — only a write the server
+// actively refuses does. Unknown/codeless errors are treated as transient (the
+// safe default: retry, never drop).
+function isPermanentError(err: any): boolean {
+  return !!(err && typeof err === 'object' && typeof err.code === 'string' && err.code.length > 0)
+}
+
 export interface ReplayResult {
   processed: number // actions successfully synced this run
   remaining: number // replayable actions still queued afterward
   touchedHighlights: boolean // whether any highlight content changed
   stalled: boolean // stopped with work left (likely transient failure)
+  dropped: number // poison actions discarded this run (server kept rejecting them)
 }
 
 /** Count replayable actions still queued (best-effort; 0 on error). */
@@ -49,6 +67,59 @@ export async function countReplayable(): Promise<number> {
   }
 }
 
+export interface DrainHooks {
+  onStart?: (pending: number) => void
+  onProgress?: (remaining: number) => void
+  onComplete?: (result: ReplayResult) => void
+}
+
+// Module-level single-flight guard for the drain, shared by every caller (the
+// global <OfflineSync> AND page loads that drain before reading the server). A
+// caller arriving while a drain is in flight JOINS that drain's promise and
+// marks it dirty, so the running drain loops once more to pick up anything
+// queued meanwhile — it never starts a second overlapping drain over the same
+// queue snapshot.
+let drainPromise: Promise<ReplayResult | null> | null = null
+let drainDirty = false
+
+/**
+ * Drain the offline queue once, end to end, behind a process-wide single-flight
+ * guard. Returns the last ReplayResult, or null if nothing was drained (offline,
+ * or queue empty). Hooks belong to the FIRST caller of an in-flight drain;
+ * callers that join an existing drain pass no hooks. The global <OfflineSync>
+ * uses the hooks to broadcast its window events; page loads await it hook-less
+ * so they can read fresh server truth only after queued writes have landed.
+ */
+export function drainOfflineQueue(supabase: any, hooks: DrainHooks = {}): Promise<ReplayResult | null> {
+  if (drainPromise) {
+    drainDirty = true
+    return drainPromise
+  }
+  if (isEffectivelyOffline()) return Promise.resolve(null)
+  drainPromise = (async () => {
+    let last: ReplayResult | null = null
+    do {
+      // Clear before each pass: a trigger arriving during this pass sets it
+      // again, so we loop and pick up work enqueued mid-drain.
+      drainDirty = false
+      const pending = await countReplayable()
+      if (pending === 0) break
+      hooks.onStart?.(pending)
+      last = await replayPendingActions(supabase, hooks.onProgress)
+      hooks.onComplete?.(last)
+      // Stop if the pass stalled on a transient failure: re-looping would just
+      // re-hit the same blocked action at the front of the queue. The next real
+      // trigger (reconnect / enqueue / page load) retries it. Anything queued
+      // mid-drain is behind that action anyway, so nothing is lost by waiting.
+      if (last.stalled) break
+    } while (drainDirty && !isEffectivelyOffline())
+    return last
+  })().finally(() => {
+    drainPromise = null
+  })
+  return drainPromise
+}
+
 /**
  * Drain the offline queue against Supabase. Safe to call from anywhere; it
  * no-ops when offline or signed out, leaving the queue intact for a real retry.
@@ -59,7 +130,7 @@ export async function replayPendingActions(
 ): Promise<ReplayResult> {
   const idle = async (): Promise<ReplayResult> => {
     const remaining = await countReplayable()
-    return { processed: 0, remaining, touchedHighlights: false, stalled: remaining > 0 }
+    return { processed: 0, remaining, touchedHighlights: false, stalled: remaining > 0, dropped: 0 }
   }
 
   // Guard the mount race / offline state: if we're effectively offline — the
@@ -93,6 +164,7 @@ export async function replayPendingActions(
   const actions = all.filter((a) => REPLAYABLE.has(a.type))
 
   let processed = 0
+  let dropped = 0
   let touchedHighlights = false
   let stalled = false
 
@@ -102,25 +174,52 @@ export async function replayPendingActions(
       if (touched) touchedHighlights = true
       await removeAction(action.id!)
       processed++
-      onProgress?.(actions.length - processed)
+      onProgress?.(actions.length - processed - dropped)
     } catch (err) {
-      // Transient (network) or permanently poison — either way keep this and the
-      // rest queued and stop. Data-safe: never drops, may stall behind a poison
-      // action until it's resolved (the accepted trade across the app).
+      // A server rejection (coded error) advances this action's persistent
+      // attempt count; once it crosses MAX_ATTEMPTS we give up on it and DROP it
+      // so it can't block the rest of the queue forever, then continue past it.
+      // A transient/network error (no code) never advances the count — we leave
+      // the action and everything after it queued and stop, exactly as before,
+      // for a real retry on the next drain. Either way nothing good is ever lost.
+      if (isPermanentError(err)) {
+        const attempts = await incrementActionAttempts(action.id!)
+        if (attempts >= MAX_ATTEMPTS) {
+          console.error(
+            `Dropping poison offline action after ${attempts} server rejections:`,
+            action,
+            err
+          )
+          // Persist a user-facing notice BEFORE removing it — the change is about
+          // to be lost for good, so the user must be told what didn't save.
+          recordDiscardedChange({
+            id: action.id!,
+            type: action.type,
+            label: describeDiscardedAction(action),
+            at: Date.now(),
+          })
+          await removeAction(action.id!)
+          dropped++
+          onProgress?.(actions.length - processed - dropped)
+          continue
+        }
+      }
       console.error('Offline replay failed; leaving action queued for retry:', err)
       stalled = true
       break
     }
   }
 
-  if (touchedHighlights && typeof window !== 'undefined') {
+  if ((touchedHighlights || dropped > 0) && typeof window !== 'undefined') {
     // Nudge the Notion sync badge to refetch (the queue row itself was written
-    // atomically by a DB trigger on the highlight write).
+    // atomically by a DB trigger on the highlight write). Also refetch after a
+    // drop: discarding a poison highlight write means the badge's optimistic
+    // count no longer matches reality.
     window.dispatchEvent(new Event('notion-sync-queue-updated'))
   }
 
   const remaining = await countReplayable()
-  return { processed, remaining, touchedHighlights, stalled }
+  return { processed, remaining, touchedHighlights, stalled, dropped }
 }
 
 // Replay a single action. Returns true if it changed highlight content (so the

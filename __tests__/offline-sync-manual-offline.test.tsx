@@ -24,13 +24,18 @@ const online = vi.hoisted(() => ({ value: true }))
 // permissive supabase stub is enough. The drain guard is type-agnostic; this
 // test only cares whether runSync drains AT ALL, not how a specific action
 // replays.
-const QUEUE = vi.hoisted(() => [
+const state = vi.hoisted(() => ({ queue: [] as any[] }))
+const initialQueue = () => [
   { id: 1, type: 'unpin-highlight', params: { highlightId: 'h1' }, createdAt: 1 },
-])
+]
 
 const offlineMocks = vi.hoisted(() => ({
-  getPendingActions: vi.fn(async () => QUEUE),
-  removeAction: vi.fn(async () => {}),
+  // removeAction mutates the backing queue (as real IndexedDB does) so a re-drain
+  // never re-processes an already-removed action.
+  getPendingActions: vi.fn(async () => state.queue.slice()),
+  removeAction: vi.fn(async (id: number) => {
+    state.queue = state.queue.filter((a) => a.id !== id)
+  }),
   enqueueOfflineAction: vi.fn(async () => 0),
 }))
 
@@ -54,6 +59,7 @@ vi.mock('@/lib/supabase/client', () => ({
 
 beforeEach(() => {
   online.value = true
+  state.queue = initialQueue()
   window.localStorage.clear()
   offlineMocks.getPendingActions.mockClear()
   offlineMocks.removeAction.mockClear()

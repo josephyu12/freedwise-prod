@@ -19,6 +19,7 @@ import { reconcileAheadOrder, readAheadOrder, writeAheadOrder } from '@/lib/ahea
 import { getUserReviewSettings, getCycleForDate, prevCycle, cycleKeyForDate } from '@/lib/cycle'
 import { useOfflineSyncState } from '@/hooks/useOfflineSyncState'
 import OfflineBanner from '@/components/OfflineBanner'
+import { countReplayable, drainOfflineQueue } from '@/lib/offlineReplay'
 import {
   cacheReviewData,
   getCachedReviewData,
@@ -220,6 +221,19 @@ function ReviewPageContent() {
     }
 
     try {
+      // Online, but there are still queued offline writes? Drain them BEFORE
+      // reading the server. Otherwise this fetch returns (and re-caches) server
+      // truth that predates those queued edits/ratings — clobbering the
+      // optimistic cache and surfacing as "my edit didn't sync / I see the
+      // original highlight without its review". Shares the global single-flight
+      // guard, so this just joins an in-flight drain if <OfflineSync> is already
+      // running one. Best-effort: on failure we fall through and read anyway.
+      try {
+        if ((await countReplayable()) > 0) await drainOfflineQueue(supabase)
+      } catch (e) {
+        console.warn('Pre-read drain failed; reading server anyway:', e)
+      }
+
       // getSession reads from local cookie — no network call needed
       const { data: { session } } = await supabase.auth.getSession()
       const user = session?.user
@@ -1564,7 +1578,9 @@ function ReviewPageContent() {
   useEffect(() => {
     const onComplete = (e: Event) => {
       const result = (e as CustomEvent).detail
-      if (result?.processed > 0 || result?.touchedHighlights) loadHighlights()
+      // Reload on a drop too: a discarded poison action's optimistic change must
+      // be reverted to server truth.
+      if (result?.processed > 0 || result?.touchedHighlights || result?.dropped > 0) loadHighlights()
     }
     window.addEventListener('offline-sync-complete', onComplete)
     return () => window.removeEventListener('offline-sync-complete', onComplete)

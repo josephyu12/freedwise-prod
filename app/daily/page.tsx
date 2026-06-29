@@ -20,6 +20,7 @@ import { useOfflineStatus } from '@/hooks/useOfflineStatus'
 import { isEffectivelyOffline } from '@/hooks/useManualOffline'
 import { useOfflineSyncState } from '@/hooks/useOfflineSyncState'
 import OfflineBanner from '@/components/OfflineBanner'
+import { countReplayable, drainOfflineQueue } from '@/lib/offlineReplay'
 import {
   cacheDailyData,
   getCachedDailyData,
@@ -431,6 +432,19 @@ export default function DailyPage() {
     }
 
     try {
+      // Online, but there are still queued offline writes? Drain them BEFORE
+      // reading the server. Otherwise this fetch returns (and re-caches) server
+      // truth that predates those queued edits/ratings — clobbering the
+      // optimistic cache and surfacing as "my edit didn't sync / I see the
+      // original highlight without its review". Shares the global single-flight
+      // guard, so this just joins an in-flight drain if <OfflineSync> is already
+      // running one. Best-effort: on failure we fall through and read anyway.
+      try {
+        if ((await countReplayable()) > 0) await drainOfflineQueue(supabase)
+      } catch (e) {
+        console.warn('Pre-read drain failed; reading server anyway:', e)
+      }
+
       const { data: { user } } = await supabase.auth.getUser()
       if (!user) {
         setLoading(false)
@@ -1605,7 +1619,9 @@ export default function DailyPage() {
   useEffect(() => {
     const onComplete = (e: Event) => {
       const result = (e as CustomEvent).detail
-      if (result?.processed > 0 || result?.touchedHighlights) {
+      // Reload on a drop too: a discarded poison action's optimistic change must
+      // be reverted to server truth.
+      if (result?.processed > 0 || result?.touchedHighlights || result?.dropped > 0) {
         loadDailySummary(date)
         const [year, month] = date.split('-').map(Number)
         loadMonthReviewStatus(new Date(year, month - 1, 1))

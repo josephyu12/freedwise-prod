@@ -25,19 +25,24 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 // the test can flap the connection by mutating it and re-rendering.
 const online = vi.hoisted(() => ({ value: true }))
 
-// Three queued offline actions. getPendingActions returns the SAME array on
-// every call (removeAction is mocked and does not mutate it), which models the
-// worst case: a second concurrent run sees every action again before the first
-// run's removals have landed.
-const QUEUE = vi.hoisted(() => [
+// Three queued offline actions. removeAction mutates the backing queue (as real
+// IndexedDB does) and getPendingActions returns a fresh snapshot of the live
+// state — so once the single-flight drain removes an action, no later read (or
+// re-drain loop) sees it again. The guard's job is to prevent two OVERLAPPING
+// drains: if it ever let a second run start before the first's removals landed,
+// that run would re-read and re-remove the same ids, doubling the count.
+const state = vi.hoisted(() => ({ queue: [] as any[] }))
+const initialQueue = () => [
   { id: 1, type: 'unpin-highlight', params: { highlightId: 'h1' }, createdAt: 1 },
   { id: 2, type: 'unpin-highlight', params: { highlightId: 'h2' }, createdAt: 2 },
   { id: 3, type: 'unpin-highlight', params: { highlightId: 'h3' }, createdAt: 3 },
-])
+]
 
 const offlineMocks = vi.hoisted(() => ({
-  getPendingActions: vi.fn(async () => QUEUE),
-  removeAction: vi.fn(async () => {}),
+  getPendingActions: vi.fn(async () => state.queue.slice()),
+  removeAction: vi.fn(async (id: number) => {
+    state.queue = state.queue.filter((a) => a.id !== id)
+  }),
   enqueueOfflineAction: vi.fn(async () => 0),
 }))
 
@@ -67,6 +72,7 @@ vi.mock('@/lib/supabase/client', () => ({
 // 3 actions ≈ 150ms of flight, plenty of overlap.
 beforeEach(() => {
   online.value = true
+  state.queue = initialQueue()
   offlineMocks.getPendingActions.mockClear()
   offlineMocks.removeAction.mockClear()
   global.fetch = vi.fn(
