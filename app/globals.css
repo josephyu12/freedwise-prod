@@ -482,6 +482,16 @@ select.input-boxed-elegant {
    and we render `text` directly, raw \n would otherwise collapse). */
 .highlight-content {
   white-space: pre-line;
+  /* Explicitly opt into text selection + the iOS copy/paste callout so the
+     highlight text is always selectable for copy on both desktop and mobile. */
+  -webkit-user-select: text;
+  user-select: text;
+  -webkit-touch-callout: default;
+  cursor: text;
+}
+.highlight-content * {
+  -webkit-user-select: text;
+  user-select: text;
 }
 
 /* Notion-style spacing between paragraphs/blocks inside a highlight card.

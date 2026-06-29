@@ -621,7 +621,18 @@ function ReviewPageContent() {
   // highlight content. Hides on collapse, on selection elsewhere, or while
   // editing/splitting (the read view isn't rendered then).
   useEffect(() => {
+    // Debounce timer: the pill is hidden while the selection is still settling,
+    // then shown a beat later. This keeps the native copy/paste callout — which
+    // pops up immediately on selection — unobstructed so text stays easy to copy.
+    let showTimer: ReturnType<typeof setTimeout> | null = null
+    const clearTimer = () => {
+      if (showTimer) {
+        clearTimeout(showTimer)
+        showTimer = null
+      }
+    }
     const onSelectionChange = () => {
+      clearTimer()
       if (editingId || splitMode) {
         setBoldButtonPos(null)
         return
@@ -641,14 +652,23 @@ function ReviewPageContent() {
         setBoldButtonPos(null)
         return
       }
+      // Hide the pill until the selection settles, then place it BELOW the
+      // selection. The native copy menu appears above the selection on mobile,
+      // so deferring + positioning below keeps copy/paste from being covered.
       const rect = range.getBoundingClientRect()
-      setBoldButtonPos({
-        top: rect.top - 44,
-        left: rect.left + rect.width / 2,
-      })
+      setBoldButtonPos(null)
+      showTimer = setTimeout(() => {
+        setBoldButtonPos({
+          top: rect.bottom + 8,
+          left: rect.left + rect.width / 2,
+        })
+      }, 400)
     }
     document.addEventListener('selectionchange', onSelectionChange)
-    return () => document.removeEventListener('selectionchange', onSelectionChange)
+    return () => {
+      clearTimer()
+      document.removeEventListener('selectionchange', onSelectionChange)
+    }
   }, [editingId, splitMode])
 
   // ⌘B toggles bold on the current selection. ⌘Z / ⌘⇧Z (or ⌘Y) drive the
