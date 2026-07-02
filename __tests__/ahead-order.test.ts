@@ -79,6 +79,38 @@ describe('reconcileAheadOrder — freezing', () => {
     expect(frozenIds).toEqual(ordered.map((r) => r.id))
   })
 
+  it('REGRESSION: rebuilds when a re-portion makes new rows dominate (stale freeze cannot bury days)', () => {
+    // A stale freeze from before the cycle was re-portioned: it lists row ids
+    // that no longer exist (X..Z), plus one that happens to survive (A).
+    const staleFrozen = ['X', 'A', 'Y', 'Z']
+
+    // Current rows are the freshly re-portioned set — mostly ids the freeze
+    // never saw. Under the old tail-append, B/C/D/E would be exiled to the end
+    // and day 2026-06-22 (D, E) would drop out of the visible round-robin pass.
+    const { ordered, frozenIds } = reconcileAheadOrder([A, B, C, D, E], staleFrozen, getLen)
+
+    // Rebuilt to the clean round-robin — every day back at its natural position.
+    expect(ordered.map((r) => r.id)).toEqual(['A', 'D', 'B', 'E', 'C'])
+    expect(frozenIds).toEqual(['A', 'D', 'B', 'E', 'C'])
+  })
+
+  it('does NOT rebuild for a large import when existing rows all survive (appends, keeps resume point)', () => {
+    // Frozen five all still present (a normal import never deletes rows), plus a
+    // big batch of new ones that outnumbers them. survivorRatio is 1.0, so the
+    // stale-freeze guard must NOT fire — the five keep their exact frozen order
+    // and the newcomers append, preserving the resume point mid-review.
+    const frozen = ['A', 'D', 'B', 'E', 'C']
+    const news: Row[] = ['F', 'G', 'H', 'I', 'J', 'K'].map((id, i) => ({
+      id,
+      date: '2026-06-23',
+      len: i + 1,
+    }))
+    const { ordered } = reconcileAheadOrder([A, B, C, D, E, ...news], frozen, getLen)
+
+    expect(ordered.slice(0, 5).map((r) => r.id)).toEqual(['A', 'D', 'B', 'E', 'C'])
+    expect(ordered.slice(5).map((r) => r.id)).toEqual(['F', 'G', 'H', 'I', 'J', 'K'])
+  })
+
   it('is idempotent: reconciling an unchanged set returns the same order', () => {
     const first = reconcileAheadOrder([A, B, C, D, E], null, getLen)
     const second = reconcileAheadOrder([E, D, C, B, A], first.frozenIds, getLen)

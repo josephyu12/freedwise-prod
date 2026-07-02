@@ -1412,7 +1412,7 @@ function ReviewPageContent() {
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 safe-area-top">
         <div className="text-sm font-medium text-gray-700 dark:text-gray-300">
-          {progressRated} / {progressTotal} reviewed{aheadMode ? ' this month' : ''}
+          {progressRated} / {progressTotal} reviewed{aheadMode ? ' this cycle' : ''}
         </div>
         <div className="flex items-center gap-4">
           <Link

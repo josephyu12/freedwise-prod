@@ -104,6 +104,28 @@ export function reconcileAheadOrder<T extends AheadItem>(
   // New rows that appeared since the freeze, in round-robin order among
   // themselves, appended so they never displace anything already sequenced.
   const appended = natural.filter((r) => !seen.has(r.id))
+
+  // Stale-freeze guard. Tail-appending is only correct for an INCREMENTAL delta
+  // (a handful of newly-imported highlights, whose existing rows all survive).
+  // When the cycle is re-portioned — apply-frequency / re-tile DELETES every
+  // unrated to-do row and re-inserts it with a fresh id — the frozen sequence's
+  // ids nearly all point at rows that no longer exist, and the re-created days
+  // arrive as "new" rows. Tail-appending would then exile whole days to the very
+  // end, so they vanish from the visible round-robin pass ("it skipped July 6
+  // and 19"). Detect that case by BOTH tells and rebuild from the natural
+  // round-robin so every day returns to its proper position:
+  //   • survivors are a small minority of the frozen sequence (its world was
+  //     replaced), and
+  //   • the new rows dominate the current set.
+  // This is deliberately narrow. A normal import keeps every existing row (high
+  // survivor ratio) → still appends. Review/archival removes rows but adds none
+  // (appended === 0) → never rebuilds, so the resume-point guarantee the freeze
+  // exists for is fully preserved.
+  const survivorRatio = frozenIds.length > 0 ? kept.length / frozenIds.length : 1
+  if (survivorRatio < 0.5 && appended.length > kept.length) {
+    return { ordered: natural, frozenIds: natural.map((r) => r.id) }
+  }
+
   const ordered = [...kept, ...appended]
   return { ordered, frozenIds: ordered.map((r) => r.id) }
 }
