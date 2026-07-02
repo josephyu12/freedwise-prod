@@ -538,7 +538,12 @@ function ReviewPageContent() {
       setHighlights((prev) => prev.map(applyRatingPatch))
       await updateCache((c) => ({ highlights: c.highlights.map(applyRatingPatch) }))
 
-      const monthYear = cycleKeyForDate(today, freqRef.current)
+      // Key the ledger by the cycle of the rated highlight's OWN day, not today.
+      // In catch-up/ahead review the highlight can belong to a different cycle
+      // than today; keying by `today` marked the wrong cycle reviewed (phantom
+      // ledger rows). Matches lib/rateHighlightServer.ts + the daily flow.
+      const ratingDate = target.date || today
+      const monthYear = cycleKeyForDate(ratingDate, freqRef.current)
 
       // Critical path: save the rating AND mark this cycle as reviewed (source of truth).
       // Both must persist before we release the UI lock — otherwise closing the app
@@ -563,7 +568,7 @@ function ReviewPageContent() {
       setRatingInProgress(false)
 
       // Background: stats/auto-archive (doesn't block UI)
-      updateHighlightStats(target.highlight_id, monthYear, today).catch(console.error)
+      updateHighlightStats(target.highlight_id, monthYear, ratingDate).catch(console.error)
     } catch (error) {
       console.error('Error auto-rating highlight:', error)
       setHighlights((prev) =>
@@ -630,6 +635,9 @@ function ReviewPageContent() {
             highlightId: current.highlight_id,
             rating,
             today,
+            // The rated highlight's own day — replay keys the ledger by its cycle,
+            // not `today`, so ahead/catch-up ratings mark the right cycle.
+            summaryDate: current.date,
           },
         })
         // Move to next unrated
@@ -657,7 +665,11 @@ function ReviewPageContent() {
     }
 
     try {
-      const monthYear = cycleKeyForDate(today, freqRef.current)
+      // Key the ledger by the cycle of the rated highlight's OWN day, not today
+      // (see handleRateByIndex). Prevents phantom ledger rows when reviewing
+      // catch-up/ahead across a cycle boundary. Matches lib/rateHighlightServer.ts.
+      const ratingDate = current.date || today
+      const monthYear = cycleKeyForDate(ratingDate, freqRef.current)
 
       // Critical path: save the rating AND mark this cycle as reviewed (source of truth).
       // Both must persist before we release the UI lock — otherwise closing the app
@@ -686,7 +698,7 @@ function ReviewPageContent() {
       setRatingInProgress(false)
 
       // Background: stats/auto-archive (doesn't block UI)
-      updateHighlightStats(current.highlight_id, monthYear, today).catch(console.error)
+      updateHighlightStats(current.highlight_id, monthYear, ratingDate).catch(console.error)
     } catch (error) {
       console.error('Error rating highlight (falling back to offline queue):', error)
       // Network failed on weak signal — fall back to offline queueing
@@ -699,6 +711,9 @@ function ReviewPageContent() {
             highlightId: current.highlight_id,
             rating,
             today,
+            // The rated highlight's own day — replay keys the ledger by its cycle,
+            // not `today`, so ahead/catch-up ratings mark the right cycle.
+            summaryDate: current.date,
           },
         })
         // Advance to next unrated highlight

@@ -220,7 +220,21 @@ export async function POST(request: NextRequest) {
       const content = h.html_content || h.text || ''
       return { id: h.id, text: h.text, html_content: h.html_content, score: content.replace(/<[^>]*>/g, '').length }
     })
-    const idToScore = new Map(allScored.map((h) => [h.id, h.score]))
+    // Per-day weight (dayState below) must reflect the TRUE reading load of every
+    // highlight actually sitting on a day — so score EVERY unarchived highlight,
+    // not just the `allHighlights` subset. `allHighlights` drops rows in the
+    // reviewed ledger (reviewedHighlightIds) and rated rows; scoring the day off
+    // that subset zeroed them out, so a day holding a ledger-flagged highlight
+    // (e.g. a very long one whose assignment is still unrated) looked empty and
+    // became a magnet — a newly-added highlight landed on Aug 15, the single
+    // HEAVIEST day, because its 11.5k-char highlight scored 0. Weighting by the
+    // full per-day total matches apply-frequency / prepare-next-cycle's model.
+    const idToScore = new Map(
+      allHighlightsData.map((h) => {
+        const content = h.html_content || h.text || ''
+        return [h.id, content.replace(/<[^>]*>/g, '').length] as const
+      })
+    )
 
     // Which highlights to actually place this cycle: requested-and-not-yet-assigned,
     // plus (on the last day) any orphans never assigned this cycle.

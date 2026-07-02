@@ -16,6 +16,7 @@ import { parseIntoParagraphs, groupParagraphsByDividers, ParagraphBlock } from '
 import { renderHighlightHtml } from '@/lib/renderHighlightHtml'
 import { computeMonthReviewStatus } from '@/lib/monthReviewStatus'
 import { getUserReviewSettings, getCycleForDate, nextCycle, cycleKeyForDate } from '@/lib/cycle'
+import { removeReviewedOnClear } from '@/lib/reviewedLedger'
 import { useOfflineStatus } from '@/hooks/useOfflineStatus'
 import { isEffectivelyOffline } from '@/hooks/useManualOffline'
 import { useOfflineSyncState } from '@/hooks/useOfflineSyncState'
@@ -894,6 +895,20 @@ export default function DailyPage() {
             { highlight_id: highlightId, month_year: monthYear },
             { onConflict: 'highlight_id,month_year' }
           )
+      } else if (rating === null && summary?.date) {
+        // Clearing a rating must also drop the cycle's "reviewed" checkmark (unless
+        // another rated day for this highlight remains in the cycle). Otherwise the
+        // ledger row lingers with no rating behind it — a phantom that makes
+        // redistribute treat the day as empty and skews reviewed-count stats.
+        const { data: { user: authUser } } = await supabase.auth.getUser()
+        if (authUser) {
+          await removeReviewedOnClear(supabase, {
+            userId: authUser.id,
+            highlightId,
+            summaryDate: summary.date,
+            freq: freqRef.current,
+          })
+        }
       }
 
       // Recalculate average rating for the highlight (uses ALL ratings for average)

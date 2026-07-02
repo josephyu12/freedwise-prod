@@ -19,6 +19,7 @@ import { isEffectivelyOffline } from '@/hooks/useManualOffline'
 import { callRedistribute } from './redistribute'
 import { removeFromFutureMonths } from './removeFromFutureMonths'
 import { getUserFrequency, getCycleForDate, prevCycle, cycleKeyForDate } from './cycle'
+import { removeReviewedOnClear } from './reviewedLedger'
 import { recordDiscardedChange, describeDiscardedAction } from './discardedChanges'
 
 const REPLAYABLE = new Set<string>([
@@ -228,8 +229,14 @@ async function replayOne(supabase: any, action: any, userId: string, freq: numbe
   switch (action.type) {
     case 'rate-review': {
       // Archive rule: low in BOTH this cycle and the previous one.
-      const { summaryHighlightId, highlightId, rating, today: actionToday } = action.params
-      const monthYear = cycleKeyForDate(actionToday, freq)
+      const { summaryHighlightId, highlightId, rating, today: actionToday, summaryDate } = action.params
+      // Key the ledger + archive window by the rated highlight's OWN day, not the
+      // day the action was queued. Keying by `today` marked the wrong cycle when
+      // rating catch-up/ahead across a cycle boundary (phantom ledger rows).
+      // `summaryDate` is absent on actions queued before this fix — fall back to
+      // `actionToday` so old queued ratings still replay.
+      const ledgerDate = summaryDate || actionToday
+      const monthYear = cycleKeyForDate(ledgerDate, freq)
 
       const { error: rateError } = await supabase
         .from('daily_summary_highlights')
@@ -275,7 +282,7 @@ async function replayOne(supabase: any, action: any, userId: string, freq: numbe
           .filter((r) => !unarchivedAt || r.daily_summary.date > unarchivedAt)
           .map((r) => cycleKeyForDate(r.daily_summary.date, freq))
       )
-      const prevKey = prevCycle(getCycleForDate(actionToday, freq)).key
+      const prevKey = prevCycle(getCycleForDate(ledgerDate, freq)).key
       const shouldArchive = lowCycles.has(monthYear) && lowCycles.has(prevKey)
 
       const { error: statsError } = await supabase
@@ -309,6 +316,10 @@ async function replayOne(supabase: any, action: any, userId: string, freq: numbe
             { onConflict: 'highlight_id,month_year' }
           )
         if (reviewedError) throw reviewedError
+      } else if (rating === null && summaryDate) {
+        // Clearing a rating must also drop the cycle's "reviewed" checkmark (unless
+        // another rated day remains in the cycle), or a phantom ledger row lingers.
+        await removeReviewedOnClear(supabase, { userId, highlightId, summaryDate, freq })
       }
 
       const { data: allRatingsData, error: allRatingsError } = await supabase
