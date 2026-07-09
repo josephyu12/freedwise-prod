@@ -417,33 +417,58 @@ async function replayOne(supabase: any, action: any, userId: string, freq: numbe
 
       const insertedIds: string[] = []
       for (const group of newGroups as Array<{ id: string; text: string; html: string }>) {
-        const { data: newHighlight, error: insertError } = await supabase
+        // Idempotent per group: a retry after a partial replay re-sends ids that
+        // already landed. A plain insert raised 23505 (a CODED error), which
+        // burned the poison-attempt budget and eventually dropped the whole
+        // action — permanently losing every not-yet-inserted group. ON CONFLICT
+        // DO NOTHING (any unique constraint: the id PK on retry, or
+        // (user_id, text_hash) when identical text already exists) makes the
+        // retry glide past groups that are already in.
+        const { data: upserted, error: insertError } = await supabase
           .from('highlights')
-          .insert({
-            id: group.id,
-            text: group.text,
-            html_content: group.html,
-            source,
-            author,
-            resurface_count: 0,
-            average_rating: 0,
-            rating_count: 0,
-            user_id: userId,
-          })
-          .select()
-          .single()
+          .upsert(
+            {
+              id: group.id,
+              text: group.text,
+              html_content: group.html,
+              source,
+              author,
+              resurface_count: 0,
+              average_rating: 0,
+              rating_count: 0,
+              user_id: userId,
+            },
+            { ignoreDuplicates: true }
+          )
+          .select('id')
         if (insertError) throw insertError
 
-        insertedIds.push(newHighlight.id)
+        // Skipped upsert: either OUR row from a prior pass (id exists — finish
+        // its follow-ups) or the text collided with an unrelated pre-existing
+        // highlight (id absent — this split must not modify it).
+        let exists = (upserted || []).length > 0
+        if (!exists) {
+          const { data: existing, error: existsError } = await supabase
+            .from('highlights')
+            .select('id')
+            .eq('id', group.id)
+            .maybeSingle()
+          if (existsError) throw existsError
+          exists = !!existing
+        }
+        if (!exists) continue
+
+        insertedIds.push(group.id)
 
         if (categoryIds && categoryIds.length > 0) {
           const categoryLinks = (categoryIds as string[]).map((catId) => ({
-            highlight_id: newHighlight.id,
+            highlight_id: group.id,
             category_id: catId,
           }))
+          // ignoreDuplicates so a retry that already linked them is a no-op.
           const { error: splitCatError } = await supabase
             .from('highlight_categories')
-            .insert(categoryLinks)
+            .upsert(categoryLinks, { ignoreDuplicates: true })
           if (splitCatError) throw splitCatError
         }
       }
