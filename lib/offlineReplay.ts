@@ -15,6 +15,7 @@
 // queued for the next retry. Nothing is ever dropped.
 
 import { getPendingActions, removeAction, incrementActionAttempts } from './offlineStore'
+import { createClient } from './supabase/client'
 import { isEffectivelyOffline } from '@/hooks/useManualOffline'
 import { callRedistribute } from './redistribute'
 import { removeFromFutureMonths } from './removeFromFutureMonths'
@@ -50,6 +51,23 @@ function isPermanentError(err: any): boolean {
   return !!(err && typeof err === 'object' && typeof err.code === 'string' && err.code.length > 0)
 }
 
+// The signed-in user's id from the LOCAL session (no network — works offline).
+// undefined when signed out or when the client can't be constructed (tests).
+async function currentUserIdLocal(): Promise<string | undefined> {
+  try {
+    const { data } = await createClient().auth.getSession()
+    return data?.session?.user?.id ?? undefined
+  } catch {
+    return undefined
+  }
+}
+
+// Whether a queued action belongs to `userId`. Unstamped actions (queued before
+// owner-stamping existed) are treated as the current user's.
+function ownedBy(action: { userId?: string }, userId: string | undefined): boolean {
+  return !action.userId || (!!userId && action.userId === userId)
+}
+
 export interface ReplayResult {
   processed: number // actions successfully synced this run
   remaining: number // replayable actions still queued afterward
@@ -58,11 +76,12 @@ export interface ReplayResult {
   dropped: number // poison actions discarded this run (server kept rejecting them)
 }
 
-/** Count replayable actions still queued (best-effort; 0 on error). */
+/** Count replayable actions still queued for the SIGNED-IN user (best-effort; 0 on error). */
 export async function countReplayable(): Promise<number> {
   try {
     const all = await getPendingActions()
-    return all.filter((a) => REPLAYABLE.has(a.type)).length
+    const userId = await currentUserIdLocal()
+    return all.filter((a) => REPLAYABLE.has(a.type) && ownedBy(a, userId)).length
   } catch {
     return 0
   }
@@ -162,7 +181,12 @@ export async function replayPendingActions(
   }
 
   const all = await getPendingActions()
-  const actions = all.filter((a) => REPLAYABLE.has(a.type))
+  // Only the signed-in user's actions (plus legacy unstamped ones). Another
+  // account's stamped actions are left queued untouched: replaying them here
+  // would silently match zero rows under RLS (updates "succeed" and the queue
+  // discards them) — or worse, a split replay would INSERT the other user's
+  // text into this account. They resume when their owner signs back in.
+  const actions = all.filter((a) => REPLAYABLE.has(a.type) && ownedBy(a, userId))
 
   let processed = 0
   let dropped = 0

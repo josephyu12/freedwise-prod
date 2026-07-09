@@ -6,6 +6,8 @@
  *   2. offlineQueue  – ordered queue of write actions to replay when back online
  */
 
+import { createClient } from './supabase/client'
+
 const DB_NAME = 'freedwise-offline'
 const DB_VERSION = 1
 const CACHE_STORE = 'highlightCache'
@@ -48,6 +50,10 @@ export interface OfflineAction {
   params: any
   createdAt: number
   attempts?: number // failed replay attempts; used to drop poison actions
+  // Owner stamped at enqueue time. Replay only runs actions whose owner is the
+  // signed-in user (unstamped = legacy, treated as the current user's), so a
+  // session/account switch can never replay one account's writes under another.
+  userId?: string
 }
 
 // ─── DB Helpers ─────────────────────────────────────────────
@@ -180,7 +186,18 @@ export async function getCachedReviewData(): Promise<CachedReviewData | undefine
 
 /** Add an action to the offline queue */
 export async function enqueueOfflineAction(action: Omit<OfflineAction, 'id' | 'createdAt'>): Promise<number> {
-  const id = await idbAdd(QUEUE_STORE, { ...action, createdAt: Date.now() })
+  // Stamp the owner from the LOCAL session (no network — works offline) so
+  // replay can refuse to run this under a different account.
+  let userId = action.userId
+  if (!userId) {
+    try {
+      const { data } = await createClient().auth.getSession()
+      userId = data?.session?.user?.id ?? undefined
+    } catch {
+      // Unknown owner — replay treats an unstamped action as the current user's.
+    }
+  }
+  const id = await idbAdd(QUEUE_STORE, { ...action, ...(userId ? { userId } : {}), createdAt: Date.now() })
   // Poke the global <OfflineSync> drainer so a write that failed on a weak
   // signal (queued while still "online") gets retried promptly, instead of
   // waiting for the next offline→online transition.
