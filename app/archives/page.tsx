@@ -96,10 +96,11 @@ export default function ArchivesPage() {
   const handleUnarchive = async (id: string) => {
     try {
       // Update in database (no Notion sync - archive status not supported by Notion)
-      await (supabase
+      const { error } = await (supabase
         .from('highlights') as any)
         .update({ archived: false, unarchived_at: new Date().toISOString() })
         .eq('id', id)
+      if (error) throw error
 
       await loadHighlights()
     } catch (error) {

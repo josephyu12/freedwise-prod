@@ -314,12 +314,13 @@ export default function SearchPage() {
 
       if (updateError) throw updateError
 
-      // Update categories
-      // First, remove existing categories
-      await (supabase
+      // Update categories. Checked: supabase-js resolves with { error } instead
+      // of rejecting, so unchecked failures would silently drop category changes.
+      const { error: catDeleteError } = await (supabase
         .from('highlight_categories') as any)
         .delete()
         .eq('highlight_id', editingId)
+      if (catDeleteError) throw catDeleteError
 
       // Then add new ones
       if (editCategories.length > 0) {
@@ -327,7 +328,9 @@ export default function SearchPage() {
           highlight_id: editingId,
           category_id: catId,
         }))
-        await (supabase.from('highlight_categories') as any).insert(categoryLinks)
+        const { error: catInsertError } = await (supabase.from('highlight_categories') as any)
+          .insert(categoryLinks)
+        if (catInsertError) throw catInsertError
       }
 
       // Add to Notion sync queue only if text/HTML actually changed (skip for category/source/author-only edits)
@@ -839,11 +842,12 @@ export default function SearchPage() {
                               onClick={async (e) => {
                                 e.stopPropagation()
                                 try {
-                                  await (supabase
+                                  const { error: unarchiveError } = await (supabase
                                     .from('highlights') as any)
                                     .update({ archived: false, unarchived_at: new Date().toISOString() })
                                     .eq('id', highlight.id)
-                                  
+                                  if (unarchiveError) throw unarchiveError
+
                                   // Refresh search
                                   if (query.trim()) {
                                     await performSearch(query, searchType)
@@ -863,11 +867,12 @@ export default function SearchPage() {
                                 e.stopPropagation()
                                 if (!confirm('Are you sure you want to archive this highlight?')) return
                                 try {
-                                  await (supabase
+                                  const { error: archiveError } = await (supabase
                                     .from('highlights') as any)
                                     .update({ archived: true })
                                     .eq('id', highlight.id)
-                                  
+                                  if (archiveError) throw archiveError
+
                                   // Remove from results
                                   setResults(results.filter((h) => h.id !== highlight.id))
                                   setSimilarResults(similarResults.filter((h) => h.id !== highlight.id))
@@ -1126,11 +1131,12 @@ export default function SearchPage() {
                               onClick={async (e) => {
                                 e.stopPropagation()
                                 try {
-                                  await (supabase
+                                  const { error: unarchiveError } = await (supabase
                                     .from('highlights') as any)
                                     .update({ archived: false, unarchived_at: new Date().toISOString() })
                                     .eq('id', highlight.id)
-                                  
+                                  if (unarchiveError) throw unarchiveError
+
                                   if (query.trim()) {
                                     await performSearch(query, searchType)
                                   }
@@ -1149,11 +1155,12 @@ export default function SearchPage() {
                                 e.stopPropagation()
                                 if (!confirm('Are you sure you want to archive this highlight?')) return
                                 try {
-                                  await (supabase
+                                  const { error: archiveError } = await (supabase
                                     .from('highlights') as any)
                                     .update({ archived: true })
                                     .eq('id', highlight.id)
-                                  
+                                  if (archiveError) throw archiveError
+
                                   setResults(results.filter((h) => h.id !== highlight.id))
                                   setSimilarResults(similarResults.filter((h) => h.id !== highlight.id))
                                   

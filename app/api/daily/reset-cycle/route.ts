@@ -51,32 +51,39 @@ export async function POST(request: NextRequest) {
 
     const summaryIds = (summaries || []).map((s: { id: string }) => s.id)
     if (summaryIds.length > 0) {
-      await supabase.from('daily_summary_highlights').delete().in('daily_summary_id', summaryIds)
+      const { error: dshErr } = await supabase
+        .from('daily_summary_highlights')
+        .delete()
+        .in('daily_summary_id', summaryIds)
+      if (dshErr) throw dshErr
     }
 
     // 2. Delete the daily_summaries themselves.
-    await supabase
+    const { error: dsErr } = await supabase
       .from('daily_summaries')
       .delete()
       .eq('user_id', user.id)
       .gte('date', cycle.startDate)
       .lte('date', cycle.endDate)
+    if (dsErr) throw dsErr
 
     // 3. Remove the "reviewed" ledger rows for this cycle key (chunked).
-    const { data: userHighlightIds } = await supabase
+    const { data: userHighlightIds, error: hlErr } = await supabase
       .from('highlights')
       .select('id')
       .eq('user_id', user.id)
+    if (hlErr) throw hlErr
     const highlightIds = (userHighlightIds || []).map((h: { id: string }) => h.id)
     if (highlightIds.length > 0) {
       const chunk = 200
       for (let i = 0; i < highlightIds.length; i += chunk) {
         const slice = highlightIds.slice(i, i + chunk)
-        await supabase
+        const { error: ledgerErr } = await supabase
           .from('highlight_months_reviewed')
           .delete()
           .eq('month_year', cycle.key)
           .in('highlight_id', slice)
+        if (ledgerErr) throw ledgerErr
       }
     }
 

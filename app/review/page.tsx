@@ -524,7 +524,9 @@ function ReviewPageContent() {
     monthYear: string,
     ratingDate: string
   ) => {
-    const [{ data: allRatingsData }, { data: highlightData }, { data: lowRatingsWithDates }] = await Promise.all([
+    // All three reads must be error-checked: a silently-failed ratings read
+    // returns [], which would overwrite average_rating/rating_count with 0.
+    const [allRatingsRes, highlightRes, lowRatingsRes] = await Promise.all([
       supabase
         .from('daily_summary_highlights')
         .select('rating')
@@ -540,6 +542,12 @@ function ReviewPageContent() {
         .eq('highlight_id', highlightId)
         .eq('rating', 'low'),
     ])
+    if (allRatingsRes.error) throw allRatingsRes.error
+    if (highlightRes.error) throw highlightRes.error
+    if (lowRatingsRes.error) throw lowRatingsRes.error
+    const allRatingsData = allRatingsRes.data
+    const highlightData = highlightRes.data as any
+    const lowRatingsWithDates = lowRatingsRes.data
 
     const ratingMap: Record<string, number> = { low: 1, med: 2, high: 3 }
     const ratingValues = ((allRatingsData || []) as Array<{ rating: string }>)
@@ -557,13 +565,14 @@ function ReviewPageContent() {
     const prevKey = prevCycle(getCycleForDate(ratingDate, freqRef.current)).key
     const shouldArchive = lowCycles.has(monthYear) && lowCycles.has(prevKey)
 
-    await (supabase.from('highlights') as any)
+    const { error: statsError } = await (supabase.from('highlights') as any)
       .update({
         average_rating: average,
         rating_count: ratingValues.length,
         ...(shouldArchive ? { archived: true } : {}),
       })
       .eq('id', highlightId)
+    if (statsError) throw statsError
   }
 
   // Helper to rate a specific highlight by index (for auto-rate from widget URL params)
@@ -589,7 +598,10 @@ function ReviewPageContent() {
       // Critical path: save the rating AND mark this cycle as reviewed (source of truth).
       // Both must persist before we release the UI lock — otherwise closing the app
       // immediately after rating loses the highlight_months_reviewed row.
-      await Promise.all([
+      // supabase-js RESOLVES with { error } instead of rejecting (even on a dead
+      // network), so both results must be checked or a failed write silently
+      // reports success and the catch below never runs.
+      const [rateRes, ledgerRes] = await Promise.all([
         (supabase.from('daily_summary_highlights') as any)
           .update({ rating })
           .eq('id', target.id),
@@ -599,6 +611,8 @@ function ReviewPageContent() {
             { onConflict: 'highlight_id,month_year' }
           ),
       ])
+      if (rateRes.error) throw rateRes.error
+      if (ledgerRes.error) throw ledgerRes.error
 
       setHighlights((prev) => {
         const updated = prev.map((h) => (h.id === target.id ? { ...h, rating } : h))
@@ -715,7 +729,10 @@ function ReviewPageContent() {
       // Critical path: save the rating AND mark this cycle as reviewed (source of truth).
       // Both must persist before we release the UI lock — otherwise closing the app
       // immediately after rating loses the highlight_months_reviewed row.
-      await Promise.all([
+      // supabase-js RESOLVES with { error } instead of rejecting (even on a dead
+      // network), so both results must be checked — an unchecked failure would
+      // silently report success and skip the offline-queue fallback below.
+      const [rateRes, ledgerRes] = await Promise.all([
         (supabase.from('daily_summary_highlights') as any)
           .update({ rating })
           .eq('id', current.id),
@@ -725,6 +742,8 @@ function ReviewPageContent() {
             { onConflict: 'highlight_id,month_year' }
           ),
       ])
+      if (rateRes.error) throw rateRes.error
+      if (ledgerRes.error) throw ledgerRes.error
 
       setHighlights((prev) => {
         const updated = prev.map((h) =>
@@ -926,13 +945,16 @@ function ReviewPageContent() {
 
         newHighlightIds.push(newHighlight.id)
 
-        // Copy categories
+        // Copy categories. Warn-only: throwing here would abort the remaining
+        // groups after this highlight was already created.
         if (categoryIds.length > 0) {
           const categoryLinks = categoryIds.map((catId) => ({
             highlight_id: newHighlight.id,
             category_id: catId,
           }))
-          await (supabase.from('highlight_categories') as any).insert(categoryLinks)
+          const { error: splitCatError } = await (supabase.from('highlight_categories') as any)
+            .insert(categoryLinks)
+          if (splitCatError) console.warn('Failed to copy categories to split highlight:', splitCatError)
         }
 
         // Sync new highlight to Notion
@@ -1045,13 +1067,19 @@ function ReviewPageContent() {
         .eq('id', highlightId)
       if (updateError) throw updateError
 
-      // Update categories
-      await (supabase.from('highlight_categories') as any).delete().eq('highlight_id', highlightId)
+      // Update categories. Checked so a weak-signal failure falls through to the
+      // offline queue below (the replayed edit re-does the delete + insert).
+      const { error: catDeleteError } = await (supabase.from('highlight_categories') as any)
+        .delete()
+        .eq('highlight_id', highlightId)
+      if (catDeleteError) throw catDeleteError
       if (categoryIds.length > 0) {
         const categoryLinks = categoryIds.map((catId) => ({
           highlight_id: highlightId, category_id: catId,
         }))
-        await (supabase.from('highlight_categories') as any).insert(categoryLinks)
+        const { error: catInsertError } = await (supabase.from('highlight_categories') as any)
+          .insert(categoryLinks)
+        if (catInsertError) throw catInsertError
       }
 
       // Notion sync — only if text/HTML actually changed (skip for category/source/author-only edits)
@@ -1129,9 +1157,10 @@ function ReviewPageContent() {
     }
 
     try {
-      await (supabase.from('highlights') as any)
+      const { error: archiveError } = await (supabase.from('highlights') as any)
         .update({ archived: true })
         .eq('id', highlightId)
+      if (archiveError) throw archiveError
       await removeFromFutureMonths(supabase, highlightId)
     } catch (error) {
       console.error('Error archiving highlight (falling back to offline queue):', error)
@@ -1158,9 +1187,10 @@ function ReviewPageContent() {
     }
 
     try {
-      await (supabase.from('highlights') as any)
+      const { error: unarchiveError } = await (supabase.from('highlights') as any)
         .update({ archived: false, unarchived_at: new Date().toISOString() })
         .eq('id', highlightId)
+      if (unarchiveError) throw unarchiveError
     } catch (error) {
       console.error('Error unarchiving highlight (falling back to offline queue):', error)
       try {

@@ -189,9 +189,11 @@ export default function Home() {
           const categoryLinks = insertedSourceRows.flatMap((r) =>
             selectedCats.map((catId) => ({ highlight_id: r.id, category_id: catId }))
           )
-          ;(supabase.from('highlight_categories') as any)
+          // supabase-js resolves with { error } — a .catch() here never fires.
+          // Warn-only: the highlights themselves are already saved.
+          const { error: catError } = await (supabase.from('highlight_categories') as any)
             .insert(categoryLinks)
-            .catch((err: any) => console.error('Error adding categories:', err))
+          if (catError) console.error('Error adding categories:', catError)
         }
 
         for (const r of insertedSourceRows) {

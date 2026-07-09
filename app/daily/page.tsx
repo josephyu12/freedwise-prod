@@ -889,12 +889,16 @@ export default function DailyPage() {
       // For monthly cadence the cycle key is the calendar month, identical to before.
       if (rating !== null && summary?.date) {
         const monthYear = cycleKeyForDate(summary.date, freqRef.current)
-        await (supabase
+        // Checked: supabase-js resolves with { error } instead of rejecting, so an
+        // unchecked failure here would silently skip the ledger row (undercounted
+        // "reviewed this cycle", redistribute double-placing the highlight).
+        const { error: reviewedError } = await (supabase
           .from('highlight_months_reviewed') as any)
           .upsert(
             { highlight_id: highlightId, month_year: monthYear },
             { onConflict: 'highlight_id,month_year' }
           )
+        if (reviewedError) throw reviewedError
       } else if (rating === null && summary?.date) {
         // Clearing a rating must also drop the cycle's "reviewed" checkmark (unless
         // another rated day for this highlight remains in the cycle). Otherwise the
@@ -930,24 +934,28 @@ export default function DailyPage() {
         ? ratingValues.reduce((a, b) => a + b, 0) / ratingValues.length
         : 0
 
-      // Check if this highlight was previously unarchived manually
-      const { data: highlightData } = await (supabase
+      // Check if this highlight was previously unarchived manually. Checked: a
+      // silently-failed read reads as "no unarchive history" and could archive
+      // a highlight the unarchive window should still protect.
+      const { data: highlightData, error: highlightError } = await (supabase
         .from('highlights') as any)
         .select('unarchived_at')
         .eq('id', highlightId)
         .single()
+      if (highlightError) throw highlightError
 
       // Count low ratings — if the highlight was manually unarchived, only count
       // low ratings from daily summaries dated AFTER the unarchive timestamp
       let lowRatingsCount = 0
       if (highlightData?.unarchived_at) {
         // Only count low ratings from summaries after the unarchive date
-        const { data: recentLowRatings } = await supabase
+        const { data: recentLowRatings, error: recentLowError } = await supabase
           .from('daily_summary_highlights')
           .select('rating, daily_summary:daily_summaries!inner(date)')
           .eq('highlight_id', highlightId)
           .eq('rating', 'low')
           .gt('daily_summary.date', highlightData.unarchived_at.split('T')[0])
+        if (recentLowError) throw recentLowError
 
         lowRatingsCount = (recentLowRatings || []).length
       } else {
@@ -959,7 +967,7 @@ export default function DailyPage() {
       const shouldArchive = lowRatingsCount >= 2
 
       // Update highlight with new average rating and archived status
-      await (supabase
+      const { error: statsError } = await (supabase
         .from('highlights') as any)
         .update({
           average_rating: average,
@@ -967,6 +975,7 @@ export default function DailyPage() {
           ...(shouldArchive ? { archived: true } : {}),
         })
         .eq('id', highlightId)
+      if (statsError) throw statsError
 
       // Update overlay state: add overlay when rating is set, remove when cleared
       if (summary) {
@@ -1155,12 +1164,13 @@ export default function DailyPage() {
 
       if (updateError) throw updateError
 
-      // Update categories
-      // First, remove existing categories
-      await (supabase
+      // Update categories. Checked so a weak-signal failure falls through to the
+      // offline queue in the catch (the replayed edit re-does the delete + insert).
+      const { error: catDeleteError } = await (supabase
         .from('highlight_categories') as any)
         .delete()
         .eq('highlight_id', highlightId)
+      if (catDeleteError) throw catDeleteError
 
       // Then add new ones
       if (editCategories.length > 0) {
@@ -1168,7 +1178,9 @@ export default function DailyPage() {
           highlight_id: highlightId,
           category_id: catId,
         }))
-        await (supabase.from('highlight_categories') as any).insert(categoryLinks)
+        const { error: catInsertError } = await (supabase.from('highlight_categories') as any)
+          .insert(categoryLinks)
+        if (catInsertError) throw catInsertError
       }
 
       // Add to Notion sync queue only if text/HTML actually changed (skip for category/source/author-only edits)
@@ -1418,13 +1430,16 @@ export default function DailyPage() {
         if (error) throw error
         newHighlightIds.push(newHighlight.id)
 
-        // Copy categories
+        // Copy categories. Warn-only: throwing here would abort the remaining
+        // groups after this highlight was already created.
         if (highlight.categories && highlight.categories.length > 0) {
           const categoryLinks = highlight.categories.map((cat: any) => ({
             highlight_id: newHighlight.id,
             category_id: cat.id,
           }))
-          await (supabase.from('highlight_categories') as any).insert(categoryLinks)
+          const { error: splitCatError } = await (supabase.from('highlight_categories') as any)
+            .insert(categoryLinks)
+          if (splitCatError) console.warn('Failed to copy categories to split highlight:', splitCatError)
         }
 
         // Sync to Notion
