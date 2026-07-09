@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { Client } from '@notionhq/client'
 import { htmlToNotionBlocks, htmlToBlockText, normalizeForBlockCompare, getBlockText, findMatchingHighlightBlocks, buildNormalizedSearchStrings, flattenBlocksWithChildren, BLOCK_BOUNDARY, buildNormalizedBlockGroups, appendBlocksDeep } from '@/lib/notionBlocks'
+import { notionSyncReadyFilter } from '@/lib/notionSyncQueue'
 
 type AddState =
   | { kind: 'absent' }
@@ -518,7 +519,7 @@ export async function POST(request: NextRequest) {
       .from('notion_sync_queue') as any)
       .select('*')
       .eq('user_id', user.id)
-      .or(`and(status.eq.pending,retry_count.eq.0),and(status.eq.pending,retry_count.gt.0,retry_count.lt.5,or(next_retry_at.is.null,next_retry_at.lte.${now})),and(status.eq.failed,retry_count.lt.5,or(next_retry_at.is.null,next_retry_at.lte.${now})),and(status.eq.processing,updated_at.lt.${staleCutoff})`)
+      .or(notionSyncReadyFilter(now, staleCutoff))
       .order('created_at', { ascending: true })
       .limit(1)
 
@@ -570,9 +571,11 @@ export async function GET(request: NextRequest) {
       )
     }
 
+    // next_retry_at must be selected: readyToRetry filters on it below, and a
+    // missing column read as undefined counted EVERY failed item as retryable.
     const { data: stats, error } = await (supabase
       .from('notion_sync_queue') as any)
-      .select('status')
+      .select('status, next_retry_at')
       .eq('user_id', user.id)
 
     if (error) throw error

@@ -35,3 +35,26 @@ export async function addToNotionSyncQueue(_params: {
     window.dispatchEvent(new Event('notion-sync-queue-updated'))
   }
 }
+
+// Attempt cap shared by the poller and the processing route. Must match the
+// max_retries default on notion_sync_queue rows.
+export const NOTION_SYNC_MAX_RETRIES = 5
+
+/**
+ * PostgREST .or() filter selecting queue items actually READY to process:
+ * fresh pending items, pending/failed retries whose backoff has elapsed
+ * (below the attempt cap), and stale 'processing' claims. Shared by the
+ * client-side poller (NotionSyncProcessor) and POST /api/notion/sync so their
+ * idea of "work is ready" can never drift — the poller once counted failed
+ * items with retry_count<20 while the route only processed <5, so a single
+ * permanently-failed item triggered a pointless POST every 10 seconds forever.
+ */
+export function notionSyncReadyFilter(nowIso: string, staleCutoffIso: string): string {
+  const M = NOTION_SYNC_MAX_RETRIES
+  return [
+    'and(status.eq.pending,retry_count.eq.0)',
+    `and(status.eq.pending,retry_count.gt.0,retry_count.lt.${M},or(next_retry_at.is.null,next_retry_at.lte.${nowIso}))`,
+    `and(status.eq.failed,retry_count.lt.${M},or(next_retry_at.is.null,next_retry_at.lte.${nowIso}))`,
+    `and(status.eq.processing,updated_at.lt.${staleCutoffIso})`,
+  ].join(',')
+}

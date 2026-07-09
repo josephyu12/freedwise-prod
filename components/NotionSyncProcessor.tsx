@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { isEffectivelyOffline, MANUAL_OFFLINE_EVENT } from '@/hooks/useManualOffline'
+import { notionSyncReadyFilter } from '@/lib/notionSyncQueue'
 
 export default function NotionSyncProcessor() {
   const [isOnline, setIsOnline] = useState(true)
@@ -23,12 +24,16 @@ export default function NotionSyncProcessor() {
         return
       }
 
+      // Same readiness filter the POST route processes with — if the two ever
+      // disagree, an item only THIS check matches triggers a pointless POST
+      // every 10s forever (previously: failed items with retry_count 5..19).
       const now = new Date().toISOString()
+      const staleCutoff = new Date(Date.now() - 2 * 60 * 1000).toISOString()
       const { data: queueItems, error } = await (supabase
         .from('notion_sync_queue') as any)
         .select('id')
         .eq('user_id', user.id)
-        .or(`and(status.eq.pending,retry_count.lt.5),and(status.eq.failed,retry_count.lt.20,or(next_retry_at.is.null,next_retry_at.lte.${now}))`)
+        .or(notionSyncReadyFilter(now, staleCutoff))
         .limit(1)
 
       if (error) {
