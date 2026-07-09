@@ -241,6 +241,12 @@ export async function POST(request: NextRequest) {
     if (searchType === 'fulltext') {
       // Full-text search using PostgreSQL's text search
       // We'll use ILIKE for pattern matching (can be enhanced with tsvector/tsquery for better performance)
+      //
+      // The term is double-quoted inside the .or() expression (with \ and "
+      // escaped) because .or() is a PostgREST filter GRAMMAR: an unquoted
+      // comma or parenthesis in the user's query would split the expression —
+      // breaking the search with a 500, or injecting extra OR conditions.
+      const term = `%${query.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}%`
       const { data: highlights, error } = await supabase
         .from('highlights')
         .select(`
@@ -263,7 +269,7 @@ export async function POST(request: NextRequest) {
           ${monthsReviewedSelect}
         `)
         .eq('user_id', user.id)
-        .or(`text.ilike.%${query}%,html_content.ilike.%${query}%`)
+        .or(`text.ilike."${term}",html_content.ilike."${term}"`)
         .eq('archived', false)
         .order('created_at', { ascending: false })
         .limit(50)
