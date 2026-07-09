@@ -5,6 +5,8 @@ import { createClient } from '@/lib/supabase/client'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { clearAheadOrder } from '@/lib/aheadOrder'
+import { clearAllOfflineData } from '@/lib/offlineStore'
+import { countReplayable } from '@/lib/offlineReplay'
 
 type AuthButtonProps = {
   // 'down' for the desktop header (default); 'up' for the mobile drawer
@@ -53,15 +55,48 @@ export default function AuthButton({ dropdownDirection = 'down' }: AuthButtonPro
   }, [showDropdown])
 
   const handleLogout = async () => {
+    // Signing out clears the offline queue below, so any queued-but-unsynced
+    // changes are lost for good — say so and let the user back out.
+    try {
+      const pending = await countReplayable()
+      if (
+        pending > 0 &&
+        !window.confirm(
+          `You have ${pending} unsynced change${pending === 1 ? '' : 's'} that will be lost if you sign out now. Sign out anyway?`
+        )
+      ) {
+        return
+      }
+    } catch {
+      // Can't read the queue — proceed with sign-out.
+    }
+
     await supabase.auth.signOut()
 
     // Purge the service worker's cached page shells. They're served offline
     // (bypassing the auth middleware that would otherwise redirect to /login),
     // so without this an authed shell could still render offline after logout.
+    // Deleted by prefix so a cache-name bump in sw.js can't silently orphan
+    // this purge (it previously targeted the renamed freedwise-pages-v1).
     // Best-effort — never block sign-out on it. Build assets (immutable JS
     // chunks) aren't sensitive and are left cached.
     if (typeof caches !== 'undefined') {
-      caches.delete('freedwise-pages-v1').catch(() => {})
+      try {
+        const keys = await caches.keys()
+        await Promise.all(
+          keys.filter((k) => k.startsWith('freedwise-pages-')).map((k) => caches.delete(k))
+        )
+      } catch {
+        /* best-effort */
+      }
+    }
+
+    // Drop this device's offline page cache + action queue so the next account
+    // can't read the previous account's highlights or replay its queued writes.
+    try {
+      await clearAllOfflineData()
+    } catch {
+      /* best-effort */
     }
 
     // Drop the frozen review-ahead sequences so the next user on this device

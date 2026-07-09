@@ -237,3 +237,15 @@ export async function hasPendingActions(): Promise<boolean> {
   const actions = await idbGetAll(QUEUE_STORE)
   return actions.length > 0
 }
+
+/**
+ * Clear ALL offline data on this device: the page-data cache and the pending
+ * action queue. Call on sign-out — neither store is keyed by user, so without
+ * this the next account on the device could read the previous account's cached
+ * highlights offline, and the previous account's queued writes would replay
+ * under the new session (where RLS makes them silently match zero rows and the
+ * queue discards them as "done").
+ */
+export async function clearAllOfflineData(): Promise<void> {
+  await Promise.all([idbClearStore(CACHE_STORE), idbClearStore(QUEUE_STORE)])
+}
