@@ -15,7 +15,14 @@ import { removeFromFutureMonths } from '@/lib/removeFromFutureMonths'
 import { callRedistribute } from '@/lib/redistribute'
 import { useOfflineStatus } from '@/hooks/useOfflineStatus'
 import { isEffectivelyOffline } from '@/hooks/useManualOffline'
-import { reconcileAheadOrder, readAheadOrder, writeAheadOrder } from '@/lib/aheadOrder'
+import {
+  reconcileAheadOrder,
+  readAheadOrder,
+  readLegacyAheadOrder,
+  writeAheadOrder,
+  fetchAheadOrder,
+  storeAheadOrder,
+} from '@/lib/aheadOrder'
 import { getUserReviewSettings, getCycleForDate, prevCycle, cycleKeyForDate } from '@/lib/cycle'
 import { useOfflineSyncState } from '@/hooks/useOfflineSyncState'
 import OfflineBanner from '@/components/OfflineBanner'
@@ -270,6 +277,12 @@ function ReviewPageContent() {
       const cycle = getCycleForDate(today, settings.freq)
       const upperDate = aheadMode ? cycle.endDate : today
 
+      // Ahead mode: start the server-side frozen-order read now so it overlaps
+      // the (much slower) paginated highlights fetch below.
+      const aheadOrderPromise = aheadMode
+        ? fetchAheadOrder(supabase, user.id, cycle.key)
+        : null
+
       const PAGE = 1000
       const fetchHighlightsPage = (from: number) =>
         supabase
@@ -366,12 +379,40 @@ function ReviewPageContent() {
       if (aheadMode) {
         const futureRows = allRows.filter((h) => h.date > today)
         const cycleK = cycle.key
+
+        // The frozen sequence is keyed by HIGHLIGHT id (survives re-tiling) and
+        // stored server-side (survives device switches). Fallback chain: server
+        // row → local v2 mirror (server read failed / table not migrated) →
+        // legacy row-id sequence translated via the current rows (one-time
+        // upgrade path, preserves an in-flight resume point).
+        const { ids: serverIds, ok: serverOk } = aheadOrderPromise
+          ? await aheadOrderPromise
+          : { ids: null, ok: false }
+        let frozen = serverIds ?? readAheadOrder(user.id, cycleK)
+        if (!frozen) {
+          const legacy = readLegacyAheadOrder(user.id, cycleK)
+          if (legacy) {
+            const rowKey = new Map(futureRows.map((r) => [r.id, r.highlight_id]))
+            const translated = legacy
+              .map((id) => rowKey.get(id))
+              .filter((k): k is string => !!k)
+            if (translated.length > 0) frozen = translated
+          }
+        }
+
         const { ordered, frozenIds } = reconcileAheadOrder(
           futureRows,
-          readAheadOrder(user.id, cycleK),
-          (h) => h.highlight?.text?.length || 0
+          frozen,
+          (h) => h.highlight?.text?.length || 0,
+          (h) => h.highlight_id
         )
         writeAheadOrder(user.id, cycleK, frozenIds)
+        // Only write back to the server when the read succeeded — a failed read
+        // says nothing about what's stored, and overwriting it with a locally
+        // rebuilt order would clobber the other devices' shared sequence.
+        if (serverOk && JSON.stringify(frozenIds) !== JSON.stringify(serverIds)) {
+          storeAheadOrder(supabase, user.id, cycleK, frozenIds)
+        }
         aheadRows.push(...ordered)
       }
 

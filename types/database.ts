@@ -366,6 +366,26 @@ export type Database = {
           pinned_at?: string
         }
       }
+      review_ahead_order: {
+        Row: {
+          user_id: string
+          cycle_key: string
+          ids: string[]
+          updated_at: string
+        }
+        Insert: {
+          user_id: string
+          cycle_key: string
+          ids: string[]
+          updated_at?: string
+        }
+        Update: {
+          user_id?: string
+          cycle_key?: string
+          ids?: string[]
+          updated_at?: string
+        }
+      }
     }
     Views: {
       [_ in never]: never
