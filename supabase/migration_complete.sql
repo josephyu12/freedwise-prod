@@ -29,15 +29,22 @@ CREATE TABLE IF NOT EXISTS highlights (
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
   last_resurfaced TIMESTAMP WITH TIME ZONE,
   resurface_count INTEGER DEFAULT 0,
-  average_rating DECIMAL(3,2) DEFAULT 0, -- Average of all ratings (1-5 scale)
+  average_rating DECIMAL(3,2) DEFAULT 0, -- Average of ratings (low=1, med=2, high=3)
   rating_count INTEGER DEFAULT 0,
   archived BOOLEAN DEFAULT FALSE,
+  -- Set when the user manually unarchives; auto-archive only counts low
+  -- ratings dated after this. See migration_unarchived_at.sql.
+  unarchived_at TIMESTAMPTZ,
   user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE,
   -- TRUE for highlights read FROM a Notion page (they already exist there).
   -- The enqueue_notion_sync trigger skips the 'add' for these rows.
   imported_from_notion BOOLEAN NOT NULL DEFAULT FALSE,
   -- Per-edit opt-out marker for the "Don't sync to Notion" checkbox.
-  notion_optout_marker TEXT
+  notion_optout_marker TEXT,
+  -- Normalized dedup hash; unique per user. See migration_dedupe_text_unique.sql.
+  text_hash TEXT GENERATED ALWAYS AS (
+    md5(lower(regexp_replace(trim(coalesce(text, '')), '\s+', ' ', 'g')))
+  ) STORED
 );
 
 -- Create daily_summaries table
@@ -68,12 +75,15 @@ CREATE TABLE IF NOT EXISTS highlight_links (
   CHECK (from_highlight_id != to_highlight_id)
 );
 
--- Create junction table for daily summary highlights
+-- Create junction table for daily summary highlights.
+-- rating is TEXT ('low'/'med'/'high') — the app reads and writes these string
+-- values everywhere (see migration_rating_to_text.sql). Do NOT revert to the
+-- old INTEGER scale: every rating write would fail on a fresh install.
 CREATE TABLE IF NOT EXISTS daily_summary_highlights (
   id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
   daily_summary_id UUID NOT NULL REFERENCES daily_summaries(id) ON DELETE CASCADE,
   highlight_id UUID NOT NULL REFERENCES highlights(id) ON DELETE CASCADE,
-  rating INTEGER CHECK (rating >= 1 AND rating <= 5), -- Rating given in this daily summary (1-5 scale: low=1, med=3, high=5)
+  rating TEXT CONSTRAINT rating_values CHECK (rating IN ('low', 'med', 'high') OR rating IS NULL),
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
   UNIQUE(daily_summary_id, highlight_id)
 );
@@ -99,11 +109,14 @@ CREATE TABLE IF NOT EXISTS user_notion_settings (
   UNIQUE(user_id)
 );
 
--- Create table to store pending Notion sync operations
+-- Create table to store pending Notion sync operations.
+-- highlight_id is a PLAIN column — deliberately no FK. An ON DELETE CASCADE
+-- here raced the cancel-pending-add logic when a highlight was added then
+-- deleted before syncing (see migration_drop_sync_queue_cascade.sql).
 CREATE TABLE IF NOT EXISTS notion_sync_queue (
   id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
   user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
-  highlight_id UUID REFERENCES highlights(id) ON DELETE CASCADE, -- Nullable for delete operations
+  highlight_id UUID, -- Nullable for delete operations; no FK on purpose
   operation_type TEXT NOT NULL CHECK (operation_type IN ('add', 'update', 'delete')),
   text TEXT,
   html_content TEXT,
@@ -197,6 +210,84 @@ ALTER TABLE highlights
 -- Per-edit opt-out marker for the "Don't sync to Notion" checkbox.
 ALTER TABLE highlights
   ADD COLUMN IF NOT EXISTS notion_optout_marker TEXT;
+
+-- Manual-unarchive timestamp (see migration_unarchived_at.sql).
+ALTER TABLE highlights
+  ADD COLUMN IF NOT EXISTS unarchived_at TIMESTAMPTZ;
+
+-- Convert a legacy INTEGER rating column to the TEXT scale the app uses
+-- (see migration_rating_to_text.sql — this is that migration, guarded so it
+-- runs exactly once on databases still carrying the old 1-5 integer scale).
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'daily_summary_highlights'
+      AND column_name = 'rating'
+      AND data_type = 'integer'
+  ) THEN
+    ALTER TABLE daily_summary_highlights ADD COLUMN rating_new TEXT;
+    UPDATE daily_summary_highlights
+    SET rating_new = CASE
+      WHEN rating::text = '5' THEN 'high'
+      WHEN rating::text = '4' THEN 'med'
+      WHEN rating::text IN ('3', '2', '1') THEN 'low'
+      ELSE NULL
+    END;
+    ALTER TABLE daily_summary_highlights DROP COLUMN rating;
+    ALTER TABLE daily_summary_highlights RENAME COLUMN rating_new TO rating;
+    ALTER TABLE daily_summary_highlights
+      ADD CONSTRAINT rating_values CHECK (rating IN ('low', 'med', 'high') OR rating IS NULL);
+
+    -- Recalculate averages on the new scale (low=1, med=2, high=3).
+    UPDATE highlights h
+    SET
+      average_rating = sub.avg_rating,
+      rating_count = sub.cnt
+    FROM (
+      SELECT
+        dsh.highlight_id,
+        AVG(CASE dsh.rating WHEN 'low' THEN 1 WHEN 'med' THEN 2 WHEN 'high' THEN 3 END) AS avg_rating,
+        COUNT(dsh.rating) AS cnt
+      FROM daily_summary_highlights dsh
+      WHERE dsh.rating IS NOT NULL
+      GROUP BY dsh.highlight_id
+    ) sub
+    WHERE h.id = sub.highlight_id;
+  END IF;
+END $$;
+
+-- Drop the sync-queue FK cascade if an older install still has it
+-- (see migration_drop_sync_queue_cascade.sql).
+ALTER TABLE notion_sync_queue
+  DROP CONSTRAINT IF EXISTS notion_sync_queue_highlight_id_fkey;
+
+-- Normalized dedup hash + per-user uniqueness (see migration_dedupe_text_unique.sql).
+-- The app's save path REQUIRES this: it upserts with onConflict 'user_id,text_hash'.
+ALTER TABLE highlights
+  ADD COLUMN IF NOT EXISTS text_hash TEXT GENERATED ALWAYS AS (
+    md5(lower(regexp_replace(trim(coalesce(text, '')), '\s+', ' ', 'g')))
+  ) STORED;
+
+-- Remove duplicates (keep the oldest per user/text) before enforcing uniqueness.
+WITH ranked AS (
+  SELECT
+    id,
+    ROW_NUMBER() OVER (
+      PARTITION BY user_id, text_hash
+      ORDER BY created_at ASC, id ASC
+    ) AS rn
+  FROM highlights
+  WHERE text_hash IS NOT NULL
+)
+DELETE FROM highlights
+WHERE id IN (SELECT id FROM ranked WHERE rn > 1);
+
+ALTER TABLE highlights
+  DROP CONSTRAINT IF EXISTS highlights_user_id_text_hash_key;
+ALTER TABLE highlights
+  ADD CONSTRAINT highlights_user_id_text_hash_key
+  UNIQUE (user_id, text_hash);
 
 -- Enforce NOT NULL on every user-owning column. A NULL user_id is invisible
 -- under the `auth.uid() = user_id` RLS policies (it matches no caller), so an
@@ -908,6 +999,118 @@ DROP TRIGGER IF EXISTS update_user_review_settings_updated_at ON user_review_set
 CREATE TRIGGER update_user_review_settings_updated_at
   BEFORE UPDATE ON user_review_settings
   FOR EACH ROW EXECUTE FUNCTION update_user_review_settings_updated_at();
+
+-- ============================================================================
+-- 10. REVIEW-AHEAD FROZEN ORDER (see migration_review_ahead_order.sql)
+-- ============================================================================
+-- Server-side home for the frozen review-ahead sequence (lib/aheadOrder.ts).
+-- One row per user per cycle; `ids` is the ordered highlight_id sequence.
+
+CREATE TABLE IF NOT EXISTS review_ahead_order (
+  user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  cycle_key TEXT NOT NULL,
+  ids JSONB NOT NULL,
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  PRIMARY KEY (user_id, cycle_key)
+);
+
+ALTER TABLE review_ahead_order ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Users can view their own ahead order" ON review_ahead_order;
+CREATE POLICY "Users can view their own ahead order" ON review_ahead_order
+  FOR SELECT USING (auth.uid() = user_id);
+
+DROP POLICY IF EXISTS "Users can insert their own ahead order" ON review_ahead_order;
+CREATE POLICY "Users can insert their own ahead order" ON review_ahead_order
+  FOR INSERT WITH CHECK (auth.uid() = user_id);
+
+DROP POLICY IF EXISTS "Users can update their own ahead order" ON review_ahead_order;
+CREATE POLICY "Users can update their own ahead order" ON review_ahead_order
+  FOR UPDATE USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
+
+DROP POLICY IF EXISTS "Users can delete their own ahead order" ON review_ahead_order;
+CREATE POLICY "Users can delete their own ahead order" ON review_ahead_order
+  FOR DELETE USING (auth.uid() = user_id);
+
+-- ============================================================================
+-- 11. RESURFACE STATS TRIGGERS (see migration_resurface_stats.sql)
+-- ============================================================================
+-- resurface_count = number of distinct cycles the highlight has been rated in;
+-- last_resurfaced = most recent timestamp a rating was set.
+
+CREATE OR REPLACE FUNCTION update_resurface_count_from_hmr()
+RETURNS TRIGGER AS $$
+BEGIN
+  UPDATE highlights
+  SET resurface_count = (
+    SELECT COUNT(*)
+    FROM highlight_months_reviewed
+    WHERE highlight_id = NEW.highlight_id
+  )
+  WHERE id = NEW.highlight_id;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trigger_resurface_count_on_hmr ON highlight_months_reviewed;
+CREATE TRIGGER trigger_resurface_count_on_hmr
+AFTER INSERT OR UPDATE ON highlight_months_reviewed
+FOR EACH ROW
+EXECUTE FUNCTION update_resurface_count_from_hmr();
+
+CREATE OR REPLACE FUNCTION bump_last_resurfaced_on_rating()
+RETURNS TRIGGER AS $$
+BEGIN
+  IF NEW.rating IS NULL THEN
+    RETURN NEW;
+  END IF;
+  IF TG_OP = 'UPDATE' AND OLD.rating IS NOT DISTINCT FROM NEW.rating THEN
+    RETURN NEW;
+  END IF;
+  UPDATE highlights
+  SET last_resurfaced = NOW()
+  WHERE id = NEW.highlight_id;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trigger_bump_last_resurfaced_on_rating ON daily_summary_highlights;
+CREATE TRIGGER trigger_bump_last_resurfaced_on_rating
+AFTER INSERT OR UPDATE OF rating ON daily_summary_highlights
+FOR EACH ROW
+EXECUTE FUNCTION bump_last_resurfaced_on_rating();
+
+-- Backfill both fields from existing data (idempotent recompute; noon-UTC
+-- anchor so local rendering lands on the right calendar day — see
+-- migration_fix_last_resurfaced_tz.sql).
+UPDATE highlights h
+SET resurface_count = COALESCE(stats.cnt, 0)
+FROM (
+  SELECT highlight_id, COUNT(DISTINCT month_year) AS cnt
+  FROM (
+    SELECT highlight_id, month_year FROM highlight_months_reviewed
+    UNION
+    SELECT dsh.highlight_id, to_char(ds.date, 'YYYY-MM') AS month_year
+    FROM daily_summary_highlights dsh
+    JOIN daily_summaries ds ON ds.id = dsh.daily_summary_id
+    WHERE dsh.rating IS NOT NULL
+  ) all_months
+  GROUP BY highlight_id
+) stats
+WHERE h.id = stats.highlight_id;
+
+UPDATE highlights h
+SET last_resurfaced = stats.last_rated
+FROM (
+  SELECT dsh.highlight_id,
+         (MAX(ds.date)::timestamp + interval '12 hours') AT TIME ZONE 'UTC' AS last_rated
+  FROM daily_summary_highlights dsh
+  JOIN daily_summaries ds ON ds.id = dsh.daily_summary_id
+  WHERE dsh.rating IS NOT NULL
+  GROUP BY dsh.highlight_id
+) stats
+WHERE h.id = stats.highlight_id
+  AND h.last_resurfaced IS NULL;
 
 -- ============================================================================
 -- MIGRATION COMPLETE

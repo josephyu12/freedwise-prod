@@ -67,7 +67,7 @@ These migrations can be applied individually to update existing databases:
      the count instead of failing. Idempotent — re-run after cleanup.
    - **Date:** 2026-06-05
 
-10. **`migration_review_frequency.sql`** (Latest)
+10. **`migration_review_frequency.sql`**
    - Adds `user_review_settings` (`frequency_months` 1–12, `daily_review_enabled`)
      for configurable per-user review cadence (monthly … yearly) and an on/off
      switch for daily review.
@@ -78,21 +78,57 @@ These migrations can be applied individually to update existing databases:
    - Idempotent; RLS-correct.
    - **Date:** 2026-06-18
 
+11. **`migration_rating_to_text.sql`**
+   - Converts `daily_summary_highlights.rating` from the old INTEGER 1–5 scale to
+     TEXT (`'low'/'med'/'high'`) — the values the app reads and writes everywhere.
+   - Recalculates `average_rating`/`rating_count` on the new low=1/med=2/high=3
+     scale and auto-archives highlights with 2+ lows.
+   - **Not idempotent on its own** (kept for history); `migration_complete.sql`
+     contains a guarded, run-once version.
+
+12. **`migration_unarchived_at.sql`**
+   - Adds `highlights.unarchived_at` so auto-archive only counts low ratings
+     dated after a manual unarchive.
+
+13. **`migration_add_pinned_highlights.sql`**
+   - Adds `pinned_highlights` (max 10 per user, trigger-enforced) + RLS.
+
+14. **`migration_drop_sync_queue_cascade.sql`**
+   - Drops the FK cascade on `notion_sync_queue.highlight_id` so deleting a
+     highlight can't race the cancel-pending-add logic and orphan a `delete` op.
+   - **Date:** 2026-05-13
+
+15. **`migration_notion_sync_trigger.sql`**
+   - `enqueue_notion_sync` trigger: writes the `notion_sync_queue` row in the
+     SAME transaction as the highlight insert/update/delete, so the queue and
+     the highlights table can never disagree.
+
+16. **`migration_review_ahead_order.sql`** (Latest)
+   - Adds `review_ahead_order` (one row per user+cycle) — the server-side home
+     for the frozen review-ahead sequence so every device resumes the same order.
+
 ## Migration Order
 
 If applying migrations incrementally, use this order:
 
-1. Base schema (if starting from scratch, use `migration_complete.sql`)
+1. Base schema (if starting from scratch, use `migration_complete.sql` and stop —
+   it already contains everything below)
 2. `migration_add_months_reviewed.sql`
 3. `migration_add_archived.sql`
-4. `migration_add_fulltext_search.sql`
-5. `migration_add_original_text_to_sync_queue.sql`
-6. `migration_make_highlight_id_nullable_in_sync_queue.sql`
-7. `migration_resurface_stats.sql`
-8. `migration_fix_last_resurfaced_tz.sql`
-9. `migration_dedupe_text_unique.sql`
-10. `migration_user_id_not_null.sql`
-11. `migration_review_frequency.sql`
+4. `migration_rating_to_text.sql`
+5. `migration_unarchived_at.sql`
+6. `migration_add_pinned_highlights.sql`
+7. `migration_add_fulltext_search.sql`
+8. `migration_add_original_text_to_sync_queue.sql`
+9. `migration_make_highlight_id_nullable_in_sync_queue.sql`
+10. `migration_drop_sync_queue_cascade.sql`
+11. `migration_resurface_stats.sql`
+12. `migration_fix_last_resurfaced_tz.sql`
+13. `migration_dedupe_text_unique.sql`
+14. `migration_notion_sync_trigger.sql`
+15. `migration_user_id_not_null.sql`
+16. `migration_review_frequency.sql`
+17. `migration_review_ahead_order.sql`
 
 ## Usage
 
@@ -107,14 +143,20 @@ If applying migrations incrementally, use this order:
 -- Apply incremental migrations in order
 \i migration_add_months_reviewed.sql
 \i migration_add_archived.sql
+\i migration_rating_to_text.sql
+\i migration_unarchived_at.sql
+\i migration_add_pinned_highlights.sql
 \i migration_add_fulltext_search.sql
 \i migration_add_original_text_to_sync_queue.sql
 \i migration_make_highlight_id_nullable_in_sync_queue.sql
+\i migration_drop_sync_queue_cascade.sql
 \i migration_resurface_stats.sql
 \i migration_fix_last_resurfaced_tz.sql
 \i migration_dedupe_text_unique.sql
+\i migration_notion_sync_trigger.sql
 \i migration_user_id_not_null.sql
 \i migration_review_frequency.sql
+\i migration_review_ahead_order.sql
 ```
 
 ## Notes
