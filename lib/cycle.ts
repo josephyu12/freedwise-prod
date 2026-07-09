@@ -130,26 +130,33 @@ export interface ReviewSettings {
  * with no `user_review_settings` row reads as { freq: 1, enabled: true } so
  * today's behavior is preserved with zero rows written. Never treat a missing
  * row (or a missing column) as "off".
+ *
+ * A MISSING TABLE (migration not run) also reads as the defaults. Any other
+ * read failure THROWS: silently defaulting a freq-6 user to monthly would make
+ * callers compute the wrong cycle window and write ledger rows / assignments
+ * under the wrong cycle key. Callers decide how to degrade (page loads fall
+ * back to cache, routes return 500, the offline replay stalls and retries).
  */
 export async function getUserReviewSettings(
   supabase: any,
   userId: string
 ): Promise<ReviewSettings> {
-  try {
-    const { data } = await supabase
-      .from('user_review_settings')
-      .select('frequency_months, daily_review_enabled')
-      .eq('user_id', userId)
-      .maybeSingle()
-    const row = data as { frequency_months?: number; daily_review_enabled?: boolean } | null
-    return {
-      freq: normalizeFreq(row?.frequency_months),
-      enabled: row?.daily_review_enabled ?? true,
-    }
-  } catch {
-    // If the table doesn't exist yet (migration not run) or the read fails,
-    // fall back to the safe defaults so the app behaves exactly like today.
-    return { freq: 1, enabled: true }
+  const { data, error } = await supabase
+    .from('user_review_settings')
+    .select('frequency_months, daily_review_enabled')
+    .eq('user_id', userId)
+    .maybeSingle()
+  if (error) {
+    // 42P01 = Postgres undefined_table; PGRST205 = PostgREST "table not found
+    // in schema cache" — the migration-not-run case the defaults exist for.
+    const code = (error as { code?: string })?.code
+    if (code === '42P01' || code === 'PGRST205') return { freq: 1, enabled: true }
+    throw error
+  }
+  const row = data as { frequency_months?: number; daily_review_enabled?: boolean } | null
+  return {
+    freq: normalizeFreq(row?.frequency_months),
+    enabled: row?.daily_review_enabled ?? true,
   }
 }
 

@@ -233,7 +233,14 @@ export default function HighlightsPage() {
       // cadence the cycle key/window is the calendar month, identical to before.
       const now = new Date()
       const todayIso = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
-      const { freq } = await getUserReviewSettings(supabase, user.id)
+      // Display-only use of the cadence ("Review on" tags): degrade to the
+      // monthly window rather than failing the whole list on a transient error.
+      let freq = 1
+      try {
+        ;({ freq } = await getUserReviewSettings(supabase, user.id))
+      } catch (e) {
+        console.warn('Failed to load review settings; using monthly window for display:', e)
+      }
       const currentCycle = getCycleForDate(todayIso, freq)
       const currentMonth = currentCycle.key
       const currentMonthStart = currentCycle.startDate

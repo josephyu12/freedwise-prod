@@ -176,8 +176,12 @@ export async function replayPendingActions(
   let freq = 1
   try {
     freq = await getUserFrequency(supabase, userId)
-  } catch {
-    /* default monthly */
+  } catch (err) {
+    // Can't know the cadence — replaying with a guessed monthly default would
+    // write ledger rows under the wrong cycle key for freq>1 users. Leave the
+    // whole queue for the next drain; a transient read failure heals itself.
+    console.warn('Offline replay: failed to read review settings; will retry:', err)
+    return idle()
   }
 
   const all = await getPendingActions()

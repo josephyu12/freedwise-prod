@@ -61,7 +61,18 @@ const supabaseSingleton = {
   auth: {
     getUser: vi.fn(() => Promise.resolve({ data: { user: { id: 'u1' } } })),
   },
-  from: vi.fn(() => ({})),
+  // Serve the replay's review-settings read (no row -> monthly defaults); a
+  // missing implementation reads as a failed settings fetch, which now stalls
+  // the drain instead of guessing a cadence.
+  from: vi.fn((table: string) =>
+    table === 'user_review_settings'
+      ? ({
+          select: () => ({
+            eq: () => ({ maybeSingle: async () => ({ data: null, error: null }) }),
+          }),
+        } as any)
+      : ({} as any)
+  ),
 }
 vi.mock('@/lib/supabase/client', () => ({
   createClient: () => supabaseSingleton,

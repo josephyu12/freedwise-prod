@@ -66,7 +66,15 @@ export default async function ReviewLitePage({
   const today = localToday(cookieTz || ipTz)
 
   // Daily review off: render a calm off state instead of stale assignments.
-  const { freq, enabled } = await getUserReviewSettings(supabase, user.id)
+  // This page is the read-only weak-signal fallback, so a transient settings
+  // read failure degrades to the monthly defaults instead of an error page.
+  let freq = 1
+  let enabled = true
+  try {
+    ;({ freq, enabled } = await getUserReviewSettings(supabase, user.id))
+  } catch {
+    /* defaults */
+  }
   if (!enabled) {
     return (
       <main className="max-w-2xl mx-auto px-4 py-10 text-center">
