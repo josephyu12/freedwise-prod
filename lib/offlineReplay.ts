@@ -19,9 +19,11 @@ import { createClient } from './supabase/client'
 import { isEffectivelyOffline } from '@/hooks/useManualOffline'
 import { callRedistribute } from './redistribute'
 import { removeFromFutureMonths } from './removeFromFutureMonths'
-import { getUserFrequency, getCycleForDate, prevCycle, cycleKeyForDate } from './cycle'
+import { getUserFrequency, cycleKeyForDate } from './cycle'
+import { updateHighlightStatsAfterRating } from './highlightStats'
 import { removeReviewedOnClear } from './reviewedLedger'
 import { recordDiscardedChange, describeDiscardedAction } from './discardedChanges'
+import { reportError } from './reportError'
 
 const REPLAYABLE = new Set<string>([
   'rate-review',
@@ -214,11 +216,11 @@ export async function replayPendingActions(
       if (isPermanentError(err)) {
         const attempts = await incrementActionAttempts(action.id!)
         if (attempts >= MAX_ATTEMPTS) {
-          console.error(
-            `Dropping poison offline action after ${attempts} server rejections:`,
-            action,
-            err
-          )
+          reportError(err, {
+            reason: 'poison offline action dropped',
+            attempts,
+            actionType: action.type,
+          })
           // Persist a user-facing notice BEFORE removing it — the change is about
           // to be lost for good, so the user must be told what didn't save.
           recordDiscardedChange({
@@ -233,7 +235,7 @@ export async function replayPendingActions(
           continue
         }
       }
-      console.error('Offline replay failed; leaving action queued for retry:', err)
+      reportError(err, { reason: 'offline replay stalled', actionType: action.type })
       stalled = true
       break
     }
@@ -280,53 +282,15 @@ async function replayOne(supabase: any, action: any, userId: string, freq: numbe
         )
       if (reviewedError) throw reviewedError
 
-      const [allRatingsRes, highlightRes, lowRatingsRes] = await Promise.all([
-        supabase
-          .from('daily_summary_highlights')
-          .select('rating')
-          .eq('highlight_id', highlightId)
-          .not('rating', 'is', null),
-        supabase.from('highlights').select('unarchived_at').eq('id', highlightId).single(),
-        supabase
-          .from('daily_summary_highlights')
-          .select('rating, daily_summary:daily_summaries!inner(date)')
-          .eq('highlight_id', highlightId)
-          .eq('rating', 'low'),
-      ])
-      if (allRatingsRes.error) throw allRatingsRes.error
-      if (highlightRes.error) throw highlightRes.error
-      if (lowRatingsRes.error) throw lowRatingsRes.error
-
-      const ratingMap: Record<string, number> = { low: 1, med: 2, high: 3 }
-      const ratingValues = ((allRatingsRes.data || []) as Array<{ rating: string }>)
-        .map((r) => ratingMap[r.rating] || 0)
-        .filter((v) => v > 0)
-      const average =
-        ratingValues.length > 0 ? ratingValues.reduce((a, b) => a + b, 0) / ratingValues.length : 0
-
-      const unarchivedAt = (highlightRes.data as any)?.unarchived_at?.split('T')[0]
-      const lowCycles = new Set(
-        ((lowRatingsRes.data || []) as Array<{ rating: string; daily_summary: { date: string } }>)
-          .filter((r) => !unarchivedAt || r.daily_summary.date > unarchivedAt)
-          .map((r) => cycleKeyForDate(r.daily_summary.date, freq))
-      )
-      const prevKey = prevCycle(getCycleForDate(ledgerDate, freq)).key
-      const shouldArchive = lowCycles.has(monthYear) && lowCycles.has(prevKey)
-
-      const { error: statsError } = await supabase
-        .from('highlights')
-        .update({
-          average_rating: average,
-          rating_count: ratingValues.length,
-          ...(shouldArchive ? { archived: true } : {}),
-        })
-        .eq('id', highlightId)
-      if (statsError) throw statsError
+      await updateHighlightStatsAfterRating(supabase, {
+        highlightId,
+        ratingDate: ledgerDate,
+        freq,
+      })
       return false
     }
 
     case 'rate-daily': {
-      // Archive rule: low at least twice (within the unarchive window).
       const { summaryHighlightId, highlightId, rating, summaryDate } = action.params
 
       const { error: rateError } = await supabase
@@ -350,51 +314,15 @@ async function replayOne(supabase: any, action: any, userId: string, freq: numbe
         await removeReviewedOnClear(supabase, { userId, highlightId, summaryDate, freq })
       }
 
-      const { data: allRatingsData, error: allRatingsError } = await supabase
-        .from('daily_summary_highlights')
-        .select('rating')
-        .eq('highlight_id', highlightId)
-        .not('rating', 'is', null)
-      if (allRatingsError) throw allRatingsError
-
-      const allRatings = (allRatingsData || []) as Array<{ rating: string }>
-      const ratingMap: Record<string, number> = { low: 1, med: 2, high: 3 }
-      const ratingValues = allRatings.map((r) => ratingMap[r.rating] || 0).filter((v) => v > 0)
-      const average =
-        ratingValues.length > 0 ? ratingValues.reduce((a, b) => a + b, 0) / ratingValues.length : 0
-
-      const { data: highlightData, error: highlightError } = await supabase
-        .from('highlights')
-        .select('unarchived_at')
-        .eq('id', highlightId)
-        .single()
-      if (highlightError) throw highlightError
-
-      let lowRatingsCount = 0
-      if (highlightData?.unarchived_at) {
-        const { data: recentLowRatings, error: recentLowError } = await supabase
-          .from('daily_summary_highlights')
-          .select('rating, daily_summary:daily_summaries!inner(date)')
-          .eq('highlight_id', highlightId)
-          .eq('rating', 'low')
-          .gt('daily_summary.date', highlightData.unarchived_at.split('T')[0])
-        if (recentLowError) throw recentLowError
-        lowRatingsCount = (recentLowRatings || []).length
-      } else {
-        lowRatingsCount = allRatings.filter((r) => r.rating === 'low').length
-      }
-
-      const shouldArchive = lowRatingsCount >= 2
-
-      const { error: statsError } = await supabase
-        .from('highlights')
-        .update({
-          average_rating: average,
-          rating_count: ratingValues.length,
-          ...(shouldArchive ? { archived: true } : {}),
-        })
-        .eq('id', highlightId)
-      if (statsError) throw statsError
+      // Shared stats + auto-archive rule (see lib/highlightStats.ts). Legacy
+      // actions queued without summaryDate fall back to the local today.
+      const n = new Date()
+      const fallbackToday = `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, '0')}-${String(n.getDate()).padStart(2, '0')}`
+      await updateHighlightStatsAfterRating(supabase, {
+        highlightId,
+        ratingDate: summaryDate || fallbackToday,
+        freq,
+      })
       return false
     }
 
@@ -522,9 +450,12 @@ async function replayOne(supabase: any, action: any, userId: string, freq: numbe
 
     case 'unarchive-highlight': {
       const { highlightId } = action.params
+      // Anchor unarchived_at at the moment the user ACTED, not the (possibly
+      // days-later) replay — the auto-archive low-rating window starts here.
+      const unarchivedAt = new Date(action.createdAt || Date.now()).toISOString()
       const { error: unarchiveError } = await supabase
         .from('highlights')
-        .update({ archived: false, unarchived_at: new Date().toISOString() })
+        .update({ archived: false, unarchived_at: unarchivedAt })
         .eq('id', highlightId)
       if (unarchiveError) throw unarchiveError
       return true

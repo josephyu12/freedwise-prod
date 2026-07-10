@@ -113,7 +113,7 @@ See `supabase/schema.sql` for the complete schema.
 1. Go to the Daily Summary page
 2. View your resurfaced highlights
 3. Click Low/Med/High to rate each highlight
-4. If a highlight is marked as "low" twice, it will be automatically archived
+4. If a highlight is rated "low" in two consecutive review cycles, it will be automatically archived
 5. Archived highlights no longer appear in daily reviews but can be viewed and unarchived from the Highlights page
 
 ### Viewing Archived Highlights
@@ -121,14 +121,4 @@ See `supabase/schema.sql` for the complete schema.
 2. Click "Show Archived" to view archived highlights
 3. Click "Unarchive" on any archived highlight to restore it to active status
 
-### Automatic Daily Imports from Notion
-Set up automatic daily imports from your Notion page. See `AUTO_IMPORT_SETUP.md` for detailed instructions.
-
-**Quick setup for Vercel:**
-1. Set environment variables in Vercel dashboard:
-   - `NOTION_API_KEY`
-   - `NOTION_PAGE_ID`
-   - `CRON_SECRET` (optional but recommended)
-2. Deploy to Vercel - the cron job is already configured in `vercel.json`
-3. Imports will run daily at midnight UTC
 

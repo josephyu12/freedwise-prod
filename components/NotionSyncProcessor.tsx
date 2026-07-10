@@ -97,21 +97,49 @@ export default function NotionSyncProcessor() {
     // Process queue once on mount to handle any pending items
     processQueue()
 
-    // Process queue periodically (every 10 seconds) to handle new items
-    // This is for Supabase -> Notion sync only, not for importing
+    // Realtime: queue changes (the enqueue trigger's INSERTs, retries flipping
+    // back to pending) arrive as pushed events over the already-open websocket
+    // — no more polling every 10 seconds from every tab. Requires
+    // migration_notion_realtime.sql; postgres_changes respects RLS so only this
+    // user's rows produce events.
+    let channel: ReturnType<typeof supabase.channel> | null = null
+    let cancelled = false
+    ;(async () => {
+      try {
+        const { data: { user } } = await supabase.auth.getUser()
+        if (!user || cancelled) return
+        channel = supabase
+          .channel('notion-sync-queue-changes')
+          .on(
+            'postgres_changes',
+            { event: '*', schema: 'public', table: 'notion_sync_queue', filter: `user_id=eq.${user.id}` },
+            () => {
+              if (!isEffectivelyOffline()) processQueue()
+            }
+          )
+          .subscribe()
+      } catch {
+        // Subscription failed — the safety-net interval below still drains.
+      }
+    })()
+
+    // Slow safety net for missed events / dropped subscriptions (was every 10s).
+    const SAFETY_POLL_MS = 5 * 60 * 1000
     const interval = setInterval(() => {
       if (!isEffectivelyOffline()) {
         processQueue()
       }
-    }, 10000) // Check every 10 seconds
+    }, SAFETY_POLL_MS)
 
     return () => {
+      cancelled = true
       window.removeEventListener('online', handleOnline)
       window.removeEventListener('offline', handleOffline)
       window.removeEventListener(MANUAL_OFFLINE_EVENT, handleManualChange)
+      if (channel) supabase.removeChannel(channel)
       clearInterval(interval)
     }
-  }, [processQueue])
+  }, [processQueue, supabase])
 
   return null
 }

@@ -14,8 +14,10 @@ import { addToNotionSyncQueue } from '@/lib/notionSyncQueue'
 import { callRedistribute } from '@/lib/redistribute'
 import { parseIntoParagraphs, groupParagraphsByDividers, ParagraphBlock } from '@/lib/splitHighlightText'
 import { renderHighlightHtml } from '@/lib/renderHighlightHtml'
+import { sanitizeForRender } from '@/lib/sanitizeForRender'
 import { computeMonthReviewStatus } from '@/lib/monthReviewStatus'
 import { getUserReviewSettings, getCycleForDate, nextCycle, cycleKeyForDate } from '@/lib/cycle'
+import { updateHighlightStatsAfterRating } from '@/lib/highlightStats'
 import { removeReviewedOnClear } from '@/lib/reviewedLedger'
 import { useOfflineStatus } from '@/hooks/useOfflineStatus'
 import { isEffectivelyOffline } from '@/hooks/useManualOffline'
@@ -239,12 +241,25 @@ export default function DailyPage() {
     setDisplayMonth(startOfMonth(newMonth))
   }, [])
   const [monthsWithAssignments, setMonthsWithAssignments] = useState<Set<string>>(new Set())
+  // Latest categories/pins for cache writes. loadDailySummary is a useCallback
+  // with pinned deps (see its eslint-disable), so reading the state directly
+  // captured a stale closure — the first cache write after load stored empty
+  // arrays and the offline view lost its categories/pins until the next write.
+  const categoriesRef = useRef<Category[]>([])
+  const pinnedIdsRef = useRef<Set<string>>(new Set())
   // Review cadence + on/off. freq is held in a ref so async helpers read the
   // latest without re-binding; reviewEnabled drives the "off" empty state.
   const freqRef = useRef(1)
   const [reviewEnabled, setReviewEnabled] = useState(true)
   const supabase = createClient()
   const router = useRouter()
+
+  useEffect(() => {
+    categoriesRef.current = categories
+  }, [categories])
+  useEffect(() => {
+    pinnedIdsRef.current = pinnedHighlightIds
+  }, [pinnedHighlightIds])
 
   // Offline state. Draining is owned by the global <OfflineSync>; we just read
   // its progress for the banner.
@@ -537,8 +552,8 @@ export default function DailyPage() {
           await cacheDailyData({
             date: selectedDate,
             summary: summaryObj,
-            categories: categories,
-            pinnedHighlightIds: Array.from(pinnedHighlightIds),
+            categories: categoriesRef.current,
+            pinnedHighlightIds: Array.from(pinnedIdsRef.current),
             cachedAt: Date.now(),
           })
         } catch (e) {
@@ -915,67 +930,15 @@ export default function DailyPage() {
         }
       }
 
-      // Recalculate average rating for the highlight (uses ALL ratings for average)
-      const { data: allRatingsData, error: ratingsError } = await supabase
-        .from('daily_summary_highlights')
-        .select('rating')
-        .eq('highlight_id', highlightId)
-        .not('rating', 'is', null)
-
-      if (ratingsError) throw ratingsError
-
-      const allRatings = (allRatingsData || []) as Array<{ rating: string }>
-
-      // Map text ratings to numeric values for average calculation (low=1, med=2, high=3)
-      const ratingMap: Record<string, number> = { low: 1, med: 2, high: 3 }
-      const ratingValues: number[] = allRatings.map((r) => ratingMap[r.rating] || 0).filter((v) => v > 0)
-
-      const average = ratingValues.length > 0
-        ? ratingValues.reduce((a, b) => a + b, 0) / ratingValues.length
-        : 0
-
-      // Check if this highlight was previously unarchived manually. Checked: a
-      // silently-failed read reads as "no unarchive history" and could archive
-      // a highlight the unarchive window should still protect.
-      const { data: highlightData, error: highlightError } = await (supabase
-        .from('highlights') as any)
-        .select('unarchived_at')
-        .eq('id', highlightId)
-        .single()
-      if (highlightError) throw highlightError
-
-      // Count low ratings — if the highlight was manually unarchived, only count
-      // low ratings from daily summaries dated AFTER the unarchive timestamp
-      let lowRatingsCount = 0
-      if (highlightData?.unarchived_at) {
-        // Only count low ratings from summaries after the unarchive date
-        const { data: recentLowRatings, error: recentLowError } = await supabase
-          .from('daily_summary_highlights')
-          .select('rating, daily_summary:daily_summaries!inner(date)')
-          .eq('highlight_id', highlightId)
-          .eq('rating', 'low')
-          .gt('daily_summary.date', highlightData.unarchived_at.split('T')[0])
-        if (recentLowError) throw recentLowError
-
-        lowRatingsCount = (recentLowRatings || []).length
-      } else {
-        // No unarchive history — count all low ratings
-        lowRatingsCount = allRatings.filter((r) => r.rating === 'low').length
-      }
-
-      // If marked as 'low' twice or more (since last unarchive), archive it
-      const shouldArchive = lowRatingsCount >= 2
-
-      // Update highlight with new average rating and archived status
-      const { error: statsError } = await (supabase
-        .from('highlights') as any)
-        .update({
-          average_rating: average,
-          rating_count: ratingValues.length,
-          ...(shouldArchive ? { archived: true } : {}),
-        })
-        .eq('id', highlightId)
-      if (statsError) throw statsError
+      // Recompute stats + auto-archive with the ONE shared rule (low in both
+      // this cycle and the previous one — see lib/highlightStats.ts). This page
+      // used to archive on "2+ lows ever", so the same highlight archived or
+      // survived depending on which page the rating came from.
+      await updateHighlightStatsAfterRating(supabase, {
+        highlightId,
+        ratingDate: summary?.date || date,
+        freq: freqRef.current,
+      })
 
       // Update overlay state: add overlay when rating is set, remove when cleared
       if (summary) {
@@ -1791,7 +1754,7 @@ export default function DailyPage() {
                                   <div key={i}>
                                     <div
                                       className={`px-4 py-3 border-l-4 ${colorClass} text-sm text-gray-900 dark:text-gray-100`}
-                                      dangerouslySetInnerHTML={{ __html: para.html }}
+                                      dangerouslySetInnerHTML={{ __html: sanitizeForRender(para.html) }}
                                     />
                                     {i < splitParagraphs.length - 1 && (
                                       <button

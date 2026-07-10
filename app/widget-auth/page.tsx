@@ -10,7 +10,38 @@ export default function WidgetAuthPage() {
   const [status, setStatus] = useState<'loading' | 'authenticated' | 'unauthenticated'>('loading')
   const [widgetToken, setWidgetToken] = useState('')
   const [copied, setCopied] = useState(false)
+  const [revoking, setRevoking] = useState(false)
+  const [revokeMessage, setRevokeMessage] = useState<string | null>(null)
   const supabase = createClient()
+
+  // Bump the server-side token version, killing every previously issued token
+  // (all devices), then show a fresh token signed with the new version.
+  const handleRevoke = async () => {
+    if (
+      !confirm(
+        'Revoke all widget tokens? Widgets on every device stop working until you paste in a new token.'
+      )
+    ) {
+      return
+    }
+    setRevoking(true)
+    setRevokeMessage(null)
+    try {
+      const res = await fetch('/api/widget-token', { method: 'DELETE' })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        throw new Error(data.error || 'Revoke failed')
+      }
+      const tokenRes = await fetch('/api/widget-token')
+      const data = await tokenRes.json()
+      if (data.token) setWidgetToken(data.token)
+      setRevokeMessage('All previous widget tokens are revoked. Use the new token above.')
+    } catch (error: any) {
+      setRevokeMessage(error.message || 'Failed to revoke tokens. Please try again.')
+    } finally {
+      setRevoking(false)
+    }
+  }
 
   useEffect(() => {
     const init = async () => {
@@ -105,7 +136,8 @@ export default function WidgetAuthPage() {
           Copy this token and paste it into your Scriptable widget script as the <code className="bg-gray-100 dark:bg-gray-700 px-1 rounded text-xs">WIDGET_TOKEN</code> value.
         </p>
         <p className="text-xs text-gray-500 dark:text-gray-500 mb-4">
-          Token expires in 90 days. Regenerate anytime by returning to this page.
+          Token expires in 90 days. Regenerate anytime by returning to this page,
+          or revoke every issued token below if a token may have leaked.
         </p>
 
         <div className="relative">
@@ -142,6 +174,21 @@ export default function WidgetAuthPage() {
             <li>After it says &quot;Token stored securely&quot;, <strong>clear the token from the script</strong> (it&apos;s kept in the iOS Keychain)</li>
             <li>Add a Large Scriptable widget to your home screen, or a Lock Screen accessory (rectangular, inline, or circular), then long-press → Edit Widget → choose this script</li>
           </ol>
+        </div>
+
+        <div className="mt-4 pt-4 border-t border-gray-200 dark:border-gray-700">
+          <button
+            onClick={handleRevoke}
+            disabled={revoking}
+            className="w-full px-4 py-2 text-sm font-medium text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 rounded-lg hover:bg-red-100 dark:hover:bg-red-900/30 transition disabled:opacity-50"
+          >
+            {revoking ? 'Revoking…' : 'Revoke all widget tokens'}
+          </button>
+          {revokeMessage && (
+            <p className="mt-2 text-xs text-center text-gray-600 dark:text-gray-400" role="status">
+              {revokeMessage}
+            </p>
+          )}
         </div>
 
         <div className="mt-4 text-center">

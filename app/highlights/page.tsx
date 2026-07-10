@@ -14,6 +14,7 @@ import { getUserReviewSettings, getCycleForDate } from '@/lib/cycle'
 import { callRedistribute } from '@/lib/redistribute'
 import { parseIntoParagraphs, groupParagraphsByDividers, ParagraphBlock, splitHtmlByBlankLines } from '@/lib/splitHighlightText'
 import { renderHighlightHtml } from '@/lib/renderHighlightHtml'
+import { sanitizeForRender } from '@/lib/sanitizeForRender'
 
 export default function HighlightsPage() {
   const [highlights, setHighlights] = useState<Highlight[]>([])
@@ -1367,7 +1368,7 @@ export default function HighlightsPage() {
                             <div key={i}>
                               <div
                                 className={`px-4 py-3 border-l-4 ${colorClass} text-sm text-gray-900 dark:text-gray-100`}
-                                dangerouslySetInnerHTML={{ __html: para.html }}
+                                dangerouslySetInnerHTML={{ __html: sanitizeForRender(para.html) }}
                               />
                               {i < splitParagraphs.length - 1 && (
                                 <button

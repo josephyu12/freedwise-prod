@@ -63,17 +63,17 @@ export async function POST(request: NextRequest) {
 
     // Fetch ALL unarchived highlights (paginate past Supabase's 1000-row default).
     const PAGE = 1000
-    let allHighlightsData: Array<{ id: string; text: string; html_content: string | null }> = []
+    let allHighlightsData: Array<{ id: string; score: number }> = []
     let from = 0
     while (true) {
       const { data, error: pageError } = await supabase
         .from('highlights')
-        .select('id, text, html_content')
+        .select('id, score')
         .eq('user_id', user.id)
         .eq('archived', false)
         .range(from, from + PAGE - 1)
       if (pageError) throw pageError
-      const page = (data || []) as Array<{ id: string; text: string; html_content: string | null }>
+      const page = (data || []) as Array<{ id: string; score: number }>
       allHighlightsData = allHighlightsData.concat(page)
       if (page.length < PAGE) break
       from += PAGE
@@ -101,11 +101,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ message: 'No highlights to assign', assignments: [] })
     }
 
-    const highlightsWithScore: Scored[] = allHighlights.map((h) => {
-      const content = h.html_content || h.text || ''
-      const score = content.replace(/<[^>]*>/g, '').length
-      return { id: h.id, text: h.text, html_content: h.html_content, score }
-    })
+    const highlightsWithScore: Scored[] = allHighlights.map((h) => ({ id: h.id, score: h.score }))
 
     // Existing summaries in the cycle window (may span 2–12 calendar months).
     const { data: existingSummaries, error: existingError } = await supabase
@@ -153,15 +149,6 @@ export async function POST(request: NextRequest) {
         if (page.length < PAGE) break
         aFrom += PAGE
       }
-
-      // Delete only the reshuffleable (unrated) rows. Rated rows stay put, so no
-      // reviewed highlight can ever be stranded by a re-pack. Summaries are kept
-      // (a summary keeping rated rows must survive); empty ones get reused below.
-      await supabase
-        .from('daily_summary_highlights')
-        .delete()
-        .in('daily_summary_id', summaryIds)
-        .is('rating', null)
     }
 
     // Pack the unreviewed remainder onto the days at/after fromDate. Exclude
@@ -183,37 +170,27 @@ export async function POST(request: NextRequest) {
       ? packIntoDates(highlightsToAssign, packDates, cycleSeed(cycle), initialLoads)
       : []
 
-    const createdAssignments: any[] = []
-    const summaryIdByDate = new Map(typedSummaries.map((s) => [s.date, s.id]))
-    for (const bucket of buckets) {
-      if (bucket.highlights.length === 0) continue
+    // ONE atomic RPC (see migration_schedule_rpcs.sql): clear the cycle's
+    // unrated rows (rated rows stay put — no reviewed highlight can be
+    // stranded; summaries are kept so days holding rated rows survive) and
+    // apply the packed layout. Previously this was a delete followed by up to
+    // 2 requests per day — a failure in between left the cycle half-cleared.
+    const nonEmpty = buckets.filter((b) => b.highlights.length > 0)
+    const { error: rpcError } = await (supabase.rpc as any)('assign_cycle_layout', {
+      p_cycle_start: cycle.startDate,
+      p_cycle_end: cycle.endDate,
+      p_buckets: nonEmpty.map((b) => ({
+        date: b.date,
+        highlight_ids: b.highlights.map((h) => h.id),
+      })),
+    })
+    if (rpcError) throw rpcError
 
-      let summaryId: string | null = summaryIdByDate.get(bucket.date) ?? null
-      if (!summaryId) {
-        const { data: summaryData, error: summaryError } = await (supabase
-          .from('daily_summaries') as any)
-          .insert([{ date: bucket.date, user_id: user.id }])
-          .select()
-          .single()
-        if (summaryError) throw summaryError
-        summaryId = summaryData.id as string
-        summaryIdByDate.set(bucket.date, summaryId)
-      }
-
-      // Ignore duplicates: a highlight could already be linked to a surviving
-      // (rated) summary for this date.
-      const { error: linkError } = await (supabase.from('daily_summary_highlights') as any)
-        .upsert(
-          bucket.highlights.map((h) => ({ daily_summary_id: summaryId!, highlight_id: h.id })),
-          { onConflict: 'daily_summary_id,highlight_id', ignoreDuplicates: true }
-        )
-      if (linkError) throw linkError
-      createdAssignments.push({
-        date: bucket.date,
-        highlightCount: bucket.highlights.length,
-        totalScore: bucket.totalScore,
-      })
-    }
+    const createdAssignments = nonEmpty.map((b) => ({
+      date: b.date,
+      highlightCount: b.highlights.length,
+      totalScore: b.totalScore,
+    }))
 
     const preservedCount = ratedHighlightIds.size
 

@@ -8,6 +8,7 @@ import { format } from 'date-fns'
 import { Pin, PinOff, ArrowRight, Home, CalendarDays } from 'lucide-react'
 import { parseIntoParagraphs, groupParagraphsByDividers, ParagraphBlock } from '@/lib/splitHighlightText'
 import { renderHighlightHtml } from '@/lib/renderHighlightHtml'
+import { sanitizeForRender } from '@/lib/sanitizeForRender'
 import RichTextEditor from '@/components/RichTextEditor'
 import PinDialog from '@/components/PinDialog'
 import { addToNotionSyncQueue } from '@/lib/notionSyncQueue'
@@ -23,7 +24,8 @@ import {
   fetchAheadOrder,
   storeAheadOrder,
 } from '@/lib/aheadOrder'
-import { getUserReviewSettings, getCycleForDate, prevCycle, cycleKeyForDate } from '@/lib/cycle'
+import { getUserReviewSettings, getCycleForDate, cycleKeyForDate } from '@/lib/cycle'
+import { updateHighlightStatsAfterRating } from '@/lib/highlightStats'
 import { useOfflineSyncState } from '@/hooks/useOfflineSyncState'
 import OfflineBanner from '@/components/OfflineBanner'
 import { countReplayable, drainOfflineQueue } from '@/lib/offlineReplay'
@@ -515,65 +517,17 @@ function ReviewPageContent() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loading, highlights, searchParams])
 
-  // Background-only: recalculate average rating and auto-archive after a rating is saved.
+  // Background-only: recalculate average rating and auto-archive after a rating
+  // is saved (one shared rule for every rating path — see lib/highlightStats.ts).
   // Called fire-and-forget so the UI doesn't wait for it.
   // The highlight_months_reviewed upsert is intentionally NOT here — it lives on the
   // critical path so it persists even if the user closes the app immediately after rating.
-  const updateHighlightStats = async (
-    highlightId: string,
-    monthYear: string,
-    ratingDate: string
-  ) => {
-    // All three reads must be error-checked: a silently-failed ratings read
-    // returns [], which would overwrite average_rating/rating_count with 0.
-    const [allRatingsRes, highlightRes, lowRatingsRes] = await Promise.all([
-      supabase
-        .from('daily_summary_highlights')
-        .select('rating')
-        .eq('highlight_id', highlightId)
-        .not('rating', 'is', null),
-      (supabase.from('highlights') as any)
-        .select('unarchived_at')
-        .eq('id', highlightId)
-        .single(),
-      supabase
-        .from('daily_summary_highlights')
-        .select('rating, daily_summary:daily_summaries!inner(date)')
-        .eq('highlight_id', highlightId)
-        .eq('rating', 'low'),
-    ])
-    if (allRatingsRes.error) throw allRatingsRes.error
-    if (highlightRes.error) throw highlightRes.error
-    if (lowRatingsRes.error) throw lowRatingsRes.error
-    const allRatingsData = allRatingsRes.data
-    const highlightData = highlightRes.data as any
-    const lowRatingsWithDates = lowRatingsRes.data
-
-    const ratingMap: Record<string, number> = { low: 1, med: 2, high: 3 }
-    const ratingValues = ((allRatingsData || []) as Array<{ rating: string }>)
-      .map((r) => ratingMap[r.rating] || 0).filter((v) => v > 0)
-    const average = ratingValues.length > 0
-      ? ratingValues.reduce((a, b) => a + b, 0) / ratingValues.length
-      : 0
-
-    const unarchivedAt = highlightData?.unarchived_at?.split('T')[0]
-    const lowCycles = new Set(
-      ((lowRatingsWithDates || []) as Array<{ rating: string; daily_summary: { date: string } }>)
-        .filter((r) => !unarchivedAt || r.daily_summary.date > unarchivedAt)
-        .map((r) => cycleKeyForDate(r.daily_summary.date, freqRef.current))
-    )
-    const prevKey = prevCycle(getCycleForDate(ratingDate, freqRef.current)).key
-    const shouldArchive = lowCycles.has(monthYear) && lowCycles.has(prevKey)
-
-    const { error: statsError } = await (supabase.from('highlights') as any)
-      .update({
-        average_rating: average,
-        rating_count: ratingValues.length,
-        ...(shouldArchive ? { archived: true } : {}),
-      })
-      .eq('id', highlightId)
-    if (statsError) throw statsError
-  }
+  const updateHighlightStats = (highlightId: string, ratingDate: string) =>
+    updateHighlightStatsAfterRating(supabase, {
+      highlightId,
+      ratingDate,
+      freq: freqRef.current,
+    })
 
   // Helper to rate a specific highlight by index (for auto-rate from widget URL params)
   const handleRateByIndex = async (index: number, rating: 'low' | 'med' | 'high') => {
@@ -591,7 +545,7 @@ function ReviewPageContent() {
       // Key the ledger by the cycle of the rated highlight's OWN day, not today.
       // In catch-up/ahead review the highlight can belong to a different cycle
       // than today; keying by `today` marked the wrong cycle reviewed (phantom
-      // ledger rows). Matches lib/rateHighlightServer.ts + the daily flow.
+      // ledger rows). Matches the daily flow + the offline replay.
       const ratingDate = target.date || today
       const monthYear = cycleKeyForDate(ratingDate, freqRef.current)
 
@@ -623,7 +577,7 @@ function ReviewPageContent() {
       setRatingInProgress(false)
 
       // Background: stats/auto-archive (doesn't block UI)
-      updateHighlightStats(target.highlight_id, monthYear, ratingDate).catch(console.error)
+      updateHighlightStats(target.highlight_id, ratingDate).catch(console.error)
     } catch (error) {
       console.error('Error auto-rating highlight:', error)
       setHighlights((prev) =>
@@ -722,7 +676,7 @@ function ReviewPageContent() {
     try {
       // Key the ledger by the cycle of the rated highlight's OWN day, not today
       // (see handleRateByIndex). Prevents phantom ledger rows when reviewing
-      // catch-up/ahead across a cycle boundary. Matches lib/rateHighlightServer.ts.
+      // catch-up/ahead across a cycle boundary. Matches the offline replay.
       const ratingDate = current.date || today
       const monthYear = cycleKeyForDate(ratingDate, freqRef.current)
 
@@ -758,7 +712,7 @@ function ReviewPageContent() {
       setRatingInProgress(false)
 
       // Background: stats/auto-archive (doesn't block UI)
-      updateHighlightStats(current.highlight_id, monthYear, ratingDate).catch(console.error)
+      updateHighlightStats(current.highlight_id, ratingDate).catch(console.error)
     } catch (error) {
       console.error('Error rating highlight (falling back to offline queue):', error)
       // Network failed on weak signal — fall back to offline queueing
@@ -1591,7 +1545,7 @@ function ReviewPageContent() {
                         <div key={i}>
                           <div
                             className={`px-4 py-3 border-l-4 ${colorClass} prose dark:prose-invert max-w-none text-sm`}
-                            dangerouslySetInnerHTML={{ __html: para.html }}
+                            dangerouslySetInnerHTML={{ __html: sanitizeForRender(para.html) }}
                           />
                           {i < splitParagraphs.length - 1 && (
                             <button

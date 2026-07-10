@@ -103,18 +103,20 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // All unarchived highlights (paginate).
-    let allHighlightsData: Array<{ id: string; text: string; html_content: string | null }> = []
+    // All unarchived highlights (paginate). Only id + the stored score column —
+    // downloading full text/html to measure it shipped the whole library over
+    // the wire on every add/split/delete.
+    let allHighlightsData: Array<{ id: string; score: number }> = []
     let from = 0
     while (true) {
       const { data, error: pageError } = await supabase
         .from('highlights')
-        .select('id, text, html_content')
+        .select('id, score')
         .eq('user_id', user.id)
         .eq('archived', false)
         .range(from, from + PAGE - 1)
       if (pageError) throw pageError
-      const page = (data || []) as Array<{ id: string; text: string; html_content: string | null }>
+      const page = (data || []) as Array<{ id: string; score: number }>
       allHighlightsData = allHighlightsData.concat(page)
       if (page.length < PAGE) break
       from += PAGE
@@ -199,12 +201,12 @@ export async function POST(request: NextRequest) {
       if (missing.length > 0) {
         const { data: requestedData } = await supabase
           .from('highlights')
-          .select('id, text, html_content')
+          .select('id, score')
           .eq('user_id', user.id)
           .eq('archived', false)
           .in('id', missing)
         if (requestedData && requestedData.length > 0) {
-          const requested = (requestedData as Array<{ id: string; text: string; html_content: string | null }>)
+          const requested = (requestedData as Array<{ id: string; score: number }>)
             .filter((h) => !reviewedHighlightIds.has(h.id) && !reviewedHighlightIdsFromRatings.has(h.id))
           const byId = new Map([...allHighlights, ...requested].map((h) => [h.id, h]))
           allHighlights = Array.from(byId.values())
@@ -216,10 +218,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ message: 'No highlights to redistribute' })
     }
 
-    const allScored: Scored[] = allHighlights.map((h) => {
-      const content = h.html_content || h.text || ''
-      return { id: h.id, text: h.text, html_content: h.html_content, score: content.replace(/<[^>]*>/g, '').length }
-    })
+    const allScored: Scored[] = allHighlights.map((h) => ({ id: h.id, score: h.score }))
     // Per-day weight (dayState below) must reflect the TRUE reading load of every
     // highlight actually sitting on a day — so score EVERY unarchived highlight,
     // not just the `allHighlights` subset. `allHighlights` drops rows in the
@@ -229,12 +228,7 @@ export async function POST(request: NextRequest) {
     // became a magnet — a newly-added highlight landed on Aug 15, the single
     // HEAVIEST day, because its 11.5k-char highlight scored 0. Weighting by the
     // full per-day total matches apply-frequency / prepare-next-cycle's model.
-    const idToScore = new Map(
-      allHighlightsData.map((h) => {
-        const content = h.html_content || h.text || ''
-        return [h.id, content.replace(/<[^>]*>/g, '').length] as const
-      })
-    )
+    const idToScore = new Map(allHighlightsData.map((h) => [h.id, h.score] as const))
 
     // Which highlights to actually place this cycle: requested-and-not-yet-assigned,
     // plus (on the last day) any orphans never assigned this cycle.
@@ -252,6 +246,16 @@ export async function POST(request: NextRequest) {
       toPlace = Array.from(byId.values())
     }
 
+    // All placements (current cycle + future cycles) are COLLECTED here and
+    // applied in ONE atomic place_assignments RPC at the end (see
+    // migration_schedule_rpcs.sql) — previously each highlight was its own
+    // insert round trip and a mid-sequence failure left a partial placement.
+    const placements = new Map<string, string[]>() // date -> highlight ids
+    const addPlacement = (date: string, ids: string[]) => {
+      if (ids.length === 0) return
+      placements.set(date, [...(placements.get(date) ?? []), ...ids])
+    }
+
     const createdAssignments: any[] = []
     const seed = cycleSeed(cycle)
 
@@ -261,24 +265,8 @@ export async function POST(request: NextRequest) {
       if (openRemaining.length === 0) {
         // All remaining days fully done: add to the last day only.
         const lastDate = cycle.endDate
-        let lastSummary = typedSummaries.find((s) => s.date === lastDate)
-        if (!lastSummary) {
-          const { data: newSummary, error: sErr } = await (supabase.from('daily_summaries') as any)
-            .insert([{ date: lastDate, user_id: user.id }])
-            .select()
-            .single()
-          if (sErr) throw sErr
-          lastSummary = newSummary
-        }
-        if (lastSummary) {
-          const { error: linkError } = await (supabase.from('daily_summary_highlights') as any)
-            .upsert(
-              toPlace.map((h) => ({ daily_summary_id: lastSummary!.id, highlight_id: h.id })),
-              { onConflict: 'daily_summary_id,highlight_id', ignoreDuplicates: true }
-            )
-          if (linkError) throw linkError
-          createdAssignments.push({ date: lastDate, highlightCount: toPlace.length })
-        }
+        addPlacement(lastDate, toPlace.map((h) => h.id))
+        createdAssignments.push({ date: lastDate, highlightCount: toPlace.length })
       } else {
         // Balance onto the open remaining days, accounting for existing per-day scores.
         const dayState = openRemaining.map((date) => {
@@ -289,7 +277,7 @@ export async function POST(request: NextRequest) {
               if (a.daily_summary_id === summary.id) totalScore += idToScore.get(a.highlight_id) ?? 0
             }
           }
-          return { date, summaryId: summary?.id ?? null, totalScore }
+          return { date, totalScore }
         })
 
         const sorted = [...seededShuffle(toPlace, seed)].sort((a, b) => b.score - a.score)
@@ -304,20 +292,7 @@ export async function POST(request: NextRequest) {
             idx = tied[Math.floor(rand() * tied.length)]
           }
           const slot = dayState[idx]
-          if (!slot.summaryId) {
-            const { data: summaryData, error: sErr } = await (supabase.from('daily_summaries') as any)
-              .insert([{ date: slot.date, user_id: user.id }])
-              .select()
-              .single()
-            if (sErr) throw sErr
-            slot.summaryId = summaryData.id
-          }
-          const { error: linkError } = await (supabase.from('daily_summary_highlights') as any)
-            .upsert(
-              [{ daily_summary_id: slot.summaryId, highlight_id: h.id }],
-              { onConflict: 'daily_summary_id,highlight_id', ignoreDuplicates: true }
-            )
-          if (linkError) throw linkError
+          addPlacement(slot.date, [h.id])
           slot.totalScore += h.score
           createdAssignments.push({ date: slot.date, highlightCount: 1 })
         }
@@ -359,23 +334,20 @@ export async function POST(request: NextRequest) {
       const buckets = packIntoDates(forFuture, future.dates, cycleSeed(future))
       for (const bucket of buckets) {
         if (bucket.highlights.length === 0) continue
-        let summaryId: string | null = fcTypedSummaries.find((s) => s.date === bucket.date)?.id ?? null
-        if (!summaryId) {
-          const { data: summaryData, error: sErr } = await (supabase.from('daily_summaries') as any)
-            .insert([{ date: bucket.date, user_id: user.id }])
-            .select()
-            .single()
-          if (sErr) throw sErr
-          summaryId = summaryData.id
-        }
-        const { error: linkError } = await (supabase.from('daily_summary_highlights') as any)
-          .upsert(
-            bucket.highlights.map((h) => ({ daily_summary_id: summaryId, highlight_id: h.id })),
-            { onConflict: 'daily_summary_id,highlight_id', ignoreDuplicates: true }
-          )
-        if (linkError) throw linkError
+        addPlacement(bucket.date, bucket.highlights.map((h) => h.id))
         futureCycleAssignments.push({ date: bucket.date, highlightCount: bucket.highlights.length })
       }
+    }
+
+    // Apply everything collected above in one transaction.
+    if (placements.size > 0) {
+      const { error: rpcError } = await (supabase.rpc as any)('place_assignments', {
+        p_buckets: Array.from(placements.entries()).map(([date, ids]) => ({
+          date,
+          highlight_ids: ids,
+        })),
+      })
+      if (rpcError) throw rpcError
     }
 
     return NextResponse.json({

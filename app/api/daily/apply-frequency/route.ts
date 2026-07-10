@@ -72,38 +72,31 @@ export async function POST(request: NextRequest) {
       ? localDate
       : `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
 
-    // 1. Persist the new frequency (preserve enabled).
-    const { error: upsertErr } = await (supabase.from('user_review_settings') as any)
-      .upsert({ user_id: user.id, frequency_months: frequency }, { onConflict: 'user_id' })
-    if (upsertErr) throw upsertErr
-
+    // The new frequency is persisted inside the retile_schedule RPC below, in
+    // the same transaction as the re-tile — a half-applied cadence change is
+    // no longer possible.
     const newCycle = getCycleForDate(today, frequency)
     const PAGE = 1000
 
-    // Load active highlights once (needed for scores and the unreviewed set).
-    let allHighlightsData: Array<{ id: string; text: string; html_content: string | null }> = []
+    // Load active highlights once (id + stored score — see migration_highlight_score.sql).
+    let allHighlightsData: Array<{ id: string; score: number }> = []
     {
       let from = 0
       while (true) {
         const { data, error } = await supabase
           .from('highlights')
-          .select('id, text, html_content')
+          .select('id, score')
           .eq('user_id', user.id)
           .eq('archived', false)
           .range(from, from + PAGE - 1)
         if (error) throw error
-        const page = (data || []) as Array<{ id: string; text: string; html_content: string | null }>
+        const page = (data || []) as Array<{ id: string; score: number }>
         allHighlightsData = allHighlightsData.concat(page)
         if (page.length < PAGE) break
         from += PAGE
       }
     }
-    const scoreById = new Map<string, number>(
-      allHighlightsData.map((h) => {
-        const content = h.html_content || h.text || ''
-        return [h.id, content.replace(/<[^>]*>/g, '').length]
-      })
-    )
+    const scoreById = new Map<string, number>(allHighlightsData.map((h) => [h.id, h.score]))
 
     // ALL of the user's summaries (paginated). We need the full set because a
     // re-tile must clear EVERY unrated (to-do) row, not just those inside the new
@@ -126,7 +119,6 @@ export async function POST(request: NextRequest) {
         from += PAGE
       }
     }
-    const allSummaryIds = allSummaries.map((s) => s.id)
     // Subset inside the new cycle (used for the done-gate + per-day rated load).
     const cycleSummaries = allSummaries.filter((s) => s.date >= newCycle.startDate && s.date <= newCycle.endDate)
     const cycleSummaryIds = cycleSummaries.map((s) => s.id)
@@ -157,94 +149,19 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // 4. Rebuild the dedup ledger for this cycle key so the daily cron / assign
-    //    treat exactly the done highlights as reviewed. Minimal diff (preserve
-    //    existing rows' created_at): delete stale, insert missing.
-    {
-      const existing = new Set<string>()
-      let rFrom = 0
-      while (true) {
-        const { data: rPage, error: rErr } = await supabase
-          .from('highlight_months_reviewed')
-          .select('highlight_id')
-          .eq('month_year', newCycle.key)
-          .range(rFrom, rFrom + PAGE - 1)
-        if (rErr) throw rErr
-        const page = (rPage || []) as Array<{ highlight_id: string }>
-        for (const r of page) existing.add(r.highlight_id)
-        if (page.length < PAGE) break
-        rFrom += PAGE
-      }
-      const toDelete = [...existing].filter((id) => !doneIds.has(id))
-      const toInsert = [...doneIds].filter((id) => !existing.has(id))
-      for (let i = 0; i < toDelete.length; i += 200) {
-        const { error } = await supabase
-          .from('highlight_months_reviewed')
-          .delete()
-          .eq('month_year', newCycle.key)
-          .in('highlight_id', toDelete.slice(i, i + 200))
-        if (error) throw error
-      }
-      for (let i = 0; i < toInsert.length; i += 500) {
-        const rows = toInsert.slice(i, i + 500).map((id) => ({ highlight_id: id, month_year: newCycle.key }))
-        const { error } = await (supabase.from('highlight_months_reviewed') as any)
-          .upsert(rows, { onConflict: 'highlight_id,month_year', ignoreDuplicates: true })
-        if (error) throw error
-      }
-    }
-
-    // 5. Clear EVERY unrated (to-do) row — across the whole library, not just the
-    //    new cycle — so to-do scattered by a previous larger cycle can't linger or
-    //    double-place. Rated rows are NEVER touched. Then drop summaries left with
-    //    no rows.
-    const droppedIds = new Set<string>()
-    if (allSummaryIds.length > 0) {
-      for (let i = 0; i < allSummaryIds.length; i += 200) {
-        const { error } = await supabase
-          .from('daily_summary_highlights')
-          .delete()
-          .in('daily_summary_id', allSummaryIds.slice(i, i + 200))
-          .is('rating', null)
-        if (error) throw error
-      }
-      // Which summaries still have ANY row — paginated EXHAUSTIVELY. A plain
-      // .in().select() caps at 1000 rows; with many summaries that falsely marks
-      // most "empty", and since daily_summaries → daily_summary_highlights is
-      // ON DELETE CASCADE, deleting them would destroy their RATED rows. Never.
-      const withRows = new Set<string>()
-      for (let i = 0; i < allSummaryIds.length; i += 200) {
-        const chunkIds = allSummaryIds.slice(i, i + 200)
-        let rFrom = 0
-        while (true) {
-          const { data, error } = await supabase
-            .from('daily_summary_highlights')
-            .select('daily_summary_id')
-            .in('daily_summary_id', chunkIds)
-            .range(rFrom, rFrom + PAGE - 1)
-          if (error) throw error
-          const page = (data || []) as Array<{ daily_summary_id: string }>
-          for (const r of page) withRows.add(r.daily_summary_id)
-          if (page.length < PAGE) break
-          rFrom += PAGE
-        }
-      }
-      const emptyIds = allSummaryIds.filter((id) => !withRows.has(id))
-      for (const id of emptyIds) droppedIds.add(id)
-      for (let i = 0; i < emptyIds.length; i += 200) {
-        const { error } = await supabase.from('daily_summaries').delete().in('id', emptyIds.slice(i, i + 200))
-        if (error) throw error
-      }
-    }
+    // 4. The reviewed ledgers to rebuild (the RPC diffs each key to exactly
+    //    these ids, preserving surviving rows' created_at). The clearing of
+    //    unrated rows + empty summaries (old steps 4-5, previously dozens of
+    //    sequential requests with partial-failure windows) now happens inside
+    //    the retile_schedule transaction.
+    const ledgers: Array<{ month_year: string; highlight_ids: string[] }> = [
+      { month_year: newCycle.key, highlight_ids: [...doneIds] },
+    ]
 
     // 6/7. Pack the unreviewed remainder across [today … cycle end], balancing
     //      per-day TOTAL by seeding each pack day with its rated load. (Pure,
     //      reversible — see lib/retile.ts.)
-    const highlights: Scored[] = allHighlightsData.map((h) => ({
-      id: h.id,
-      text: h.text,
-      html_content: h.html_content,
-      score: scoreById.get(h.id) ?? 0,
-    }))
+    const highlights: Scored[] = allHighlightsData.map((h) => ({ id: h.id, score: h.score }))
     const buckets = computeToDoLayout({
       today,
       cycle: newCycle,
@@ -295,40 +212,8 @@ export async function POST(request: NextRequest) {
         }
       }
 
-      // Rebuild the dedup ledger for the next cycle key (same minimal diff as step 4)
-      // so the daily cron / assign treat exactly its done highlights as reviewed.
-      {
-        const existing = new Set<string>()
-        let rFrom = 0
-        while (true) {
-          const { data: rPage, error: rErr } = await supabase
-            .from('highlight_months_reviewed')
-            .select('highlight_id')
-            .eq('month_year', next.key)
-            .range(rFrom, rFrom + PAGE - 1)
-          if (rErr) throw rErr
-          const page = (rPage || []) as Array<{ highlight_id: string }>
-          for (const r of page) existing.add(r.highlight_id)
-          if (page.length < PAGE) break
-          rFrom += PAGE
-        }
-        const toDelete = [...existing].filter((id) => !nextDoneIds.has(id))
-        const toInsert = [...nextDoneIds].filter((id) => !existing.has(id))
-        for (let i = 0; i < toDelete.length; i += 200) {
-          const { error } = await supabase
-            .from('highlight_months_reviewed')
-            .delete()
-            .eq('month_year', next.key)
-            .in('highlight_id', toDelete.slice(i, i + 200))
-          if (error) throw error
-        }
-        for (let i = 0; i < toInsert.length; i += 500) {
-          const rows = toInsert.slice(i, i + 500).map((id) => ({ highlight_id: id, month_year: next.key }))
-          const { error } = await (supabase.from('highlight_months_reviewed') as any)
-            .upsert(rows, { onConflict: 'highlight_id,month_year', ignoreDuplicates: true })
-          if (error) throw error
-        }
-      }
+      // The next cycle's ledger is rebuilt in the same RPC transaction.
+      ledgers.push({ month_year: next.key, highlight_ids: [...nextDoneIds] })
 
       const nextUnreviewed = highlights.filter((h) => !nextDoneIds.has(h.id))
       const nextInitial = new Map<string, number>()
@@ -336,32 +221,23 @@ export async function POST(request: NextRequest) {
       nextBuckets = packIntoDates(nextUnreviewed, next.dates, cycleSeed(next), nextInitial)
     }
 
-    // 8. Insert the new unrated rows (reuse SURVIVING summaries by date, else
-    //    create — summaries dropped in step 5 must not be referenced). Covers both
-    //    the re-tiled current cycle and (when in the lead window) the next cycle.
-    const summaryIdByDate = new Map(
-      allSummaries.filter((s) => !droppedIds.has(s.id)).map((s) => [s.date, s.id])
-    )
-    let packed = 0
-    for (const bucket of [...buckets, ...nextBuckets]) {
-      if (bucket.highlights.length === 0) continue
-      let summaryId: string | null = summaryIdByDate.get(bucket.date) ?? null
-      if (!summaryId) {
-        const { data: sd, error: se } = await (supabase.from('daily_summaries') as any)
-          .insert([{ date: bucket.date, user_id: user.id }])
-          .select()
-          .single()
-        if (se) throw se
-        summaryId = sd.id as string
-        summaryIdByDate.set(bucket.date, summaryId)
-      }
-      const { error: le } = await (supabase.from('daily_summary_highlights') as any).upsert(
-        bucket.highlights.map((h) => ({ daily_summary_id: summaryId!, highlight_id: h.id })),
-        { onConflict: 'daily_summary_id,highlight_id', ignoreDuplicates: true }
-      )
-      if (le) throw le
-      packed += bucket.highlights.length
-    }
+    // 5-8. Apply EVERYTHING in one transaction (see migration_schedule_rpcs.sql):
+    //    persist the frequency, rebuild the ledgers, clear every unrated row
+    //    library-wide, drop empty summaries, and insert the new layout (current
+    //    cycle + next-cycle carry-over). The old sequence was dozens of
+    //    independent requests — a timeout after the clear left empty days until
+    //    a manual re-run. Now it fully applies or fully rolls back.
+    const allBuckets = [...buckets, ...nextBuckets].filter((b) => b.highlights.length > 0)
+    const { error: rpcError } = await (supabase.rpc as any)('retile_schedule', {
+      p_frequency: frequency,
+      p_ledgers: ledgers,
+      p_buckets: allBuckets.map((b) => ({
+        date: b.date,
+        highlight_ids: b.highlights.map((h) => h.id),
+      })),
+    })
+    if (rpcError) throw rpcError
+    const packed = allBuckets.reduce((n, b) => n + b.highlights.length, 0)
 
     return NextResponse.json({
       message: `Applied frequency ${frequency}. Re-tiled cycle ${newCycle.key}.`,

@@ -21,9 +21,12 @@
 
 export interface Scored {
   id: string
-  text: string
-  html_content: string | null
-  score: number // character count
+  // Only id + score participate in packing; text/html_content are optional
+  // legacy fields (the routes now read the stored `score` column instead of
+  // downloading content to measure it).
+  text?: string
+  html_content?: string | null
+  score: number // plain-text character count
 }
 
 export interface DayBucket {

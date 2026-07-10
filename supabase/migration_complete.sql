@@ -44,6 +44,10 @@ CREATE TABLE IF NOT EXISTS highlights (
   -- Normalized dedup hash; unique per user. See migration_dedupe_text_unique.sql.
   text_hash TEXT GENERATED ALWAYS AS (
     md5(lower(regexp_replace(trim(coalesce(text, '')), '\s+', ' ', 'g')))
+  ) STORED,
+  -- Plain-text length for bin-packing (see migration_highlight_score.sql).
+  score INTEGER GENERATED ALWAYS AS (
+    char_length(regexp_replace(coalesce(nullif(html_content, ''), text, ''), '<[^>]*>', '', 'g'))
   ) STORED
 );
 
@@ -288,6 +292,12 @@ ALTER TABLE highlights
 ALTER TABLE highlights
   ADD CONSTRAINT highlights_user_id_text_hash_key
   UNIQUE (user_id, text_hash);
+
+-- Stored bin-packing score (see migration_highlight_score.sql).
+ALTER TABLE highlights
+  ADD COLUMN IF NOT EXISTS score INTEGER GENERATED ALWAYS AS (
+    char_length(regexp_replace(coalesce(nullif(html_content, ''), text, ''), '<[^>]*>', '', 'g'))
+  ) STORED;
 
 -- Enforce NOT NULL on every user-owning column. A NULL user_id is invisible
 -- under the `auth.uid() = user_id` RLS policies (it matches no caller), so an
@@ -1033,7 +1043,47 @@ CREATE POLICY "Users can delete their own ahead order" ON review_ahead_order
   FOR DELETE USING (auth.uid() = user_id);
 
 -- ============================================================================
--- 11. RESURFACE STATS TRIGGERS (see migration_resurface_stats.sql)
+-- 11. WIDGET TOKEN REVOCATION (see migration_widget_token_version.sql)
+-- ============================================================================
+-- Widget tokens embed the user's token_version; bumping it (DELETE
+-- /api/widget-token) revokes every previously issued token.
+
+CREATE TABLE IF NOT EXISTS user_widget_settings (
+  user_id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
+  token_version INTEGER NOT NULL DEFAULT 1,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+ALTER TABLE user_widget_settings ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Users can view their own widget settings" ON user_widget_settings;
+CREATE POLICY "Users can view their own widget settings" ON user_widget_settings
+  FOR SELECT USING (auth.uid() = user_id);
+
+DROP POLICY IF EXISTS "Users can insert their own widget settings" ON user_widget_settings;
+CREATE POLICY "Users can insert their own widget settings" ON user_widget_settings
+  FOR INSERT WITH CHECK (auth.uid() = user_id);
+
+DROP POLICY IF EXISTS "Users can update their own widget settings" ON user_widget_settings;
+CREATE POLICY "Users can update their own widget settings" ON user_widget_settings
+  FOR UPDATE USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
+
+CREATE OR REPLACE FUNCTION update_user_widget_settings_updated_at()
+RETURNS TRIGGER AS $$
+BEGIN
+  NEW.updated_at = NOW();
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS update_user_widget_settings_updated_at ON user_widget_settings;
+CREATE TRIGGER update_user_widget_settings_updated_at
+  BEFORE UPDATE ON user_widget_settings
+  FOR EACH ROW EXECUTE FUNCTION update_user_widget_settings_updated_at();
+
+-- ============================================================================
+-- 12. RESURFACE STATS TRIGGERS (see migration_resurface_stats.sql)
 -- ============================================================================
 -- resurface_count = number of distinct cycles the highlight has been rated in;
 -- last_resurfaced = most recent timestamp a rating was set.
@@ -1111,6 +1161,209 @@ FROM (
 ) stats
 WHERE h.id = stats.highlight_id
   AND h.last_resurfaced IS NULL;
+
+-- ============================================================================
+-- 13. SCHEDULING WRITE-PHASE RPCs (see migration_schedule_rpcs.sql)
+-- ============================================================================
+-- One transaction per scheduling operation; layout computation stays in the
+-- unit-tested TypeScript packer. Full rationale in the standalone file.
+
+-- ----------------------------------------------------------------------------
+-- place_assignments(p_buckets)
+--   Apply a computed layout: create any missing daily_summaries and insert the
+--   assignment rows, ignoring duplicates. Insert-only — never deletes.
+--   p_buckets: [{ "date": "YYYY-MM-DD", "highlight_ids": ["uuid", ...] }, ...]
+--   Used directly by /api/daily/redistribute and as the final step of the
+--   clearing functions below.
+-- ----------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION place_assignments(p_buckets jsonb)
+RETURNS void
+LANGUAGE plpgsql
+SECURITY INVOKER
+SET search_path = public
+AS $$
+DECLARE
+  v_user uuid := auth.uid();
+BEGIN
+  IF v_user IS NULL THEN
+    RAISE EXCEPTION 'not authenticated';
+  END IF;
+  IF p_buckets IS NULL OR jsonb_array_length(p_buckets) = 0 THEN
+    RETURN;
+  END IF;
+
+  INSERT INTO daily_summaries (date, user_id)
+  SELECT DISTINCT (b->>'date')::date, v_user
+  FROM jsonb_array_elements(p_buckets) b
+  WHERE jsonb_array_length(coalesce(b->'highlight_ids', '[]'::jsonb)) > 0
+  ON CONFLICT (date, user_id) DO NOTHING;
+
+  INSERT INTO daily_summary_highlights (daily_summary_id, highlight_id)
+  SELECT ds.id, hid::uuid
+  FROM jsonb_array_elements(p_buckets) b
+  JOIN daily_summaries ds
+    ON ds.user_id = v_user AND ds.date = (b->>'date')::date
+  CROSS JOIN LATERAL jsonb_array_elements_text(b->'highlight_ids') hid
+  ON CONFLICT (daily_summary_id, highlight_id) DO NOTHING;
+END $$;
+
+-- ----------------------------------------------------------------------------
+-- retile_schedule(p_frequency, p_ledgers, p_buckets)
+--   The whole apply-frequency write phase, atomically:
+--     1. persist the new frequency (daily_review_enabled untouched),
+--     2. rebuild the reviewed ledger for each provided cycle key to exactly
+--        the given ids (minimal diff — surviving rows keep created_at),
+--     3. delete EVERY unrated (to-do) assignment row library-wide
+--        (rated rows are immutable anchors and are never touched),
+--     4. drop summaries left with no rows at all,
+--     5. apply the freshly computed layout.
+--   p_ledgers: [{ "month_year": "YYYY-MM", "highlight_ids": ["uuid", ...] }, ...]
+-- ----------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION retile_schedule(
+  p_frequency integer,
+  p_ledgers   jsonb,
+  p_buckets   jsonb
+) RETURNS void
+LANGUAGE plpgsql
+SECURITY INVOKER
+SET search_path = public
+AS $$
+DECLARE
+  v_user   uuid := auth.uid();
+  v_ledger jsonb;
+  v_key    text;
+  v_ids    uuid[];
+BEGIN
+  IF v_user IS NULL THEN
+    RAISE EXCEPTION 'not authenticated';
+  END IF;
+  IF p_frequency IS NULL OR p_frequency < 1 OR p_frequency > 12 THEN
+    RAISE EXCEPTION 'invalid frequency %', p_frequency;
+  END IF;
+
+  INSERT INTO user_review_settings (user_id, frequency_months)
+  VALUES (v_user, p_frequency)
+  ON CONFLICT (user_id) DO UPDATE SET frequency_months = EXCLUDED.frequency_months;
+
+  FOR v_ledger IN SELECT * FROM jsonb_array_elements(coalesce(p_ledgers, '[]'::jsonb)) LOOP
+    v_key := v_ledger->>'month_year';
+    v_ids := coalesce(
+      (SELECT array_agg(x::uuid) FROM jsonb_array_elements_text(v_ledger->'highlight_ids') x),
+      '{}'::uuid[]
+    );
+    DELETE FROM highlight_months_reviewed hmr
+    USING highlights h
+    WHERE hmr.highlight_id = h.id
+      AND h.user_id = v_user
+      AND hmr.month_year = v_key
+      AND NOT (hmr.highlight_id = ANY (v_ids));
+    INSERT INTO highlight_months_reviewed (highlight_id, month_year)
+    SELECT unnest(v_ids), v_key
+    ON CONFLICT (highlight_id, month_year) DO NOTHING;
+  END LOOP;
+
+  DELETE FROM daily_summary_highlights dsh
+  USING daily_summaries ds
+  WHERE dsh.daily_summary_id = ds.id
+    AND ds.user_id = v_user
+    AND dsh.rating IS NULL;
+
+  DELETE FROM daily_summaries ds
+  WHERE ds.user_id = v_user
+    AND NOT EXISTS (
+      SELECT 1 FROM daily_summary_highlights dsh WHERE dsh.daily_summary_id = ds.id
+    );
+
+  PERFORM place_assignments(p_buckets);
+END $$;
+
+-- ----------------------------------------------------------------------------
+-- assign_cycle_layout(p_cycle_start, p_cycle_end, p_buckets)
+--   The /api/daily/assign write phase, atomically: delete the cycle's unrated
+--   rows (rated rows stay put; summaries are KEPT so days holding rated rows
+--   survive and empty ones get reused), then apply the layout.
+-- ----------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION assign_cycle_layout(
+  p_cycle_start date,
+  p_cycle_end   date,
+  p_buckets     jsonb
+) RETURNS void
+LANGUAGE plpgsql
+SECURITY INVOKER
+SET search_path = public
+AS $$
+DECLARE
+  v_user uuid := auth.uid();
+BEGIN
+  IF v_user IS NULL THEN
+    RAISE EXCEPTION 'not authenticated';
+  END IF;
+
+  DELETE FROM daily_summary_highlights dsh
+  USING daily_summaries ds
+  WHERE dsh.daily_summary_id = ds.id
+    AND ds.user_id = v_user
+    AND ds.date BETWEEN p_cycle_start AND p_cycle_end
+    AND dsh.rating IS NULL;
+
+  PERFORM place_assignments(p_buckets);
+END $$;
+
+-- ----------------------------------------------------------------------------
+-- reset_cycle(p_cycle_start, p_cycle_end, p_cycle_key)
+--   The /api/daily/reset-cycle write phase, atomically: remove every
+--   assignment row and summary in the cycle window (an explicit user reset is
+--   the ONE path allowed to delete rated rows) plus the cycle's reviewed
+--   ledger entries.
+-- ----------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION reset_cycle(
+  p_cycle_start date,
+  p_cycle_end   date,
+  p_cycle_key   text
+) RETURNS void
+LANGUAGE plpgsql
+SECURITY INVOKER
+SET search_path = public
+AS $$
+DECLARE
+  v_user uuid := auth.uid();
+BEGIN
+  IF v_user IS NULL THEN
+    RAISE EXCEPTION 'not authenticated';
+  END IF;
+
+  DELETE FROM daily_summary_highlights dsh
+  USING daily_summaries ds
+  WHERE dsh.daily_summary_id = ds.id
+    AND ds.user_id = v_user
+    AND ds.date BETWEEN p_cycle_start AND p_cycle_end;
+
+  DELETE FROM daily_summaries
+  WHERE user_id = v_user
+    AND date BETWEEN p_cycle_start AND p_cycle_end;
+
+  DELETE FROM highlight_months_reviewed hmr
+  USING highlights h
+  WHERE hmr.highlight_id = h.id
+    AND h.user_id = v_user
+    AND hmr.month_year = p_cycle_key;
+END $$;
+
+-- ============================================================================
+-- 14. REALTIME FOR notion_sync_queue (see migration_notion_realtime.sql)
+-- ============================================================================
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_publication_tables
+    WHERE pubname = 'supabase_realtime'
+      AND schemaname = 'public'
+      AND tablename = 'notion_sync_queue'
+  ) THEN
+    ALTER PUBLICATION supabase_realtime ADD TABLE notion_sync_queue;
+  END IF;
+END $$;
 
 -- ============================================================================
 -- MIGRATION COMPLETE

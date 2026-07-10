@@ -3,38 +3,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { format } from 'date-fns'
 import { Database } from '@/types/database'
 import { getUserReviewSettings, getCycleForDate } from '@/lib/cycle'
-import crypto from 'crypto'
-
-// Verify the HMAC-signed widget token and extract the user ID
-// Token format: userId.expiryTimestamp.signature
-function verifyWidgetToken(token: string): string | null {
-  const parts = token.split('.')
-  if (parts.length !== 3) return null
-
-  const [userId, expiryStr, signature] = parts
-  const expiryTimestamp = parseInt(expiryStr, 10)
-
-  // Check if expired
-  if (isNaN(expiryTimestamp) || Date.now() > expiryTimestamp) {
-    return null
-  }
-
-  const payload = `${userId}.${expiryStr}`
-  const secret = process.env.SUPABASE_SERVICE_ROLE_KEY!
-  const expected = crypto
-    .createHmac('sha256', secret)
-    .update(payload)
-    .digest('hex')
-
-  // Timing-safe comparison
-  if (signature.length !== expected.length) return null
-  const sigBuf = Buffer.from(signature, 'hex')
-  const expBuf = Buffer.from(expected, 'hex')
-  if (sigBuf.length !== expBuf.length) return null
-  if (!crypto.timingSafeEqual(sigBuf, expBuf)) return null
-
-  return userId
-}
+import { verifyWidgetToken } from '@/lib/widgetToken'
 
 // GET: Single endpoint for the Scriptable widget
 // Accepts a signed widget token, verifies it, fetches the next highlight
@@ -47,20 +16,42 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Missing token' }, { status: 400 })
     }
 
-    const userId = verifyWidgetToken(token)
+    const claims = verifyWidgetToken(token)
 
-    if (!userId) {
+    if (!claims) {
       return NextResponse.json(
         { error: 'Invalid token', tokenExpired: true },
         { status: 401 }
       )
     }
+    const userId = claims.userId
 
     // Use service role client — safe because we verified the user via HMAC
     const supabase = createClient<Database>(
       process.env.NEXT_PUBLIC_SUPABASE_URL!,
       process.env.SUPABASE_SERVICE_ROLE_KEY!
     )
+
+    // Revocation check: the token must carry the user's CURRENT token version
+    // (DELETE /api/widget-token bumps it to kill every outstanding token).
+    // Missing row / table not migrated yet reads as version 1.
+    const { data: widgetSettings, error: wsError } = await supabase
+      .from('user_widget_settings')
+      .select('token_version')
+      .eq('user_id', userId)
+      .maybeSingle()
+    if (wsError) {
+      const code = (wsError as { code?: string })?.code
+      if (code !== '42P01' && code !== 'PGRST205') throw wsError
+    }
+    const currentVersion = (widgetSettings as { token_version?: number } | null)?.token_version ?? 1
+    if (claims.tokenVersion !== currentVersion) {
+      // tokenExpired makes the widget clear its keychain copy and prompt re-setup.
+      return NextResponse.json(
+        { error: 'Token revoked', tokenExpired: true },
+        { status: 401 }
+      )
+    }
 
     // Use date from client (their local timezone) or fall back to server time
     const today = dateParam || format(new Date(), 'yyyy-MM-dd')

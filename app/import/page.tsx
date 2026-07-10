@@ -5,6 +5,7 @@ import { createClient } from '@/lib/supabase/client'
 import Link from 'next/link'
 import { normalizeForBlockCompare } from '@/lib/notionBlocks'
 import { callRedistribute } from '@/lib/redistribute'
+import { sanitizeForRender } from '@/lib/sanitizeForRender'
 
 interface HighlightPreview {
   text: string
@@ -426,7 +427,7 @@ export default function ImportPage() {
                     >
                       <div
                         className="highlight-content highlight-preview text-base max-w-none"
-                        dangerouslySetInnerHTML={{ __html: highlight.html }}
+                        dangerouslySetInnerHTML={{ __html: sanitizeForRender(highlight.html) }}
                       />
                     </div>
                   ))}

@@ -22,6 +22,10 @@ import { packIntoDates, Scored } from '@/lib/binPack'
 const LEAD_DAYS = 7
 const pad = (n: number) => String(n).padStart(2, '0')
 
+// Portioning a yearly cycle for several users can exceed the default 10s
+// serverless budget; give the cron the full Hobby-plan allowance.
+export const maxDuration = 60
+
 function daysBetween(aIso: string, bIso: string): number {
   const a = new Date(`${aIso}T00:00:00Z`).getTime()
   const b = new Date(`${bIso}T00:00:00Z`).getTime()
@@ -132,18 +136,18 @@ export async function GET(request: NextRequest) {
           continue
         }
 
-        // Fetch unarchived highlights (paginate).
-        let allHighlightsData: Array<{ id: string; text: string; html_content: string | null }> = []
+        // Fetch unarchived highlights (paginate; id + stored score only).
+        let allHighlightsData: Array<{ id: string; score: number }> = []
         let from = 0
         while (true) {
           const { data, error: pageError } = await supabase
             .from('highlights')
-            .select('id, text, html_content')
+            .select('id, score')
             .eq('user_id', userId)
             .eq('archived', false)
             .range(from, from + PAGE - 1)
           if (pageError) throw pageError
-          const page = (data || []) as Array<{ id: string; text: string; html_content: string | null }>
+          const page = (data || []) as Array<{ id: string; score: number }>
           allHighlightsData = allHighlightsData.concat(page)
           if (page.length < PAGE) break
           from += PAGE
@@ -171,30 +175,68 @@ export async function GET(request: NextRequest) {
           continue
         }
 
-        const scored: Scored[] = highlights.map((h) => {
-          const content = h.html_content || h.text || ''
-          return {
-            id: h.id,
-            text: h.text,
-            html_content: h.html_content,
-            score: content.replace(/<[^>]*>/g, '').length,
-          }
-        })
+        const scored: Scored[] = highlights.map((h) => ({ id: h.id, score: h.score }))
 
         const buckets = packIntoDates(scored, next.dates, cycleSeed(next))
+        const nonEmpty = buckets.filter((b) => b.highlights.length > 0)
+        if (nonEmpty.length === 0) {
+          results.skippedAlreadyDone++
+          continue
+        }
 
-        for (const bucket of buckets) {
-          if (bucket.highlights.length === 0) continue
-          const { data: summaryData, error: summaryError } = await supabase
+        // Two-phase batched write instead of the old per-day insert loop (2
+        // requests per day — up to ~730 for a yearly cycle). If that loop died
+        // partway, the "next cycle already has summaries" idempotency check
+        // above skipped the half-portioned cycle FOREVER. Batching shrinks the
+        // failure window to a handful of requests, and the compensating delete
+        // below returns the cycle to "no summaries" when the link phase fails,
+        // so tomorrow's run simply retries from clean.
+        const { data: summaryRows, error: summariesError } = await supabase
+          .from('daily_summaries')
+          .upsert(
+            nonEmpty.map((b) => ({ date: b.date, user_id: userId })),
+            { onConflict: 'date,user_id' }
+          )
+          .select('id, date')
+        if (summariesError) throw summariesError
+        const idByDate = new Map(
+          ((summaryRows || []) as Array<{ id: string; date: string }>).map((s) => [s.date, s.id])
+        )
+
+        try {
+          const links = nonEmpty.flatMap((b) => {
+            const summaryId = idByDate.get(b.date)
+            if (!summaryId) throw new Error(`No daily_summary id returned for ${b.date}`)
+            return b.highlights.map((h) => ({ daily_summary_id: summaryId, highlight_id: h.id }))
+          })
+          const CHUNK = 500
+          for (let i = 0; i < links.length; i += CHUNK) {
+            const { error: linkError } = await supabase
+              .from('daily_summary_highlights')
+              .upsert(links.slice(i, i + CHUNK), {
+                onConflict: 'daily_summary_id,highlight_id',
+                ignoreDuplicates: true,
+              })
+            if (linkError) throw linkError
+          }
+        } catch (linkErr) {
+          // Compensate: the idempotency check guaranteed the cycle had no
+          // summaries before this run, so everything in it is ours — drop the
+          // summaries (links cascade) to restore the retryable "no summaries"
+          // state instead of leaving a permanently-skipped partial cycle.
+          const { error: cleanupError } = await supabase
             .from('daily_summaries')
-            .insert([{ date: bucket.date, user_id: userId }])
-            .select()
-            .single()
-          if (summaryError) throw summaryError
-          const { error: linkError } = await supabase
-            .from('daily_summary_highlights')
-            .insert(bucket.highlights.map((h) => ({ daily_summary_id: summaryData.id, highlight_id: h.id })))
-          if (linkError) throw linkError
+            .delete()
+            .eq('user_id', userId)
+            .gte('date', next.startDate)
+            .lte('date', next.endDate)
+          if (cleanupError) {
+            console.error(
+              `[PREPARE-NEXT-CYCLE] Cleanup after failed portioning ALSO failed for user ${userId}; cycle ${next.key} may be left partial:`,
+              cleanupError
+            )
+          }
+          throw linkErr
         }
 
         results.portioned++

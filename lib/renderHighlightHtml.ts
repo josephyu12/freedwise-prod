@@ -14,6 +14,8 @@ const STRUCTURAL_BLOCK_TAGS = new Set([
   'p', 'ul', 'ol', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'blockquote', 'pre', 'table',
 ])
 
+import { sanitizeForRender } from './sanitizeForRender'
+
 /**
  * Build the HTML string for rendering a highlight card.
  *
@@ -23,8 +25,18 @@ const STRUCTURAL_BLOCK_TAGS = new Set([
  * `<div>` (browser contentEditable). Rendered as-is, all of those collapse
  * paragraphs together. This helper normalizes them so the
  * `.highlight-content p` margin gives Notion-style spacing everywhere.
+ *
+ * The result is DOMPurify-sanitized (every caller feeds it straight into
+ * dangerouslySetInnerHTML).
  */
 export function renderHighlightHtml(
+  htmlContent: string | null | undefined,
+  text: string | null | undefined
+): string {
+  return sanitizeForRender(buildHighlightHtml(htmlContent, text))
+}
+
+function buildHighlightHtml(
   htmlContent: string | null | undefined,
   text: string | null | undefined
 ): string {

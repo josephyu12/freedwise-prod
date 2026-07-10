@@ -17,7 +17,8 @@
 // 8. Long-press the widget > Edit Widget > choose this script
 //
 // The widget shows your next unrated highlight with Low/Med/High buttons.
-// To revoke access, go to Settings in the Freedwise app.
+// To revoke access, open freedwise.vercel.app/widget-auth and tap
+// "Revoke all widget tokens".
 
 // ============ CONFIGURATION ============
 const APP_URL = 'https://freedwise.vercel.app'

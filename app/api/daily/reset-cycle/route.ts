@@ -40,52 +40,15 @@ export async function POST(request: NextRequest) {
     const { freq } = await getUserReviewSettings(supabase, user.id)
     const cycle = getCycleForDate(today, freq)
 
-    // 1. Delete daily_summary_highlights for this cycle's summaries.
-    const { data: summaries, error: sumErr } = await supabase
-      .from('daily_summaries')
-      .select('id')
-      .eq('user_id', user.id)
-      .gte('date', cycle.startDate)
-      .lte('date', cycle.endDate)
-    if (sumErr) throw sumErr
-
-    const summaryIds = (summaries || []).map((s: { id: string }) => s.id)
-    if (summaryIds.length > 0) {
-      const { error: dshErr } = await supabase
-        .from('daily_summary_highlights')
-        .delete()
-        .in('daily_summary_id', summaryIds)
-      if (dshErr) throw dshErr
-    }
-
-    // 2. Delete the daily_summaries themselves.
-    const { error: dsErr } = await supabase
-      .from('daily_summaries')
-      .delete()
-      .eq('user_id', user.id)
-      .gte('date', cycle.startDate)
-      .lte('date', cycle.endDate)
-    if (dsErr) throw dsErr
-
-    // 3. Remove the "reviewed" ledger rows for this cycle key (chunked).
-    const { data: userHighlightIds, error: hlErr } = await supabase
-      .from('highlights')
-      .select('id')
-      .eq('user_id', user.id)
-    if (hlErr) throw hlErr
-    const highlightIds = (userHighlightIds || []).map((h: { id: string }) => h.id)
-    if (highlightIds.length > 0) {
-      const chunk = 200
-      for (let i = 0; i < highlightIds.length; i += chunk) {
-        const slice = highlightIds.slice(i, i + chunk)
-        const { error: ledgerErr } = await supabase
-          .from('highlight_months_reviewed')
-          .delete()
-          .eq('month_year', cycle.key)
-          .in('highlight_id', slice)
-        if (ledgerErr) throw ledgerErr
-      }
-    }
+    // One atomic RPC (see migration_schedule_rpcs.sql): the cycle's assignment
+    // rows, its summaries, and its reviewed-ledger entries go together or not
+    // at all — no more partially-reset cycles when a step failed mid-sequence.
+    const { error: rpcError } = await (supabase.rpc as any)('reset_cycle', {
+      p_cycle_start: cycle.startDate,
+      p_cycle_end: cycle.endDate,
+      p_cycle_key: cycle.key,
+    })
+    if (rpcError) throw rpcError
 
     return NextResponse.json({
       message: `Reset complete for cycle ${cycle.key}. Call /api/daily/assign to reassign highlights.`,

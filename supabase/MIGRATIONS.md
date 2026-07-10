@@ -103,9 +103,35 @@ These migrations can be applied individually to update existing databases:
      SAME transaction as the highlight insert/update/delete, so the queue and
      the highlights table can never disagree.
 
-16. **`migration_review_ahead_order.sql`** (Latest)
+16. **`migration_review_ahead_order.sql`**
    - Adds `review_ahead_order` (one row per user+cycle) — the server-side home
      for the frozen review-ahead sequence so every device resumes the same order.
+
+17. **`migration_widget_token_version.sql`**
+   - Adds `user_widget_settings.token_version` so widget tokens can be revoked:
+     tokens embed the version they were signed with, and DELETE /api/widget-token
+     bumps it to invalidate every outstanding token at once.
+   - **Date:** 2026-07-09
+
+18. **`migration_highlight_score.sql`**
+   - Adds a STORED generated `highlights.score` column (plain-text length) so
+     the bin-packing routes select (id, score) instead of downloading the whole
+     library's text on every add/split/delete.
+   - **Required before deploying the code that selects `score`.**
+   - **Date:** 2026-07-09
+
+19. **`migration_schedule_rpcs.sql`**
+   - Adds the transactional write-phase functions (`place_assignments`,
+     `retile_schedule`, `assign_cycle_layout`, `reset_cycle`) so each scheduling
+     operation fully applies or fully rolls back in one round trip. Layout
+     computation stays in the unit-tested TypeScript packer.
+   - **Required before deploying the code that calls these functions.**
+   - **Date:** 2026-07-09
+
+20. **`migration_notion_realtime.sql`** (Latest)
+   - Adds `notion_sync_queue` to the `supabase_realtime` publication so queue
+     changes push to the client over the websocket instead of a 10s poll.
+   - **Date:** 2026-07-09
 
 ## Migration Order
 
@@ -129,6 +155,10 @@ If applying migrations incrementally, use this order:
 15. `migration_user_id_not_null.sql`
 16. `migration_review_frequency.sql`
 17. `migration_review_ahead_order.sql`
+18. `migration_widget_token_version.sql`
+19. `migration_highlight_score.sql`
+20. `migration_schedule_rpcs.sql`
+21. `migration_notion_realtime.sql`
 
 ## Usage
 
@@ -157,6 +187,10 @@ If applying migrations incrementally, use this order:
 \i migration_user_id_not_null.sql
 \i migration_review_frequency.sql
 \i migration_review_ahead_order.sql
+\i migration_widget_token_version.sql
+\i migration_highlight_score.sql
+\i migration_schedule_rpcs.sql
+\i migration_notion_realtime.sql
 ```
 
 ## Notes

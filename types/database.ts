@@ -386,12 +386,50 @@ export type Database = {
           updated_at?: string
         }
       }
+      user_widget_settings: {
+        Row: {
+          user_id: string
+          token_version: number
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          user_id: string
+          token_version?: number
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          user_id?: string
+          token_version?: number
+          created_at?: string
+          updated_at?: string
+        }
+      }
     }
     Views: {
       [_ in never]: never
     }
     Functions: {
-      [_ in never]: never
+      // Write-phase scheduling RPCs (see supabase/migration_schedule_rpcs.sql).
+      // Bucket shape: [{ date: 'YYYY-MM-DD', highlight_ids: string[] }];
+      // ledger shape: [{ month_year: 'YYYY-MM', highlight_ids: string[] }].
+      place_assignments: {
+        Args: { p_buckets: unknown }
+        Returns: undefined
+      }
+      retile_schedule: {
+        Args: { p_frequency: number; p_ledgers: unknown; p_buckets: unknown }
+        Returns: undefined
+      }
+      assign_cycle_layout: {
+        Args: { p_cycle_start: string; p_cycle_end: string; p_buckets: unknown }
+        Returns: undefined
+      }
+      reset_cycle: {
+        Args: { p_cycle_start: string; p_cycle_end: string; p_cycle_key: string }
+        Returns: undefined
+      }
     }
     Enums: {
       [_ in never]: never
