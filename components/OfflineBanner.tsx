@@ -26,12 +26,16 @@ export default function OfflineBanner({ isOnline, isSyncing, pendingCount, onLit
   return (
     <div
       className={`w-full px-4 py-2 text-center text-sm font-medium transition-all duration-300 ${
-        isSyncing
+        isSyncing && !manualOffline
           ? 'bg-blue-100 dark:bg-blue-900 text-blue-800 dark:text-blue-200'
           : 'bg-amber-100 dark:bg-amber-900 text-amber-800 dark:text-amber-200'
       }`}
     >
-      {manualOffline && !isSyncing ? (
+      {/* Manual offline wins over the syncing spinner: flipping the switch
+          mid-drain must acknowledge the choice IMMEDIATELY, not after the
+          in-flight replay settles — otherwise the banner keeps "syncing" for
+          seconds after the user explicitly went offline. */}
+      {manualOffline ? (
         <span className="flex flex-wrap items-center justify-center gap-x-2 gap-y-1">
           <span>🔌 Offline mode is on — changes save on this device and won&apos;t sync.</span>
           <button
