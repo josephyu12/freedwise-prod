@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, useCallback } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { isEffectivelyOffline, MANUAL_OFFLINE_EVENT } from '@/hooks/useManualOffline'
 import { notionSyncReadyFilter } from '@/lib/notionSyncQueue'
+import { fetchWithTimeout } from '@/lib/fetchWithTimeout'
 
 export default function NotionSyncProcessor() {
   const [isOnline, setIsOnline] = useState(true)
@@ -42,11 +43,16 @@ export default function NotionSyncProcessor() {
         return
       }
 
-      // Only process if there are pending items
+      // Only process if there are pending items. Bounded generously (the route
+      // pushes a batch to Notion, which can be slow) — but bounded, because a
+      // hung fetch on a dead-but-connected network would hold isProcessingRef
+      // forever and permanently stop this page load's Notion pushes.
       if (queueItems && queueItems.length > 0) {
-        const response = await fetch('/api/notion/sync', {
-          method: 'POST',
-        })
+        const response = await fetchWithTimeout(
+          '/api/notion/sync',
+          { method: 'POST' },
+          60_000
+        )
 
         if (response.ok) {
           const data = await response.json()

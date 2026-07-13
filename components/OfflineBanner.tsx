@@ -1,8 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
 import Link from 'next/link'
-import { hasPendingActions } from '@/lib/offlineStore'
 import { useManualOffline } from '@/hooks/useManualOffline'
 
 interface OfflineBannerProps {

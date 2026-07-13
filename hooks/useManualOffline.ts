@@ -14,6 +14,8 @@ import { useCallback, useEffect, useState } from 'react'
 // `storage` listener keeps multiple tabs consistent too.
 
 const STORAGE_KEY = 'freedwise:manual-offline'
+// Exported for cross-tab listeners ('storage' events carry the raw key).
+export const MANUAL_OFFLINE_STORAGE_KEY = STORAGE_KEY
 export const MANUAL_OFFLINE_EVENT = 'manual-offline-change'
 
 export function readManualOffline(): boolean {

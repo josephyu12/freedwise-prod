@@ -19,11 +19,13 @@ import { computeMonthReviewStatus } from '@/lib/monthReviewStatus'
 import { getUserReviewSettings, getCycleForDate, nextCycle, cycleKeyForDate } from '@/lib/cycle'
 import { updateHighlightStatsAfterRating } from '@/lib/highlightStats'
 import { removeReviewedOnClear } from '@/lib/reviewedLedger'
+import { removeFromFutureMonths } from '@/lib/removeFromFutureMonths'
 import { useOfflineStatus } from '@/hooks/useOfflineStatus'
 import { isEffectivelyOffline } from '@/hooks/useManualOffline'
 import { useOfflineSyncState } from '@/hooks/useOfflineSyncState'
 import OfflineBanner from '@/components/OfflineBanner'
 import { countReplayable, drainOfflineQueue } from '@/lib/offlineReplay'
+import { fetchWithTimeout } from '@/lib/fetchWithTimeout'
 import {
   cacheDailyData,
   getCachedDailyData,
@@ -825,67 +827,77 @@ export default function DailyPage() {
       setSummary({ ...summary, highlights: updatedHighlights })
     }
 
+    // Patch the IndexedDB cache on EVERY path, not just the offline branch —
+    // mirrors /review. Rating online used to leave the cache holding the stale
+    // unrated snapshot until the next full load, so going offline right after
+    // rating showed the highlight as unrated again.
+    await updateDailyCache((c) => ({
+      summary: {
+        ...c.summary,
+        highlights: c.summary.highlights.map((sh: any) =>
+          sh.id === summaryHighlightId ? { ...sh, rating } : sh
+        ),
+      },
+    }))
+
+    // Overlay state shared by every save path: gray out + scroll onward when a
+    // rating lands, ungray when one is cleared.
+    const updateOverlay = () => {
+      if (summary && rating !== null) {
+        setSlidingOutIds((prev) => new Set(prev).add(summaryHighlightId))
+        const currentIndex = summary.highlights.findIndex((sh) => sh.id === summaryHighlightId)
+        const nextHighlight = summary.highlights[currentIndex + 1]
+        if (nextHighlight?.highlight?.id) {
+          setTimeout(() => {
+            const nextElement = document.getElementById(`highlight-${nextHighlight.highlight!.id}`)
+            if (nextElement) {
+              nextElement.scrollIntoView({ behavior: 'smooth', block: 'center' })
+            }
+          }, 200)
+        }
+      } else if (rating === null) {
+        setSlidingOutIds((prev) => {
+          const next = new Set(prev)
+          next.delete(summaryHighlightId)
+          return next
+        })
+      }
+    }
+
+    // Queue for replay — shared by the offline branch and the network-failure
+    // fallback below.
+    const enqueueRating = () =>
+      enqueueOfflineAction({
+        type: 'rate-daily',
+        params: {
+          summaryHighlightId,
+          highlightId,
+          rating,
+          summaryDate: summary?.date || date,
+        },
+      })
+
+    // Revert the optimistic update (last resort when even queueing fails).
+    const revertRating = () => {
+      if (summary) {
+        const revertedHighlights = summary.highlights.map((sh) => {
+          if (sh.id === summaryHighlightId) {
+            return { ...sh, rating: null }
+          }
+          return sh
+        })
+        setSummary({ ...summary, highlights: revertedHighlights })
+      }
+    }
+
     // If offline, queue the action and update local state only
     if (!isOnline) {
       try {
-        await enqueueOfflineAction({
-          type: 'rate-daily',
-          params: {
-            summaryHighlightId,
-            highlightId,
-            rating,
-            summaryDate: summary?.date || date,
-          },
-        })
-
-        // Update overlay state
-        if (summary && rating !== null) {
-          setSlidingOutIds((prev) => new Set(prev).add(summaryHighlightId))
-          const currentIndex = summary.highlights.findIndex((sh) => sh.id === summaryHighlightId)
-          const nextHighlight = summary.highlights[currentIndex + 1]
-          if (nextHighlight?.highlight?.id) {
-            setTimeout(() => {
-              const nextElement = document.getElementById(`highlight-${nextHighlight.highlight!.id}`)
-              if (nextElement) {
-                nextElement.scrollIntoView({ behavior: 'smooth', block: 'center' })
-              }
-            }, 200)
-          }
-        } else if (rating === null) {
-          setSlidingOutIds((prev) => {
-            const next = new Set(prev)
-            next.delete(summaryHighlightId)
-            return next
-          })
-        }
-
-        // Update cached data
-        try {
-          const cached = await getCachedDailyData(date)
-          if (cached && cached.summary) {
-            const updatedSummary = {
-              ...cached.summary,
-              highlights: cached.summary.highlights.map((sh: any) =>
-                sh.id === summaryHighlightId ? { ...sh, rating } : sh
-              ),
-            }
-            await cacheDailyData({ ...cached, summary: updatedSummary, cachedAt: Date.now() })
-          }
-        } catch (e) {
-          console.warn('Failed to update cache:', e)
-        }
+        await enqueueRating()
+        updateOverlay()
       } catch (error) {
         console.error('Error queuing offline rating:', error)
-        // Revert optimistic update on error
-        if (summary) {
-          const revertedHighlights = summary.highlights.map((sh) => {
-            if (sh.id === summaryHighlightId) {
-              return { ...sh, rating: null }
-            }
-            return sh
-          })
-          setSummary({ ...summary, highlights: revertedHighlights })
-        }
+        revertRating()
       }
       return
     }
@@ -940,30 +952,7 @@ export default function DailyPage() {
         freq: freqRef.current,
       })
 
-      // Update overlay state: add overlay when rating is set, remove when cleared
-      if (summary) {
-        if (rating !== null) {
-          setSlidingOutIds((prev) => new Set(prev).add(summaryHighlightId))
-          // Find the next highlight to scroll to
-          const currentIndex = summary.highlights.findIndex((sh) => sh.id === summaryHighlightId)
-          const nextHighlight = summary.highlights[currentIndex + 1]
-          if (nextHighlight?.highlight?.id) {
-            setTimeout(() => {
-              const nextElement = document.getElementById(`highlight-${nextHighlight.highlight!.id}`)
-              if (nextElement) {
-                nextElement.scrollIntoView({ behavior: 'smooth', block: 'center' })
-              }
-            }, 200)
-          }
-        } else {
-          // Clearing rating: ungray the highlight by removing from slidingOutIds
-          setSlidingOutIds((prev) => {
-            const next = new Set(prev)
-            next.delete(summaryHighlightId)
-            return next
-          })
-        }
-      }
+      updateOverlay()
 
       // Reload month review status to update calendar
       const [year, month] = date.split('-').map(Number)
@@ -971,9 +960,18 @@ export default function DailyPage() {
       await loadMonthReviewStatus(dateMonth)
       await loadMonthsWithAssignments()
     } catch (error) {
-      console.error('Error updating rating:', error)
-      // Revert optimistic update on error
-      await loadDailySummary(date)
+      console.error('Error updating rating (falling back to offline queue):', error)
+      // Network failed on weak signal (or the connection died mid-write) —
+      // queue for replay instead of reverting. Reverting here silently threw
+      // the rating away: /review queued in this exact situation, /daily lost it.
+      try {
+        await enqueueRating()
+        updateOverlay()
+      } catch (queueError) {
+        console.error('Failed to queue offline rating:', queueError)
+        // Even queueing failed — reload so the UI shows the truth.
+        await loadDailySummary(date)
+      }
     }
   }
 
@@ -1338,9 +1336,14 @@ export default function DailyPage() {
         summary: { ...c.summary, highlights: c.summary.highlights.map(applySplitFirstPatch) },
       }))
 
-      // Offline: queue the split for replay and bail before any network writes.
-      if (!isOnline) {
-        await enqueueOfflineAction({
+      // One shared queue path for "offline now" AND "online write failed" —
+      // mirrors /review. Replay is idempotent (first-group update re-runs;
+      // new-group upserts glide past ids/texts that already landed), so it
+      // safely finishes a split that died halfway. Without it, a mid-split
+      // network failure left the original truncated on the server and the
+      // remaining groups lost forever.
+      const queueSplit = () =>
+        enqueueOfflineAction({
           type: 'split-highlight',
           params: {
             originalHighlightId: highlight.id,
@@ -1353,72 +1356,86 @@ export default function DailyPage() {
             categoryIds,
           },
         })
+
+      // Offline: queue the split for replay and bail before any network writes.
+      if (!isOnline) {
+        await queueSplit()
         handleCancelSplit()
         return
       }
 
-      // Update original highlight with first group
-      const { error: firstGroupUpdateError } = await (supabase.from('highlights') as any)
-        .update({ text: firstGroup.text, html_content: firstGroup.html })
-        .eq('id', highlight.id)
-      if (firstGroupUpdateError) throw firstGroupUpdateError
+      try {
+        // Update original highlight with first group
+        const { error: firstGroupUpdateError } = await (supabase.from('highlights') as any)
+          .update({ text: firstGroup.text, html_content: firstGroup.html })
+          .eq('id', highlight.id)
+        if (firstGroupUpdateError) throw firstGroupUpdateError
 
-      await addToSyncQueue(
-        highlight.id, 'update',
-        firstGroup.text, firstGroup.html,
-        originalText, originalHtmlContent
-      )
+        await addToSyncQueue(
+          highlight.id, 'update',
+          firstGroup.text, firstGroup.html,
+          originalText, originalHtmlContent
+        )
 
-      // Create new highlights for remaining groups
-      const { data: { user } } = await supabase.auth.getUser()
-      if (!user) throw new Error('Not authenticated')
+        // Create new highlights for remaining groups. Insert with the
+        // pre-generated ids (like /review) so a failure here can fall back to
+        // the queued replay without duplicating groups that already landed.
+        const { data: { user } } = await supabase.auth.getUser()
+        if (!user) throw new Error('Not authenticated')
 
-      const newHighlightIds: string[] = []
-      for (let i = 1; i < groups.length; i++) {
-        const group = groups[i]
-        const { data: newHighlight, error } = await (supabase.from('highlights') as any)
-          .insert({
-            text: group.text,
-            html_content: group.html,
-            source: highlight.source || null,
-            author: highlight.author || null,
-            resurface_count: 0,
-            average_rating: 0,
-            rating_count: 0,
-            user_id: user.id,
-          })
-          .select()
-          .single()
+        const newHighlightIds: string[] = []
+        for (const group of newGroups) {
+          const { data: newHighlight, error } = await (supabase.from('highlights') as any)
+            .insert({
+              id: group.id,
+              text: group.text,
+              html_content: group.html,
+              source: highlight.source || null,
+              author: highlight.author || null,
+              resurface_count: 0,
+              average_rating: 0,
+              rating_count: 0,
+              user_id: user.id,
+            })
+            .select()
+            .single()
 
-        if (error) throw error
-        newHighlightIds.push(newHighlight.id)
+          if (error) throw error
+          newHighlightIds.push(newHighlight.id)
 
-        // Copy categories. Warn-only: throwing here would abort the remaining
-        // groups after this highlight was already created.
-        if (highlight.categories && highlight.categories.length > 0) {
-          const categoryLinks = highlight.categories.map((cat: any) => ({
-            highlight_id: newHighlight.id,
-            category_id: cat.id,
-          }))
-          const { error: splitCatError } = await (supabase.from('highlight_categories') as any)
-            .insert(categoryLinks)
-          if (splitCatError) console.warn('Failed to copy categories to split highlight:', splitCatError)
+          // Copy categories. Warn-only: throwing here would abort the remaining
+          // groups after this highlight was already created.
+          if (highlight.categories && highlight.categories.length > 0) {
+            const categoryLinks = highlight.categories.map((cat: any) => ({
+              highlight_id: newHighlight.id,
+              category_id: cat.id,
+            }))
+            const { error: splitCatError } = await (supabase.from('highlight_categories') as any)
+              .insert(categoryLinks)
+            if (splitCatError) console.warn('Failed to copy categories to split highlight:', splitCatError)
+          }
+
+          // Sync to Notion
+          addToSyncQueue(newHighlight.id, 'add', group.text, group.html)
+            .catch((err: any) => console.error('Error syncing split highlight:', err))
         }
 
-        // Sync to Notion
-        addToSyncQueue(newHighlight.id, 'add', group.text, group.html)
-          .catch((err: any) => console.error('Error syncing split highlight:', err))
-      }
+        // Redistribute new highlights
+        if (newHighlightIds.length > 0) {
+          callRedistribute(newHighlightIds).catch(() => {})
+        }
 
-      // Redistribute new highlights
-      if (newHighlightIds.length > 0) {
-        callRedistribute(newHighlightIds).catch(() => {})
+        handleCancelSplit()
+        // Reload summary to reflect changes
+        await loadDailySummary(date)
+      } catch (error) {
+        console.error('Error splitting highlight (falling back to offline queue):', error)
+        await queueSplit()
+        handleCancelSplit()
       }
-
-      handleCancelSplit()
-      // Reload summary to reflect changes
-      await loadDailySummary(date)
     } catch (error) {
+      // Nothing queued — this is a pre-network failure (parse error, IndexedDB
+      // down) or even queueing itself failed.
       console.error('Error splitting highlight:', error)
       alert('Failed to split highlight. Please try again.')
     } finally {
@@ -1451,12 +1468,23 @@ export default function DailyPage() {
     }
 
     try {
+      // Unarchive stamps unarchived_at (the auto-archive low-rating window
+      // starts there), matching /review and the offline replay.
       const { error } = await (supabase
         .from('highlights') as any)
-        .update({ archived: archive })
+        .update(
+          archive
+            ? { archived: true }
+            : { archived: false, unarchived_at: new Date().toISOString() }
+        )
         .eq('id', highlightId)
 
       if (error) throw error
+
+      // Best-effort future-month cleanup, matching /review and the offline
+      // replay — without it, an archive from /daily left the highlight's
+      // future-day assignments in place.
+      if (archive) await removeFromFutureMonths(supabase, highlightId)
 
       // Reload summary to reflect changes
       await loadDailySummary(date)
@@ -1492,7 +1520,7 @@ export default function DailyPage() {
       }
 
       try {
-        const response = await fetch(`/api/pins?highlightId=${highlightId}`, { method: 'DELETE' })
+        const response = await fetchWithTimeout(`/api/pins?highlightId=${highlightId}`, { method: 'DELETE' })
         if (!response.ok) throw new Error('Unpin request failed')
       } catch (error) {
         console.error('Error unpinning (falling back to offline queue):', error)
@@ -1527,7 +1555,7 @@ export default function DailyPage() {
     }
 
     try {
-      const response = await fetch('/api/pins', {
+      const response = await fetchWithTimeout('/api/pins', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ highlightId }),
@@ -1562,7 +1590,7 @@ export default function DailyPage() {
 
     if (isOnline) {
       try {
-        await fetch(`/api/pins?highlightId=${highlightIdToRemove}`, { method: 'DELETE' })
+        await fetchWithTimeout(`/api/pins?highlightId=${highlightIdToRemove}`, { method: 'DELETE' })
       } catch (error) {
         console.error('Error unpinning from board (falling back to offline queue):', error)
         await enqueueOfflineAction({ type: 'unpin-highlight', params: { highlightId: highlightIdToRemove } }).catch(() => {})
@@ -1583,7 +1611,7 @@ export default function DailyPage() {
 
       if (isOnline) {
         try {
-          const pinResponse = await fetch('/api/pins', {
+          const pinResponse = await fetchWithTimeout('/api/pins', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ highlightId: newPinId }),

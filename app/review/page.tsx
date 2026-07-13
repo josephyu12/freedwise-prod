@@ -29,6 +29,7 @@ import { updateHighlightStatsAfterRating } from '@/lib/highlightStats'
 import { useOfflineSyncState } from '@/hooks/useOfflineSyncState'
 import OfflineBanner from '@/components/OfflineBanner'
 import { countReplayable, drainOfflineQueue } from '@/lib/offlineReplay'
+import { fetchWithTimeout } from '@/lib/fetchWithTimeout'
 import {
   cacheReviewData,
   getCachedReviewData,
@@ -535,12 +536,47 @@ function ReviewPageContent() {
     if (!target || ratingInProgress) return
     setRatingInProgress(true)
 
+    // Queue for replay — the offline branch AND the network-failure fallback
+    // below share it, mirroring handleRate: a widget tap while offline (or on a
+    // connection that dies mid-write) must queue the rating, not revert it.
+    const enqueueRating = () =>
+      enqueueOfflineAction({
+        type: 'rate-review',
+        params: {
+          summaryHighlightId: target.id,
+          highlightId: target.highlight_id,
+          rating,
+          today,
+          // The rated highlight's own day — replay keys the ledger by its cycle,
+          // not `today`, so ahead/catch-up ratings mark the right cycle.
+          summaryDate: target.date,
+        },
+      })
+    const advanceToNextUnrated = () =>
+      setHighlights((prev) => {
+        const updated = prev.map((h) => (h.id === target.id ? { ...h, rating } : h))
+        const nextUnrated = updated.findIndex((h) => h.rating === null)
+        if (nextUnrated >= 0) setCurrentIndex(nextUnrated)
+        return updated
+      })
+    const revertRating = () =>
+      setHighlights((prev) =>
+        prev.map((h) => (h.id === target.id ? { ...h, rating: null } : h))
+      )
+
     try {
       // Optimistic UI + cache update so the rating survives an offline refresh.
       const applyRatingPatch = (h: ReviewHighlight) =>
         h.id === target.id ? { ...h, rating } : h
       setHighlights((prev) => prev.map(applyRatingPatch))
       await updateCache((c) => ({ highlights: c.highlights.map(applyRatingPatch) }))
+
+      if (!isOnline) {
+        await enqueueRating()
+        advanceToNextUnrated()
+        setRatingInProgress(false)
+        return
+      }
 
       // Key the ledger by the cycle of the rated highlight's OWN day, not today.
       // In catch-up/ahead review the highlight can belong to a different cycle
@@ -568,21 +604,22 @@ function ReviewPageContent() {
       if (rateRes.error) throw rateRes.error
       if (ledgerRes.error) throw ledgerRes.error
 
-      setHighlights((prev) => {
-        const updated = prev.map((h) => (h.id === target.id ? { ...h, rating } : h))
-        const nextUnrated = updated.findIndex((h) => h.rating === null)
-        if (nextUnrated >= 0) setCurrentIndex(nextUnrated)
-        return updated
-      })
+      advanceToNextUnrated()
       setRatingInProgress(false)
 
       // Background: stats/auto-archive (doesn't block UI)
       updateHighlightStats(target.highlight_id, ratingDate).catch(console.error)
     } catch (error) {
-      console.error('Error auto-rating highlight:', error)
-      setHighlights((prev) =>
-        prev.map((h) => (h.id === target.id ? { ...h, rating: null } : h))
-      )
+      console.error('Error auto-rating highlight (falling back to offline queue):', error)
+      // Network failed on weak signal — queue for replay instead of reverting;
+      // the optimistic UI + cache update is already applied.
+      try {
+        await enqueueRating()
+        advanceToNextUnrated()
+      } catch (queueError) {
+        console.error('Failed to queue offline rating:', queueError)
+        revertRating()
+      }
       setRatingInProgress(false)
     }
   }
@@ -840,8 +877,14 @@ function ReviewPageContent() {
       setHighlights((prev) => prev.map(applySplitFirstPatch))
       await updateCache((c) => ({ highlights: c.highlights.map(applySplitFirstPatch) }))
 
-      if (!isOnline) {
-        await enqueueOfflineAction({
+      // One shared queue path for "offline now" AND "online write failed".
+      // Replay is idempotent (first-group update re-runs; new-group upserts
+      // glide past ids that already landed), so it safely finishes a split that
+      // died halfway — without it, a mid-split network failure left the
+      // original truncated on the server and the remaining groups lost forever
+      // (the optimistic patch already erased their text locally).
+      const queueSplit = () =>
+        enqueueOfflineAction({
           type: 'split-highlight',
           params: {
             originalHighlightId: highlight.id,
@@ -854,77 +897,87 @@ function ReviewPageContent() {
             categoryIds,
           },
         })
+
+      if (!isOnline) {
+        await queueSplit()
         handleCancelSplit()
         return
       }
 
-      // Update original highlight with first group
-      const { error: firstGroupUpdateError } = await (supabase.from('highlights') as any)
-        .update({
-          text: firstGroup.text,
-          html_content: firstGroup.html,
-        })
-        .eq('id', highlight.id)
-      if (firstGroupUpdateError) throw firstGroupUpdateError
-
-      // Sync original to Notion
-      await addToSyncQueue(
-        highlight.id, 'update',
-        firstGroup.text, firstGroup.html,
-        originalText, originalHtmlContent
-      )
-
-      // Create new highlights for remaining groups
-      const { data: { user } } = await supabase.auth.getUser()
-      if (!user) throw new Error('Not authenticated')
-
-      const newHighlightIds: string[] = []
-      for (const group of newGroups) {
-        const { data: newHighlight, error } = await (supabase.from('highlights') as any)
-          .insert({
-            id: group.id,
-            text: group.text,
-            html_content: group.html,
-            source: highlight.source || null,
-            author: highlight.author || null,
-            resurface_count: 0,
-            average_rating: 0,
-            rating_count: 0,
-            user_id: user.id,
+      try {
+        // Update original highlight with first group
+        const { error: firstGroupUpdateError } = await (supabase.from('highlights') as any)
+          .update({
+            text: firstGroup.text,
+            html_content: firstGroup.html,
           })
-          .select()
-          .single()
+          .eq('id', highlight.id)
+        if (firstGroupUpdateError) throw firstGroupUpdateError
 
-        if (error) throw error
+        // Sync original to Notion
+        await addToSyncQueue(
+          highlight.id, 'update',
+          firstGroup.text, firstGroup.html,
+          originalText, originalHtmlContent
+        )
 
-        newHighlightIds.push(newHighlight.id)
+        // Create new highlights for remaining groups
+        const { data: { user } } = await supabase.auth.getUser()
+        if (!user) throw new Error('Not authenticated')
 
-        // Copy categories. Warn-only: throwing here would abort the remaining
-        // groups after this highlight was already created.
-        if (categoryIds.length > 0) {
-          const categoryLinks = categoryIds.map((catId) => ({
-            highlight_id: newHighlight.id,
-            category_id: catId,
-          }))
-          const { error: splitCatError } = await (supabase.from('highlight_categories') as any)
-            .insert(categoryLinks)
-          if (splitCatError) console.warn('Failed to copy categories to split highlight:', splitCatError)
+        const newHighlightIds: string[] = []
+        for (const group of newGroups) {
+          const { data: newHighlight, error } = await (supabase.from('highlights') as any)
+            .insert({
+              id: group.id,
+              text: group.text,
+              html_content: group.html,
+              source: highlight.source || null,
+              author: highlight.author || null,
+              resurface_count: 0,
+              average_rating: 0,
+              rating_count: 0,
+              user_id: user.id,
+            })
+            .select()
+            .single()
+
+          if (error) throw error
+
+          newHighlightIds.push(newHighlight.id)
+
+          // Copy categories. Warn-only: throwing here would abort the remaining
+          // groups after this highlight was already created.
+          if (categoryIds.length > 0) {
+            const categoryLinks = categoryIds.map((catId) => ({
+              highlight_id: newHighlight.id,
+              category_id: catId,
+            }))
+            const { error: splitCatError } = await (supabase.from('highlight_categories') as any)
+              .insert(categoryLinks)
+            if (splitCatError) console.warn('Failed to copy categories to split highlight:', splitCatError)
+          }
+
+          // Sync new highlight to Notion
+          addToSyncQueue(
+            newHighlight.id, 'add',
+            group.text, group.html
+          ).catch((err: any) => console.error('Error syncing split highlight:', err))
         }
 
-        // Sync new highlight to Notion
-        addToSyncQueue(
-          newHighlight.id, 'add',
-          group.text, group.html
-        ).catch((err: any) => console.error('Error syncing split highlight:', err))
-      }
-
-      // Redistribute new highlights into daily schedule
-      if (newHighlightIds.length > 0) {
-        callRedistribute(newHighlightIds).catch(() => {})
+        // Redistribute new highlights into daily schedule
+        if (newHighlightIds.length > 0) {
+          callRedistribute(newHighlightIds).catch(() => {})
+        }
+      } catch (error) {
+        console.error('Error splitting highlight (falling back to offline queue):', error)
+        await queueSplit()
       }
 
       handleCancelSplit()
     } catch (error) {
+      // Nothing queued and nothing optimistically shown beyond the cache patch
+      // above — this is a pre-network failure (parse error, IndexedDB down).
       console.error('Error splitting highlight:', error)
       alert('Failed to split highlight. Please try again.')
     } finally {
@@ -1216,7 +1269,7 @@ function ReviewPageContent() {
       }
 
       try {
-        const response = await fetch(`/api/pins?highlightId=${highlightId}`, { method: 'DELETE' })
+        const response = await fetchWithTimeout(`/api/pins?highlightId=${highlightId}`, { method: 'DELETE' })
         if (!response.ok) throw new Error('Unpin request failed')
       } catch (error) {
         console.error('Error unpinning (falling back to offline queue):', error)
@@ -1251,7 +1304,7 @@ function ReviewPageContent() {
     }
 
     try {
-      const response = await fetch('/api/pins', {
+      const response = await fetchWithTimeout('/api/pins', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ highlightId }),
@@ -1286,7 +1339,7 @@ function ReviewPageContent() {
 
     if (isOnline) {
       try {
-        await fetch(`/api/pins?highlightId=${highlightIdToRemove}`, { method: 'DELETE' })
+        await fetchWithTimeout(`/api/pins?highlightId=${highlightIdToRemove}`, { method: 'DELETE' })
       } catch (error) {
         console.error('Error unpinning from board (falling back to offline queue):', error)
         await enqueueOfflineAction({ type: 'unpin-highlight', params: { highlightId: highlightIdToRemove } }).catch(() => {})
@@ -1307,7 +1360,7 @@ function ReviewPageContent() {
 
       if (isOnline) {
         try {
-          const pinResponse = await fetch('/api/pins', {
+          const pinResponse = await fetchWithTimeout('/api/pins', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ highlightId: newPinId }),

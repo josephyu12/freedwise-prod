@@ -24,6 +24,7 @@ import { updateHighlightStatsAfterRating } from './highlightStats'
 import { removeReviewedOnClear } from './reviewedLedger'
 import { recordDiscardedChange, describeDiscardedAction } from './discardedChanges'
 import { reportError } from './reportError'
+import { fetchWithTimeout } from './fetchWithTimeout'
 
 const REPLAYABLE = new Set<string>([
   'rate-review',
@@ -120,21 +121,38 @@ export function drainOfflineQueue(supabase: any, hooks: DrainHooks = {}): Promis
   if (isEffectivelyOffline()) return Promise.resolve(null)
   drainPromise = (async () => {
     let last: ReplayResult | null = null
-    do {
-      // Clear before each pass: a trigger arriving during this pass sets it
-      // again, so we loop and pick up work enqueued mid-drain.
-      drainDirty = false
-      const pending = await countReplayable()
-      if (pending === 0) break
-      hooks.onStart?.(pending)
-      last = await replayPendingActions(supabase, hooks.onProgress)
+    try {
+      do {
+        // Clear before each pass: a trigger arriving during this pass sets it
+        // again, so we loop and pick up work enqueued mid-drain.
+        drainDirty = false
+        const pending = await countReplayable()
+        if (pending === 0) break
+        hooks.onStart?.(pending)
+        last = await replayPendingActions(supabase, hooks.onProgress)
+        hooks.onComplete?.(last)
+        // Stop if the pass stalled on a transient failure: re-looping would just
+        // re-hit the same blocked action at the front of the queue. The next real
+        // trigger (reconnect / enqueue / page load) retries it. Anything queued
+        // mid-drain is behind that action anyway, so nothing is lost by waiting.
+        if (last.stalled) break
+      } while (drainDirty && !isEffectivelyOffline())
+    } catch (err) {
+      // An unexpected throw (an IndexedDB read blowing up between passes, a bug
+      // in the replay itself) must still settle the drain as a normal stalled
+      // result. Rethrowing would leave the onStart consumers stuck — the
+      // "Syncing…" banner spins forever because onComplete never fires — and
+      // surface as an unhandled rejection in every joined caller.
+      reportError(err, { reason: 'offline drain crashed' })
+      last = {
+        processed: 0,
+        remaining: await countReplayable(), // never throws (best-effort 0)
+        touchedHighlights: false,
+        stalled: true,
+        dropped: 0,
+      }
       hooks.onComplete?.(last)
-      // Stop if the pass stalled on a transient failure: re-looping would just
-      // re-hit the same blocked action at the front of the queue. The next real
-      // trigger (reconnect / enqueue / page load) retries it. Anything queued
-      // mid-drain is behind that action anyway, so nothing is lost by waiting.
-      if (last.stalled) break
-    } while (drainDirty && !isEffectivelyOffline())
+    }
     return last
   })().finally(() => {
     drainPromise = null
@@ -200,6 +218,15 @@ export async function replayPendingActions(
   let stalled = false
 
   for (const action of actions) {
+    // Re-check between actions: the user can flip manual offline (or lose the
+    // connection) mid-drain. Supabase writes abort on their own via the shared
+    // manual-offline signal, but the raw-fetch replays (pin/unpin) and this
+    // loop itself would otherwise march on through the rest of the queue over
+    // a connection the user explicitly opted out of.
+    if (isEffectivelyOffline()) {
+      stalled = true
+      break
+    }
     try {
       const touched = await replayOne(supabase, action, userId, freq)
       if (touched) touchedHighlights = true
@@ -472,9 +499,15 @@ async function replayOne(supabase: any, action: any, userId: string, freq: numbe
       return true
     }
 
+    // Pin/unpin replay over raw fetch. Both are bounded by fetchWithTimeout: an
+    // unbounded fetch hanging on a connected-but-dead network would wedge the
+    // single-flight drain forever — no future drain can start this page load
+    // and the "Syncing…" banner never clears. A timeout/network throw
+    // propagates as a transient stall (retried later); an HTTP rejection is
+    // dropped (see below).
     case 'pin-highlight': {
       const { highlightId } = action.params
-      const response = await fetch('/api/pins', {
+      const response = await fetchWithTimeout('/api/pins', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ highlightId }),
@@ -490,7 +523,15 @@ async function replayOne(supabase: any, action: any, userId: string, freq: numbe
 
     case 'unpin-highlight': {
       const { highlightId } = action.params
-      await fetch(`/api/pins?highlightId=${highlightId}`, { method: 'DELETE' })
+      const response = await fetchWithTimeout(`/api/pins?highlightId=${highlightId}`, {
+        method: 'DELETE',
+      })
+      if (!response.ok) {
+        // Mirror the pin path: a server rejection (row gone, auth expired) is
+        // dropped rather than blocking the queue; the post-sync reload
+        // re-derives the truthful pin set.
+        console.warn('Unpin replay rejected, dropping action:', response.status)
+      }
       return false
     }
 

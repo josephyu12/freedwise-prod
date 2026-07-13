@@ -3,7 +3,17 @@
 import { useCallback, useEffect, useRef } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { useOfflineStatus } from '@/hooks/useOfflineStatus'
+import { isEffectivelyOffline } from '@/hooks/useManualOffline'
 import { drainOfflineQueue } from '@/lib/offlineReplay'
+
+// A stalled drain (transient failure mid-queue) retries on this backoff. Without
+// it, a one-off hiccup while the heartbeat still reports "online" left queued
+// writes sitting invisibly until the next reconnect/enqueue/page load — on a
+// long-lived tab, potentially forever. Bounded so a persistent stall (e.g.
+// signed out with legacy actions queued) can't poll indefinitely; any real
+// trigger resets the budget.
+const STALL_RETRY_MS = 30_000
+const STALL_RETRY_MAX = 5
 
 // Global, headless offline-queue drainer. Mounted once in the root layout so the
 // entire offline action queue replays from ANY page — not just /review and
@@ -28,28 +38,57 @@ export default function OfflineSync() {
   // still running) gets picked up in the same cycle instead of being swallowed
   // and sitting unsynced — which surfaced as "the edit didn't sync / I still see
   // the original highlight without its review".
-  const runSync = useCallback(() => {
+  const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const retryCountRef = useRef(0)
+
+  const runSync = useCallback(function runSync() {
+    if (retryTimerRef.current) {
+      clearTimeout(retryTimerRef.current)
+      retryTimerRef.current = null
+    }
     drainOfflineQueue(supabaseRef.current, {
       onStart: (pending) =>
         window.dispatchEvent(new CustomEvent('offline-sync-start', { detail: { pending } })),
       onProgress: (remaining) =>
         window.dispatchEvent(new CustomEvent('offline-sync-progress', { detail: { remaining } })),
-      onComplete: (result) =>
-        window.dispatchEvent(new CustomEvent('offline-sync-complete', { detail: result })),
+      onComplete: (result) => {
+        window.dispatchEvent(new CustomEvent('offline-sync-complete', { detail: result }))
+        // Transient stall with work left and we still believe we're online:
+        // schedule a bounded retry so the queue doesn't sit until the next
+        // reconnect/enqueue/navigation.
+        if (
+          result?.stalled &&
+          !isEffectivelyOffline() &&
+          retryCountRef.current < STALL_RETRY_MAX
+        ) {
+          retryCountRef.current++
+          retryTimerRef.current = setTimeout(runSync, STALL_RETRY_MS)
+        }
+      },
     })
   }, [])
 
-  // Drain on reconnect / initial load.
+  // Drain on reconnect / initial load. A real trigger resets the stall-retry
+  // budget — it's fresh evidence the connection is worth trying again.
   useEffect(() => {
-    if (isOnline) runSync()
+    if (isOnline) {
+      retryCountRef.current = 0
+      runSync()
+    }
   }, [isOnline, runSync])
 
   // Drain when something is freshly queued (e.g. a weak-signal write that failed
   // while still online).
   useEffect(() => {
-    const onEnqueued = () => runSync()
+    const onEnqueued = () => {
+      retryCountRef.current = 0
+      runSync()
+    }
     window.addEventListener('offline-action-enqueued', onEnqueued)
-    return () => window.removeEventListener('offline-action-enqueued', onEnqueued)
+    return () => {
+      window.removeEventListener('offline-action-enqueued', onEnqueued)
+      if (retryTimerRef.current) clearTimeout(retryTimerRef.current)
+    }
   }, [runSync])
 
   return null

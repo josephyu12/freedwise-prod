@@ -112,6 +112,41 @@ describe('useOfflineStatus + manual offline', () => {
     expect(status.result.current.isOnline).toBe(false)
   })
 
+  it('re-arms the heartbeat when the switch turns off while the network is still dead', async () => {
+    // The stuck-offline bug: with the switch ON no heartbeat interval runs.
+    // Turning it OFF on a connected-but-dead network (navigator.onLine still
+    // true, health ping failing) changed neither isOnline (false→false) nor
+    // the old interval effect's deps — so no interval was ever re-armed and
+    // NOTHING was left probing for recovery. The page stayed "offline" forever.
+    vi.useFakeTimers()
+    try {
+      let healthy = false
+      global.fetch = vi.fn(async () => {
+        if (!healthy) throw new TypeError('network dead')
+        return { ok: true } as Response
+      }) as any
+
+      window.localStorage.setItem('freedwise:manual-offline', '1')
+      const manual = renderHook(() => useManualOffline())
+      const status = renderHook(() => useOfflineStatus())
+      await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+      expect(status.result.current.isOnline).toBe(false)
+
+      // Switch off; the immediate re-check still fails — we stay offline.
+      act(() => manual.result.current.setManualOffline(false))
+      await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+      expect(status.result.current.isOnline).toBe(false)
+
+      // The network recovers. The re-armed offline heartbeat (15s cadence)
+      // must notice — before the fix, no timer existed and this stayed false.
+      healthy = true
+      await act(async () => { await vi.advanceTimersByTimeAsync(15_000) })
+      expect(status.result.current.isOnline).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('resumes connectivity checks once the manual switch is turned off', async () => {
     const manual = renderHook(() => useManualOffline())
     act(() => manual.result.current.setManualOffline(true))

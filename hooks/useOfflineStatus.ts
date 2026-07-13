@@ -1,7 +1,11 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
-import { readManualOffline, MANUAL_OFFLINE_EVENT } from './useManualOffline'
+import { useState, useEffect, useCallback, useRef } from 'react'
+import {
+  readManualOffline,
+  MANUAL_OFFLINE_EVENT,
+  MANUAL_OFFLINE_STORAGE_KEY,
+} from './useManualOffline'
 
 // Heartbeat cadence. This used to be a flat 15s always-on ping (~240 serverless
 // invocations/hour/tab for a perfectly healthy connection). Now: a slow sanity
@@ -27,6 +31,17 @@ const HEARTBEAT_TIMEOUT = 5_000 // timeout for the ping itself
  */
 export function useOfflineStatus() {
   const [isOnline, setIsOnline] = useState(true)
+  // The manual switch mirrored into React state. The heartbeat-interval effect
+  // below keys on it: reading localStorage alone isn't enough, because flipping
+  // the switch OFF while isOnline is already false changes neither dep — the
+  // effect never re-ran and no interval was ever (re)armed, leaving the page
+  // stuck "offline" on a connected-but-dead network with nothing left probing
+  // for recovery.
+  const [manualOffline, setManualOffline] = useState(false)
+  // Monotonic id per checkConnectivity run: only the LATEST run may apply its
+  // result, so a slow stale ping can't overwrite the state a newer run (or an
+  // event handler) already set.
+  const epochRef = useRef(0)
 
   const checkConnectivity = useCallback(async () => {
     // Manual offline always wins — never ping a connection the user has
@@ -48,6 +63,7 @@ export function useOfflineStatus() {
       return
     }
 
+    const epoch = ++epochRef.current
     try {
       const controller = new AbortController()
       const timeoutId = setTimeout(() => controller.abort(), HEARTBEAT_TIMEOUT)
@@ -59,17 +75,23 @@ export function useOfflineStatus() {
       })
       clearTimeout(timeoutId)
 
-      // The user may have flipped the manual switch while this ping was in
-      // flight — a stale "healthy" result must not stomp their choice back to
-      // online (nothing would ever correct it: the heartbeat and the
-      // visibility/online handlers all stand down in manual mode).
-      if (readManualOffline()) {
+      // A newer check started while this one was in flight — its result is the
+      // fresher truth; discard this one.
+      if (epoch !== epochRef.current) return
+
+      // The world may have changed while this ping was in flight: the user may
+      // have flipped the manual switch, or the browser may have lost the
+      // connection. A stale "healthy" result must not stomp either back to
+      // online (in manual mode nothing would ever correct it — the heartbeat
+      // and the visibility/online handlers all stand down).
+      if (readManualOffline() || !navigator.onLine) {
         setIsOnline(false)
         return
       }
 
       setIsOnline(response.ok)
     } catch {
+      if (epoch !== epochRef.current) return
       // Fetch failed (network error, timeout, abort) — we're effectively offline
       setIsOnline(false)
     }
@@ -77,17 +99,20 @@ export function useOfflineStatus() {
 
   // The heartbeat interval, keyed on connection state: slow sanity check while
   // online, fast recovery probing while offline. checkConnectivity itself
-  // no-ops for hidden tabs and while manually offline.
+  // no-ops for hidden tabs and while manually offline. Keyed on manualOffline
+  // STATE (not a readManualOffline() call) so flipping the switch off re-arms
+  // the interval even when isOnline doesn't change value.
   useEffect(() => {
-    if (readManualOffline()) return
+    if (manualOffline || readManualOffline()) return
     const period = isOnline ? HEARTBEAT_ONLINE_MS : HEARTBEAT_OFFLINE_MS
     const id = setInterval(checkConnectivity, period)
     return () => clearInterval(id)
-  }, [isOnline, checkConnectivity])
+  }, [isOnline, manualOffline, checkConnectivity])
 
   useEffect(() => {
     // Initial state from the manual switch, then navigator, refined by the
     // immediate check below.
+    setManualOffline(readManualOffline())
     if (readManualOffline()) {
       setIsOnline(false)
     } else {
@@ -107,8 +132,11 @@ export function useOfflineStatus() {
       }
     }
 
-    // React to the user toggling manual offline mode.
+    // React to the user toggling manual offline mode. Bumping the epoch first
+    // invalidates any in-flight ping so its stale result can't land after this.
     const handleManualChange = () => {
+      epochRef.current++
+      setManualOffline(readManualOffline())
       if (readManualOffline()) {
         setIsOnline(false)
       } else {
@@ -118,10 +146,18 @@ export function useOfflineStatus() {
       }
     }
 
+    // Manual offline toggled in ANOTHER tab: localStorage 'storage' events fire
+    // here (MANUAL_OFFLINE_EVENT is same-tab only), so mirror them or this
+    // tab's connectivity state silently diverges from the switch.
+    const handleStorage = (e: StorageEvent) => {
+      if (e.key === MANUAL_OFFLINE_STORAGE_KEY) handleManualChange()
+    }
+
     window.addEventListener('online', goOnline)
     window.addEventListener('offline', goOffline)
     document.addEventListener('visibilitychange', handleVisibility)
     window.addEventListener(MANUAL_OFFLINE_EVENT, handleManualChange)
+    window.addEventListener('storage', handleStorage)
 
     // Immediate confirmation on mount.
     checkConnectivity()
@@ -131,6 +167,7 @@ export function useOfflineStatus() {
       window.removeEventListener('offline', goOffline)
       document.removeEventListener('visibilitychange', handleVisibility)
       window.removeEventListener(MANUAL_OFFLINE_EVENT, handleManualChange)
+      window.removeEventListener('storage', handleStorage)
     }
   }, [checkConnectivity])
 
