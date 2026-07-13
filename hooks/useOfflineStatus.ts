@@ -59,6 +59,15 @@ export function useOfflineStatus() {
       })
       clearTimeout(timeoutId)
 
+      // The user may have flipped the manual switch while this ping was in
+      // flight — a stale "healthy" result must not stomp their choice back to
+      // online (nothing would ever correct it: the heartbeat and the
+      // visibility/online handlers all stand down in manual mode).
+      if (readManualOffline()) {
+        setIsOnline(false)
+        return
+      }
+
       setIsOnline(response.ok)
     } catch {
       // Fetch failed (network error, timeout, abort) — we're effectively offline

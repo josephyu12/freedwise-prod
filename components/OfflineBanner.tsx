@@ -18,7 +18,10 @@ interface OfflineBannerProps {
 export default function OfflineBanner({ isOnline, isSyncing, pendingCount, onLitePage }: OfflineBannerProps) {
   const { manualOffline, setManualOffline } = useManualOffline()
 
-  if (isOnline && !isSyncing) return null
+  // manualOffline is checked here too (not just via isOnline) so the banner
+  // can't vanish if a page's isOnline state is stale — the manual switch is
+  // the source of truth and must always show the banner while it's on.
+  if (isOnline && !isSyncing && !manualOffline) return null
 
   // Detect weak signal: our heartbeat says offline but navigator thinks we're online
   const isWeakSignal = !isOnline && typeof navigator !== 'undefined' && navigator.onLine

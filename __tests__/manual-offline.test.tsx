@@ -84,6 +84,34 @@ describe('useOfflineStatus + manual offline', () => {
     expect(global.fetch).not.toHaveBeenCalled()
   })
 
+  it('stays offline when the switch flips on while a health ping is in flight', async () => {
+    // The banner-flicker bug: a heartbeat ping starts (mount or 60s tick), the
+    // user toggles manual offline, then the stale "healthy" response resolves
+    // and stomped isOnline back to true — hiding the offline banner with
+    // nothing left running to correct it.
+    let resolvePing!: (r: Response) => void
+    global.fetch = vi.fn(
+      () => new Promise<Response>((resolve) => { resolvePing = resolve })
+    ) as any
+
+    const manual = renderHook(() => useManualOffline())
+    const status = renderHook(() => useOfflineStatus())
+
+    // Mount kicks off an immediate health check; it's now hanging in flight.
+    await waitFor(() => expect(global.fetch).toHaveBeenCalled())
+
+    // User flips the switch mid-flight — banner appears.
+    act(() => manual.result.current.setManualOffline(true))
+    await waitFor(() => expect(status.result.current.isOnline).toBe(false))
+
+    // The stale ping resolves ok. It must NOT flip us back online.
+    await act(async () => {
+      resolvePing({ ok: true } as Response)
+      await new Promise((r) => setTimeout(r, 0))
+    })
+    expect(status.result.current.isOnline).toBe(false)
+  })
+
   it('resumes connectivity checks once the manual switch is turned off', async () => {
     const manual = renderHook(() => useManualOffline())
     act(() => manual.result.current.setManualOffline(true))
