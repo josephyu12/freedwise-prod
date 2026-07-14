@@ -6,6 +6,17 @@ import { usePathname } from 'next/navigation'
 import AuthButton from './AuthButton'
 import ScrollToTop from './ScrollToTop'
 import OfflineModeToggle from './OfflineModeToggle'
+import { OPEN_TUTORIAL_EVENT } from './TutorialModal'
+
+// Graduation cap — replays the onboarding tutorial (handled by TutorialModal)
+const tutorialIcon = (
+  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 14l9-5-9-5-9 5 9 5z" />
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 14l6.16-3.422a12.083 12.083 0 01.665 6.479A11.952 11.952 0 0012 20.055a11.952 11.952 0 00-6.824-2.998 12.078 12.078 0 01.665-6.479L12 14z" />
+  </svg>
+)
+
+const openTutorial = () => window.dispatchEvent(new CustomEvent(OPEN_TUTORIAL_EVENT))
 
 const NAV_LINKS = [
   { href: '/daily', label: 'Daily', icon: (
@@ -112,6 +123,14 @@ export default function AppHeader() {
           {/* Right side: ScrollToTop + Auth + Mobile hamburger */}
           <div className="app-header-right">
             <ScrollToTop />
+            <button
+              onClick={openTutorial}
+              aria-label="Replay the tutorial"
+              title="Replay the tutorial"
+              className="hidden sm:flex items-center justify-center w-9 h-9 rounded-xl border shadow-sm transition-all duration-200 bg-white/80 dark:bg-white/10 backdrop-blur-md border-gray-200/60 dark:border-white/10 text-gray-600 dark:text-gray-300 hover:shadow-md hover:bg-white dark:hover:bg-white/15"
+            >
+              {tutorialIcon}
+            </button>
             <OfflineModeToggle />
             <div className="hidden md:block">
               <AuthButton />
@@ -174,6 +193,16 @@ export default function AppHeader() {
         </nav>
         <div className="px-1 pt-2">
           <OfflineModeToggle variant="full" />
+          <button
+            onClick={() => {
+              closeMenu()
+              openTutorial()
+            }}
+            className="w-full flex items-center gap-3 px-4 py-2.5 text-sm rounded-lg transition-colors text-left text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50"
+          >
+            {tutorialIcon}
+            Replay tutorial
+          </button>
         </div>
         <div className="mobile-nav-auth">
           <AuthButton dropdownDirection="up" />

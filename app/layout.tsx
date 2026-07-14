@@ -5,6 +5,7 @@ import AppHeader from '@/components/AppHeader'
 import ServiceWorkerRegistrar from '@/components/ServiceWorkerRegistrar'
 import OfflineSync from '@/components/OfflineSync'
 import DiscardedChangesBanner from '@/components/DiscardedChangesBanner'
+import TutorialModal from '@/components/TutorialModal'
 
 const inter = Inter({ subsets: ['latin'], display: 'swap' })
 import Link from 'next/link'
@@ -50,6 +51,7 @@ export default function RootLayout({
         <ServiceWorkerRegistrar />
         <OfflineSync />
         <DiscardedChangesBanner />
+        <TutorialModal />
         <AppHeader />
         <div className="flex-1">
           {children}
