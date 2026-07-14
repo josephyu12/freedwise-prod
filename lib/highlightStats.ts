@@ -17,6 +17,11 @@ import { getCycleForDate, prevCycle, cycleKeyForDate } from './cycle'
  * last manual unarchive. Archiving is one-way here: the flag is set when the
  * rule matches and never cleared automatically.
  *
+ * Returns { archivedNow }: true only when THIS call flipped the highlight from
+ * active to archived — the UI pages use it to show the "archived — undo" toast
+ * at the moment the rule fires. False when the rule matched but the highlight
+ * was already archived (re-rating an archived highlight must not re-toast).
+ *
  * Every step checks the supabase result and THROWS on failure (supabase-js
  * resolves with { error }): a silently-failed ratings read would overwrite
  * average_rating with 0, and the offline replay relies on the throw to keep
@@ -25,7 +30,7 @@ import { getCycleForDate, prevCycle, cycleKeyForDate } from './cycle'
 export async function updateHighlightStatsAfterRating(
   supabase: any,
   params: { highlightId: string; ratingDate: string; freq: number }
-): Promise<void> {
+): Promise<{ archivedNow: boolean }> {
   const { highlightId, ratingDate, freq } = params
 
   const [allRatingsRes, highlightRes, lowRatingsRes] = await Promise.all([
@@ -34,7 +39,7 @@ export async function updateHighlightStatsAfterRating(
       .select('rating')
       .eq('highlight_id', highlightId)
       .not('rating', 'is', null),
-    supabase.from('highlights').select('unarchived_at').eq('id', highlightId).single(),
+    supabase.from('highlights').select('unarchived_at, archived').eq('id', highlightId).single(),
     supabase
       .from('daily_summary_highlights')
       .select('rating, daily_summary:daily_summaries!inner(date)')
@@ -52,8 +57,8 @@ export async function updateHighlightStatsAfterRating(
   const average =
     ratingValues.length > 0 ? ratingValues.reduce((a, b) => a + b, 0) / ratingValues.length : 0
 
-  const unarchivedAt = (highlightRes.data as { unarchived_at?: string } | null)?.unarchived_at
-    ?.split('T')[0]
+  const highlightRow = highlightRes.data as { unarchived_at?: string; archived?: boolean } | null
+  const unarchivedAt = highlightRow?.unarchived_at?.split('T')[0]
   const lowCycles = new Set(
     ((lowRatingsRes.data || []) as Array<{ daily_summary: { date: string } }>)
       .filter((r) => !unarchivedAt || r.daily_summary.date > unarchivedAt)
@@ -71,4 +76,6 @@ export async function updateHighlightStatsAfterRating(
     })
     .eq('id', highlightId)
   if (statsError) throw statsError
+
+  return { archivedNow: shouldArchive && !highlightRow?.archived }
 }

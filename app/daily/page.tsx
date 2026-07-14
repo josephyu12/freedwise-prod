@@ -24,6 +24,7 @@ import { useOfflineStatus } from '@/hooks/useOfflineStatus'
 import { isEffectivelyOffline } from '@/hooks/useManualOffline'
 import { useOfflineSyncState } from '@/hooks/useOfflineSyncState'
 import OfflineBanner from '@/components/OfflineBanner'
+import AutoArchiveToast from '@/components/AutoArchiveToast'
 import { countReplayable, drainOfflineQueue } from '@/lib/offlineReplay'
 import { fetchWithTimeout } from '@/lib/fetchWithTimeout'
 import {
@@ -268,6 +269,8 @@ export default function DailyPage() {
   const { isOnline } = useOfflineStatus()
   const { isSyncing, pendingCount: pendingSyncCount } = useOfflineSyncState()
   const [usingCachedData, setUsingCachedData] = useState(false)
+  // Highlight just auto-archived by the two-low-cycles rule; drives the undo toast.
+  const [autoArchivedId, setAutoArchivedId] = useState<string | null>(null)
 
   const editingHighlight = editingId
     ? summary?.highlights.find((sh) => sh.highlight?.id === editingId)?.highlight
@@ -946,11 +949,14 @@ export default function DailyPage() {
       // this cycle and the previous one — see lib/highlightStats.ts). This page
       // used to archive on "2+ lows ever", so the same highlight archived or
       // survived depending on which page the rating came from.
-      await updateHighlightStatsAfterRating(supabase, {
+      const { archivedNow } = await updateHighlightStatsAfterRating(supabase, {
         highlightId,
         ratingDate: summary?.date || date,
         freq: freqRef.current,
       })
+      // The reload below drops the archived highlight from the day's list —
+      // without the toast it just vanishes.
+      if (archivedNow) setAutoArchivedId(highlightId)
 
       updateOverlay()
 
@@ -2200,6 +2206,16 @@ export default function DailyPage() {
           </div>
         </div>
       )}
+
+      {/* Undo notice for the two-low-cycles auto-archive */}
+      <AutoArchiveToast
+        highlightId={autoArchivedId}
+        onUndo={(id) => {
+          setAutoArchivedId(null)
+          handleArchive(id, false)
+        }}
+        onDismiss={() => setAutoArchivedId(null)}
+      />
     </main>
   )
 }

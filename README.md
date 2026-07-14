@@ -9,8 +9,9 @@ A web application that resurfaces your highlights in daily summaries, built with
 - **Category Tags**: Organize highlights with custom category tags
 - **Highlight Linking**: Link highlights together with hyperlinked text references
 - **Rating System**: Rate highlights (high/med/low) in daily summaries
-- **Automatic Archiving**: Highlights marked as "low" twice are automatically archived and excluded from daily reviews
-- **Monthly Review**: Every highlight appears once per month in daily summaries
+- **Automatic Archiving**: Highlights rated "low" in two consecutive review cycles are automatically archived and excluded from daily reviews
+- **Monthly Review**: Every highlight appears once per review cycle (monthly by default, configurable in Settings)
+- **In-App Help**: The `/help` page documents all the implicit rules (auto-archive, mid-cycle scheduling, review-ahead ordering, offline sync) for new users
 - **Daily Summaries**: View resurfaced highlights organized by date
 - **Modern UI**: Responsive design with dark mode support
 

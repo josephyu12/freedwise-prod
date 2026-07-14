@@ -28,6 +28,7 @@ import { getUserReviewSettings, getCycleForDate, cycleKeyForDate } from '@/lib/c
 import { updateHighlightStatsAfterRating } from '@/lib/highlightStats'
 import { useOfflineSyncState } from '@/hooks/useOfflineSyncState'
 import OfflineBanner from '@/components/OfflineBanner'
+import AutoArchiveToast from '@/components/AutoArchiveToast'
 import { countReplayable, drainOfflineQueue } from '@/lib/offlineReplay'
 import { fetchWithTimeout } from '@/lib/fetchWithTimeout'
 import {
@@ -110,6 +111,8 @@ function ReviewPageContent() {
   const { isOnline } = useOfflineStatus()
   const { isSyncing, pendingCount: pendingSyncCount } = useOfflineSyncState()
   const [usingCachedData, setUsingCachedData] = useState(false)
+  // Highlight just auto-archived by the two-low-cycles rule; drives the undo toast.
+  const [autoArchivedId, setAutoArchivedId] = useState<string | null>(null)
   // Review cadence: the cycle key/window for ledger writes + catch-up/ahead. Held
   // in a ref so rating handlers read the latest without re-binding. Refreshed on
   // each online load. `reviewDisabled` drives the calm "off" state.
@@ -523,11 +526,15 @@ function ReviewPageContent() {
   // Called fire-and-forget so the UI doesn't wait for it.
   // The highlight_months_reviewed upsert is intentionally NOT here — it lives on the
   // critical path so it persists even if the user closes the app immediately after rating.
+  // When the call newly archives the highlight, surface the undo toast — the
+  // archive is otherwise invisible until the highlight fails to reappear.
   const updateHighlightStats = (highlightId: string, ratingDate: string) =>
     updateHighlightStatsAfterRating(supabase, {
       highlightId,
       ratingDate,
       freq: freqRef.current,
+    }).then(({ archivedNow }) => {
+      if (archivedNow) setAutoArchivedId(highlightId)
     })
 
   // Helper to rate a specific highlight by index (for auto-rate from widget URL params)
@@ -1919,6 +1926,16 @@ function ReviewPageContent() {
         onClose={() => { setPinDialogOpen(false); setPendingPinHighlightId(null) }}
         onSelectRemove={handleRemoveFromPinBoard}
         onCancel={() => { setPinDialogOpen(false); setPendingPinHighlightId(null) }}
+      />
+
+      {/* Undo notice for the two-low-cycles auto-archive */}
+      <AutoArchiveToast
+        highlightId={autoArchivedId}
+        onUndo={(id) => {
+          setAutoArchivedId(null)
+          handleUnarchiveHighlight(id)
+        }}
+        onDismiss={() => setAutoArchivedId(null)}
       />
     </div>
   )
