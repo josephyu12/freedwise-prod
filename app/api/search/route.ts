@@ -9,8 +9,6 @@ const EMBEDDING_DIM = 384
 // land 0.83+. Drop this if semantic recall ever feels thin.
 const SEMANTIC_MIN_SIMILARITY = 0.81
 const SEMANTIC_MATCH_COUNT = 30
-// Top matches become "results"; the tail becomes "similar".
-const SEMANTIC_RESULTS_COUNT = 20
 
 // Normalize months_reviewed: union the highlight_months_reviewed rows with months
 // derived from rated daily_assignments. The latter handles "lost signal" cases where
@@ -140,10 +138,8 @@ export async function POST(request: NextRequest) {
     const searchType = type || 'fulltext'
 
     if (searchType !== 'semantic') {
-      // The "similar" column populates when the user clicks a result
-      // (via /api/search/similar, using stored pgvector embeddings).
       const results = await keywordSearch(supabase, user.id, query)
-      return NextResponse.json({ results, similar: [] })
+      return NextResponse.json({ results })
     }
 
     // Semantic search: the browser embeds the query with gte-small and sends
@@ -158,7 +154,7 @@ export async function POST(request: NextRequest) {
       // Model unavailable in the client (offline, download failed) —
       // degrade to keyword search instead of erroring.
       const results = await keywordSearch(supabase, user.id, query)
-      return NextResponse.json({ results, similar: [], fallback: 'keyword' })
+      return NextResponse.json({ results, fallback: 'keyword' })
     }
 
     const { data: matches, error: matchError } = await (supabase as any)
@@ -171,7 +167,7 @@ export async function POST(request: NextRequest) {
 
     const ranked: { id: string; similarity: number }[] = matches || []
     if (ranked.length === 0) {
-      return NextResponse.json({ results: [], similar: [] })
+      return NextResponse.json({ results: [] })
     }
 
     const { data: details, error: detailError } = await supabase
@@ -187,10 +183,7 @@ export async function POST(request: NextRequest) {
       .filter((m) => byId.has(m.id))
       .map((m) => processHighlight({ ...(byId.get(m.id) as any), similarity: m.similarity }))
 
-    return NextResponse.json({
-      results: ordered.slice(0, SEMANTIC_RESULTS_COUNT),
-      similar: ordered.slice(SEMANTIC_RESULTS_COUNT),
-    })
+    return NextResponse.json({ results: ordered })
   } catch (error: any) {
     console.error('Error performing search:', error)
     return NextResponse.json(

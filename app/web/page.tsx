@@ -11,6 +11,7 @@ import {
   Simulation,
 } from 'd3-force'
 import { useEmbeddingSync } from '@/hooks/useEmbeddingSync'
+import { useDebounce } from '@/hooks/useDebounce'
 
 interface GraphNode {
   id: string
@@ -70,7 +71,7 @@ export default function WebPage() {
   // Mutable render state lives in refs: the animation loop reads them
   // without re-subscribing, React state only drives the UI chrome.
   const simRef = useRef<Simulation<GraphNode, any> | null>(null)
-  const fitRef = useRef<(() => void) | null>(null)
+  const fitRef = useRef<((indices?: Set<number> | null) => void) | null>(null)
   const transformRef = useRef({ x: 0, y: 0, k: 1 })
   const selectedRef = useRef<number | null>(null)
   const hoverRef = useRef<number | null>(null)
@@ -148,21 +149,36 @@ export default function WebPage() {
     [graph]
   )
 
+  // Debounced so the auto-zoom below doesn't jump on every keystroke.
+  const debouncedFilter = useDebounce(filter, 250)
   const filterMatches = useMemo(() => {
-    if (!graph || !filter.trim()) return null
-    const q = filter.trim().toLowerCase()
+    if (!graph || !debouncedFilter.trim()) return null
+    const q = debouncedFilter.trim().toLowerCase()
     const set = new Set<number>()
     graph.nodes.forEach((n, i) => {
       if (n.text.toLowerCase().includes(q)) set.add(i)
     })
     return set
-  }, [graph, filter])
+  }, [graph, debouncedFilter])
   const filterMatchesRef = useRef<Set<number> | null>(null)
   filterMatchesRef.current = filterMatches
   filterRef.current = filter
   useEffect(() => {
     needsDrawRef.current = true
   }, [filterMatches, selectedIdx, hoverIdx])
+
+  // Filter changed: zoom to the matching nodes so the web visibly narrows.
+  // Clearing the filter zooms back out to the whole graph.
+  const hadFilterRef = useRef(false)
+  useEffect(() => {
+    if (filterMatches && filterMatches.size > 0) {
+      hadFilterRef.current = true
+      fitRef.current?.(filterMatches)
+    } else if (!filterMatches && hadFilterRef.current) {
+      hadFilterRef.current = false
+      fitRef.current?.()
+    }
+  }, [filterMatches])
 
   // --- simulation + render loop ---
   useEffect(() => {
@@ -207,6 +223,7 @@ export default function WebPage() {
     const edgeColor = isDark ? 'rgba(148,163,184,0.18)' : 'rgba(100,116,139,0.16)'
     const edgeHiColor = isDark ? 'rgba(129,140,248,0.7)' : 'rgba(79,70,229,0.55)'
     const labelColor = styles.getPropertyValue('--text-primary').trim() || (isDark ? '#e5e7eb' : '#1f2937')
+    const matchRingColor = styles.getPropertyValue('--brand').trim() || '#6366f1'
 
     const resize = () => {
       const rect = container.getBoundingClientRect()
@@ -221,12 +238,13 @@ export default function WebPage() {
     const ro = new ResizeObserver(resize)
     ro.observe(container)
 
-    // Fit the layout into view once it has mostly settled.
+    // Fit the layout (or a subset, e.g. filter matches) into view.
     let fitted = false
-    const fit = () => {
+    const fit = (indices?: Set<number> | null) => {
       const rect = container.getBoundingClientRect()
+      const pts = indices && indices.size > 0 ? [...indices].map((i) => nodes[i]) : nodes
       let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity
-      for (const n of nodes) {
+      for (const n of pts) {
         if (n.x! < minX) minX = n.x!
         if (n.x! > maxX) maxX = n.x!
         if (n.y! < minY) minY = n.y!
@@ -266,11 +284,17 @@ export default function WebPage() {
         }
       }
 
-      // edges
-      ctx.lineWidth = 1 / k
+      // edges — when a filter is active, edges fade with their endpoints so
+      // the matching region visually pops out of the web
       for (const l of links) {
         const a = nodes[l.s], b = nodes[l.t]
         const emphasized = sel !== null && (l.s === sel || l.t === sel)
+        let alpha = 1
+        if (matches) {
+          const am = matches.has(l.s), bm = matches.has(l.t)
+          alpha = am && bm ? 1 : am || bm ? 0.35 : 0.06
+        }
+        ctx.globalAlpha = alpha
         ctx.strokeStyle = emphasized ? edgeHiColor : edgeColor
         ctx.lineWidth = (emphasized ? 1.8 : 0.8 + l.w) / k
         ctx.beginPath()
@@ -278,22 +302,28 @@ export default function WebPage() {
         ctx.lineTo(b.x!, b.y!)
         ctx.stroke()
       }
+      ctx.globalAlpha = 1
 
       // nodes
       for (let i = 0; i < nodes.length; i++) {
         const n = nodes[i]
-        const r = nodeRadius(i) / Math.sqrt(k)
+        const isMatch = matches !== null && matches !== undefined && matches.has(i)
+        const r = (nodeRadius(i) * (isMatch ? 1.4 : 1)) / Math.sqrt(k)
         const color = n.cats.length > 0
           ? categoryColor.get(n.cats[0]) || NO_CATEGORY_COLOR
           : NO_CATEGORY_COLOR
-        const dimmed =
-          (matches && !matches.has(i)) ||
-          (sel !== null && i !== sel && !selNeighbors.has(i))
-        ctx.globalAlpha = dimmed ? 0.15 : 0.9
+        const filteredOut = matches && !isMatch
+        const deselected = sel !== null && i !== sel && !selNeighbors.has(i)
+        ctx.globalAlpha = filteredOut ? 0.08 : deselected ? 0.15 : isMatch ? 1 : 0.9
         ctx.fillStyle = color
         ctx.beginPath()
         ctx.arc(n.x!, n.y!, r, 0, Math.PI * 2)
         ctx.fill()
+        if (isMatch) {
+          ctx.strokeStyle = matchRingColor
+          ctx.lineWidth = 1.5 / k
+          ctx.stroke()
+        }
         if (i === sel || i === hov) {
           ctx.globalAlpha = 1
           ctx.strokeStyle = labelColor
@@ -500,6 +530,11 @@ export default function WebPage() {
                   placeholder="Highlight nodes containing…"
                   className="input-boxed-elegant !py-2 flex-1 min-w-[180px]"
                 />
+                {filterMatches && (
+                  <span className="text-xs whitespace-nowrap" style={{ color: 'var(--text-tertiary)' }}>
+                    {filterMatches.size} match{filterMatches.size !== 1 ? 'es' : ''}
+                  </span>
+                )}
                 <button
                   onClick={() => fitRef.current?.()}
                   className="px-3 py-2 text-sm rounded-lg transition"

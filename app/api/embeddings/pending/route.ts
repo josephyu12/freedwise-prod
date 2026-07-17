@@ -4,6 +4,8 @@ import { createClient } from '@/lib/supabase/server'
 // Rows that still need (re-)embedding: never embedded, or text edited since
 // the stored embedding_hash was computed. The client embeds these in the
 // browser and posts vectors back to /api/embeddings/update.
+export const dynamic = 'force-dynamic'
+
 export async function GET() {
   try {
     const supabase = await createClient()

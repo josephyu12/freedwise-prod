@@ -559,6 +559,8 @@ export async function POST(request: NextRequest) {
 }
 
 // Get queue status
+export const dynamic = 'force-dynamic'
+
 export async function GET(request: NextRequest) {
   try {
     const supabase = await createClient()

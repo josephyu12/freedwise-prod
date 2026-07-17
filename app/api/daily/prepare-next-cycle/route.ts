@@ -32,6 +32,8 @@ function daysBetween(aIso: string, bIso: string): number {
   return Math.round((b - a) / 86400000)
 }
 
+export const dynamic = 'force-dynamic'
+
 export async function GET(request: NextRequest) {
   const startTime = Date.now()
   console.log('[PREPARE-NEXT-CYCLE] Starting cron job execution')

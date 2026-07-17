@@ -13,6 +13,8 @@ const PAGE_SIZE = 1000
 const CACHE_TTL_MS = 5 * 60 * 1000
 const cache = new Map<string, { at: number; payload: any }>()
 
+export const dynamic = 'force-dynamic'
+
 export async function GET(request: NextRequest) {
   try {
     const supabase = await createClient()

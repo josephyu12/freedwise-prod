@@ -39,14 +39,6 @@ const NAV_LINKS = [
       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
     </svg>
   )},
-  { href: '/web', label: 'Web', icon: (
-    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-      <circle cx="5" cy="6" r="2" strokeWidth={1.5} />
-      <circle cx="19" cy="6" r="2" strokeWidth={1.5} />
-      <circle cx="12" cy="18" r="2" strokeWidth={1.5} />
-      <path strokeLinecap="round" strokeWidth={1.5} d="M6.7 7.4l4 8.8M17.3 7.4l-4 8.8M7 6h10" />
-    </svg>
-  )},
   { href: '/pins', label: 'Pins', icon: (
     <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" />

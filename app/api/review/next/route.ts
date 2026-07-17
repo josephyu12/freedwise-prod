@@ -7,6 +7,8 @@ import { getUserReviewSettings } from '@/lib/cycle'
 
 // GET: Get the next unrated highlight for today's daily summary
 // Supports cookie auth (browser) and Bearer token auth (widget)
+export const dynamic = 'force-dynamic'
+
 export async function GET(request: NextRequest) {
   try {
     let supabase

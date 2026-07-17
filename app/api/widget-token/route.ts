@@ -19,6 +19,8 @@ async function currentTokenVersion(supabase: any, userId: string): Promise<numbe
 }
 
 // GET: Generate a widget token for the authenticated user
+export const dynamic = 'force-dynamic'
+
 export async function GET() {
   try {
     const supabase = await createClient()

@@ -7,6 +7,8 @@ import { verifyWidgetToken } from '@/lib/widgetToken'
 
 // GET: Single endpoint for the Scriptable widget
 // Accepts a signed widget token, verifies it, fetches the next highlight
+export const dynamic = 'force-dynamic'
+
 export async function GET(request: NextRequest) {
   try {
     const token = request.nextUrl.searchParams.get('token')

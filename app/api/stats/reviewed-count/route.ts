@@ -11,6 +11,8 @@ const TEXT_SNIPPET_LENGTH = 120
  * highlights that were added before that cycle ended but were not reviewed.
  * Defaults to the previous cycle if no param is given.
  */
+export const dynamic = 'force-dynamic'
+
 export async function GET(request: NextRequest) {
   try {
     const supabase = await createClient()

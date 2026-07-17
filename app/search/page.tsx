@@ -18,9 +18,7 @@ export default function SearchPage() {
   const [query, setQuery] = useState('')
   const [searchType, setSearchType] = useState<'fulltext' | 'semantic'>('fulltext')
   const [results, setResults] = useState<Highlight[]>([])
-  const [similarResults, setSimilarResults] = useState<Highlight[]>([])
   const [loading, setLoading] = useState(false)
-  const [selectedHighlight, setSelectedHighlight] = useState<Highlight | null>(null)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editText, setEditText] = useState('')
   const [editHtmlContent, setEditHtmlContent] = useState('')
@@ -51,7 +49,7 @@ export default function SearchPage() {
   }, [searchType])
 
   const editingHighlight = editingId
-    ? results.find((h) => h.id === editingId) || similarResults.find((h) => h.id === editingId)
+    ? results.find((h) => h.id === editingId)
     : null
   const hasUnsavedEdit =
     editingId &&
@@ -125,27 +123,9 @@ export default function SearchPage() {
     loadPinnedHighlights()
   }, [supabase])
 
-  const fetchSimilarFor = useCallback(async (highlight: Highlight) => {
-    try {
-      const response = await fetch('/api/search/similar', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ highlightId: highlight.id }),
-      })
-      if (response.ok) {
-        const data = await response.json()
-        setSimilarResults(data.similar || [])
-      }
-    } catch (error) {
-      console.error('Error fetching similar highlights:', error)
-    }
-  }, [])
-
   const performSearch = useCallback(async (searchQuery: string, type: 'fulltext' | 'semantic') => {
     if (!searchQuery.trim()) {
       setResults([])
-      setSimilarResults([])
-      setSelectedHighlight(null)
       return
     }
 
@@ -181,48 +161,22 @@ export default function SearchPage() {
 
       const data = await response.json()
       setResults(data.results || [])
-      setSimilarResults(data.similar || [])
       setUsedKeywordFallback(data.fallback === 'keyword')
-
-      // If we have results, select the first one to show similar highlights
-      if (data.results && data.results.length > 0) {
-        setSelectedHighlight(data.results[0])
-        // Full-text responses no longer precompute "similar"; fetch it for
-        // the auto-selected first result (semantic responses already carry it).
-        if ((data.similar || []).length === 0) {
-          fetchSimilarFor(data.results[0])
-        }
-      } else {
-        setSelectedHighlight(null)
-      }
     } catch (error) {
       console.error('Error performing search:', error)
       setResults([])
-      setSimilarResults([])
     } finally {
       setLoading(false)
     }
-  }, [fetchSimilarFor])
+  }, [])
 
   useEffect(() => {
     if (debouncedQuery) {
       performSearch(debouncedQuery, searchType)
     } else {
       setResults([])
-      setSimilarResults([])
-      setSelectedHighlight(null)
     }
   }, [debouncedQuery, searchType, performSearch])
-
-  const handleHighlightClick = async (highlight: Highlight) => {
-    if (editingId === highlight.id) return // Don't select if editing
-    setSelectedHighlight(highlight)
-
-    // Fetch similar highlights for the selected one (pgvector neighbors)
-    if (highlight.id) {
-      await fetchSimilarFor(highlight)
-    }
-  }
 
   const handleStartEdit = (highlight: Highlight, e?: React.MouseEvent) => {
     if (e) {
@@ -280,8 +234,7 @@ export default function SearchPage() {
     try {
       setUpdatingNotion(true)
       // Get original highlight data before updating (needed for sync queue)
-      const allHighlights = [...results, ...similarResults]
-      const originalHighlight = allHighlights.find((h) => h.id === editingId)
+      const originalHighlight = results.find((h) => h.id === editingId)
       const originalText = originalHighlight?.text || null
       const originalHtmlContent = originalHighlight?.html_content || null
 
@@ -488,8 +441,7 @@ export default function SearchPage() {
 
     try {
       // Get highlight data before deleting (needed for sync queue)
-      const allHighlights = [...results, ...similarResults]
-      const highlightToDelete = allHighlights.find((h) => h.id === id)
+      const highlightToDelete = results.find((h) => h.id === id)
       const text = highlightToDelete?.text || null
       const htmlContent = highlightToDelete?.html_content || null
 
@@ -515,12 +467,6 @@ export default function SearchPage() {
 
       // Remove from results
       setResults(results.filter((h) => h.id !== id))
-      setSimilarResults(similarResults.filter((h) => h.id !== id))
-      
-      // If deleted highlight was selected, clear selection
-      if (selectedHighlight?.id === id) {
-        setSelectedHighlight(null)
-      }
 
       // Refresh search if query exists
       if (query.trim()) {
@@ -581,6 +527,14 @@ export default function SearchPage() {
                 >
                   Semantic
                 </button>
+                <Link
+                  href="/web"
+                  className="px-4 py-2 rounded-lg text-sm font-medium transition-all"
+                  style={{ color: 'var(--text-secondary)' }}
+                  title="Explore all highlights as a visual web"
+                >
+                  Web
+                </Link>
               </div>
             </div>
             {query && (
@@ -596,7 +550,6 @@ export default function SearchPage() {
                 ) : (
                   <span>
                     Found {results.length} result{results.length !== 1 ? 's' : ''}
-                    {similarResults.length > 0 && ` · ${similarResults.length} similar`}
                     {usedKeywordFallback && searchType === 'semantic' && (
                       <span> · semantic model unavailable, showed keyword matches</span>
                     )}
@@ -631,7 +584,7 @@ export default function SearchPage() {
           )}
 
           {/* No results */}
-          {query && !loading && results.length === 0 && similarResults.length === 0 && (
+          {query && !loading && results.length === 0 && (
             <div className="glass-card p-10 sm:p-16 text-center">
               <div className="w-16 h-16 mx-auto mb-4 rounded-2xl flex items-center justify-center" style={{ background: 'var(--surface-hover)' }}>
                 <svg className="w-8 h-8" style={{ color: 'var(--text-tertiary)' }} fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -647,22 +600,16 @@ export default function SearchPage() {
             </div>
           )}
 
-          {/* Results grid — stacks on mobile, side-by-side on lg+ */}
-          {(results.length > 0 || similarResults.length > 0) && (
-            <div className="grid lg:grid-cols-2 gap-6">
-              {/* Search Results Column */}
+          {/* Results — single list for whichever mode is active */}
+          {results.length > 0 && (
+            <div>
               <div>
                 <h2 className="text-lg font-semibold mb-3" style={{ color: 'var(--text-primary)' }}>Results</h2>
                 <div className="space-y-3">
                 {results.map((highlight) => (
                   <div
                     key={highlight.id}
-                    className={`glass-card p-5 transition ${
-                      selectedHighlight?.id === highlight.id
-                        ? 'ring-2 ring-[var(--brand)]'
-                        : ''
-                    } ${editingId === highlight.id ? '' : 'cursor-pointer'}`}
-                    onClick={() => editingId !== highlight.id && handleHighlightClick(highlight)}
+                    className="glass-card p-5 transition"
                   >
                     {editingId === highlight.id ? (
                       <div className="space-y-4">
@@ -914,8 +861,7 @@ export default function SearchPage() {
 
                                   // Remove from results
                                   setResults(results.filter((h) => h.id !== highlight.id))
-                                  setSimilarResults(similarResults.filter((h) => h.id !== highlight.id))
-                                  
+
                                   // Refresh search if query exists
                                   if (query.trim()) {
                                     await performSearch(query, searchType)
@@ -943,297 +889,6 @@ export default function SearchPage() {
                 ))}
               </div>
               </div>
-
-            {/* Similar Highlights Column */}
-            <div>
-              <h2 className="text-lg font-semibold mb-3" style={{ color: 'var(--text-primary)' }}>
-                {selectedHighlight ? 'Similar Highlights' : 'Click a result to find similar'}
-              </h2>
-              {selectedHighlight && (
-                <div className="mb-4 p-4 bg-blue-50 dark:bg-blue-900/20 rounded-lg border border-blue-200 dark:border-blue-800">
-                  <p className="text-sm text-blue-800 dark:text-blue-200 font-semibold mb-2">
-                    Finding highlights similar to:
-                  </p>
-                  <div
-                    className="highlight-content text-sm prose dark:prose-invert max-w-none"
-                    dangerouslySetInnerHTML={{
-                      __html: renderHighlightHtml(selectedHighlight.html_content, selectedHighlight.text),
-                    }}
-                  />
-                </div>
-              )}
-              <div className="space-y-4">
-                {similarResults.map((highlight) => (
-                  <div
-                    key={highlight.id}
-                    className={`glass-card p-5 transition ${
-                      editingId === highlight.id ? '' : 'cursor-pointer'
-                    }`}
-                    onClick={() => editingId !== highlight.id && handleHighlightClick(highlight)}
-                  >
-                    {editingId === highlight.id ? (
-                      <div className="space-y-4">
-                        <div>
-                          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                            Highlight Text *
-                          </label>
-                          <RichTextEditor
-                            value={editText}
-                            htmlValue={editHtmlContent}
-                            onChange={(newText, newHtml) => {
-                              setEditText(newText)
-                              setEditHtmlContent(newHtml)
-                            }}
-                            placeholder="Enter your highlight with formatting..."
-                          />
-                        </div>
-                        <div className="grid md:grid-cols-2 gap-4">
-                          <div>
-                            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                              Source (optional)
-                            </label>
-                            <input
-                              type="text"
-                              value={editSource}
-                              onChange={(e) => setEditSource(e.target.value)}
-                              className="input-boxed-elegant"
-                              placeholder="Book, article, etc."
-                            />
-                          </div>
-                          <div>
-                            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                              Author (optional)
-                            </label>
-                            <input
-                              type="text"
-                              value={editAuthor}
-                              onChange={(e) => setEditAuthor(e.target.value)}
-                              className="input-boxed-elegant"
-                              placeholder="Author name"
-                            />
-                          </div>
-                        </div>
-                        <div>
-                          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                            Categories
-                          </label>
-                          <div className="flex flex-wrap gap-2">
-                            {categories.map((cat) => (
-                              <button
-                                key={cat.id}
-                                type="button"
-                                onClick={() => {
-                                  if (editCategories.includes(cat.id)) {
-                                    setEditCategories(editCategories.filter((id) => id !== cat.id))
-                                  } else {
-                                    setEditCategories([...editCategories, cat.id])
-                                  }
-                                }}
-                                className={`px-3 py-1 rounded-full text-sm transition ${
-                                  editCategories.includes(cat.id)
-                                    ? 'bg-blue-600 text-white'
-                                    : 'bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-600'
-                                }`}
-                              >
-                                {cat.name}
-                              </button>
-                            ))}
-                            {!showCategoryInput ? (
-                              <button
-                                type="button"
-                                onClick={() => setShowCategoryInput(true)}
-                                className="px-3 py-1 rounded-full text-sm bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition border border-dashed border-gray-300 dark:border-gray-600"
-                              >
-                                + Category
-                              </button>
-                            ) : (
-                              <div className="flex gap-2 items-center">
-                                <input
-                                  type="text"
-                                  value={newCategoryName}
-                                  onChange={(e) => setNewCategoryName(e.target.value)}
-                                  onKeyPress={(e) => {
-                                    if (e.key === 'Enter') {
-                                      e.preventDefault()
-                                      handleCreateCategory()
-                                    }
-                                  }}
-                                  className="input-inline-elegant"
-                                  placeholder="New category"
-                                  autoFocus
-                                />
-                                <button
-                                  type="button"
-                                  onClick={handleCreateCategory}
-                                  className="px-3 py-1 bg-blue-600 text-white rounded-full text-sm hover:bg-blue-700 transition"
-                                >
-                                  Add
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setShowCategoryInput(false)
-                                    setNewCategoryName('')
-                                  }}
-                                  className="px-3 py-1 bg-gray-200 dark:bg-gray-700 rounded-full text-sm hover:bg-gray-300 dark:hover:bg-gray-600 transition"
-                                >
-                                  ✕
-                                </button>
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-4">
-                          <label className="flex items-center gap-2 cursor-pointer">
-                            <input
-                              type="checkbox"
-                              checked={skipNotionSync}
-                              onChange={(e) => setSkipNotionSync(e.target.checked)}
-                              className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-700"
-                            />
-                            <span className="text-sm text-gray-700 dark:text-gray-300">
-                              Don&apos;t sync to Notion
-                            </span>
-                          </label>
-                        </div>
-                        <div className="flex gap-2">
-                          <button
-                            onClick={handleSaveEdit}
-                            disabled={updatingNotion || !editText.trim()}
-                            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition disabled:opacity-50 disabled:cursor-not-allowed"
-                          >
-                            {updatingNotion ? 'Saving...' : 'Save'}
-                          </button>
-                          <button
-                            onClick={handleCancelEdit}
-                            disabled={updatingNotion}
-                            className="px-4 py-2 bg-gray-200 dark:bg-gray-700 rounded-lg hover:bg-gray-300 dark:hover:bg-gray-600 transition disabled:opacity-50 disabled:cursor-not-allowed"
-                          >
-                            Cancel
-                          </button>
-                        </div>
-                      </div>
-                    ) : (
-                      <>
-                        <div
-                          className="highlight-content text-base mb-3 prose dark:prose-invert max-w-none"
-                          dangerouslySetInnerHTML={{
-                            __html: renderHighlightHtml(highlight.html_content, highlight.text),
-                          }}
-                        />
-                        {highlight.categories && highlight.categories.length > 0 && (
-                          <div className="flex flex-wrap gap-2 mb-3">
-                            {highlight.categories.map((cat: any) => (
-                              <span
-                                key={cat.id}
-                                className="px-2 py-1 text-xs rounded-full bg-blue-100 dark:bg-blue-900 text-blue-800 dark:text-blue-200"
-                              >
-                                {cat.name}
-                              </span>
-                            ))}
-                          </div>
-                        )}
-                        {(highlight.source || highlight.author || (highlight as any).assigned_date || (highlight.average_rating !== undefined && highlight.average_rating > 0) || (highlight.months_reviewed && highlight.months_reviewed.length > 0)) && (
-                          <p className="text-sm text-gray-500 dark:text-gray-400 mb-3">
-                            {(highlight as any).assigned_date && (
-                              <span className="text-gray-500 dark:text-gray-400">
-                                Review on {(() => {
-                                  const raw = (highlight as any).assigned_date
-                                  const [, m, d] = String(raw).split('T')[0].split('-').map(Number)
-                                  return `${m}/${d}`
-                                })()}
-                              </span>
-                            )}
-                            {(highlight as any).assigned_date && (highlight.author || highlight.source || (highlight.average_rating !== undefined && highlight.average_rating > 0) || (highlight.months_reviewed && highlight.months_reviewed.length > 0)) && <span> • </span>}
-                            {highlight.average_rating !== undefined && highlight.average_rating > 0 && (
-                              <span>Avg Rating: {highlight.average_rating.toFixed(1)}/3</span>
-                            )}
-                            {highlight.average_rating !== undefined && highlight.average_rating > 0 && (highlight.author || highlight.source || (highlight.months_reviewed && highlight.months_reviewed.length > 0)) && <span> • </span>}
-                            {highlight.months_reviewed && highlight.months_reviewed.length > 0 && (
-                              <span>Months reviewed: {highlight.months_reviewed.length}</span>
-                            )}
-                            {(highlight.months_reviewed && highlight.months_reviewed.length > 0) && (highlight.author || highlight.source) && <span> • </span>}
-                            {highlight.author && <span>{highlight.author}</span>}
-                            {highlight.author && highlight.source && <span> • </span>}
-                            {highlight.source && <span>{highlight.source}</span>}
-                          </p>
-                        )}
-                        <div className="flex flex-col sm:flex-row gap-2 mt-3" onClick={(e) => e.stopPropagation()}>
-                          <button
-                            onClick={(e) => handleStartEdit(highlight, e)}
-                            className="px-3 py-1 text-sm bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300 rounded hover:bg-blue-200 dark:hover:bg-blue-800 transition"
-                          >
-                            Edit
-                          </button>
-                          {highlight.archived ? (
-                            <button
-                              onClick={async (e) => {
-                                e.stopPropagation()
-                                try {
-                                  const { error: unarchiveError } = await (supabase
-                                    .from('highlights') as any)
-                                    .update({ archived: false, unarchived_at: new Date().toISOString() })
-                                    .eq('id', highlight.id)
-                                  if (unarchiveError) throw unarchiveError
-
-                                  if (query.trim()) {
-                                    await performSearch(query, searchType)
-                                  }
-                                } catch (error) {
-                                  console.error('Error unarchiving highlight:', error)
-                                  alert('Failed to unarchive highlight. Please try again.')
-                                }
-                              }}
-                              className="px-3 py-1 text-sm bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300 rounded hover:bg-blue-200 dark:hover:bg-blue-800 transition"
-                            >
-                              Unarchive
-                            </button>
-                          ) : (
-                            <button
-                              onClick={async (e) => {
-                                e.stopPropagation()
-                                if (!confirm('Are you sure you want to archive this highlight?')) return
-                                try {
-                                  const { error: archiveError } = await (supabase
-                                    .from('highlights') as any)
-                                    .update({ archived: true })
-                                    .eq('id', highlight.id)
-                                  if (archiveError) throw archiveError
-
-                                  setResults(results.filter((h) => h.id !== highlight.id))
-                                  setSimilarResults(similarResults.filter((h) => h.id !== highlight.id))
-                                  
-                                  if (query.trim()) {
-                                    await performSearch(query, searchType)
-                                  }
-                                } catch (error) {
-                                  console.error('Error archiving highlight:', error)
-                                  alert('Failed to archive highlight. Please try again.')
-                                }
-                              }}
-                              className="px-3 py-1 text-sm bg-orange-100 dark:bg-orange-900 text-orange-700 dark:text-orange-300 rounded hover:bg-orange-200 dark:hover:bg-orange-800 transition"
-                            >
-                              Archive
-                            </button>
-                          )}
-                          <button
-                            onClick={(e) => handleDelete(highlight.id, e)}
-                            className="px-3 py-1 text-sm bg-red-100 dark:bg-red-900 text-red-700 dark:text-red-300 rounded hover:bg-red-200 dark:hover:bg-red-800 transition"
-                          >
-                            Delete
-                          </button>
-                        </div>
-                      </>
-                    )}
-                  </div>
-                ))}
-                {selectedHighlight && similarResults.length === 0 && (
-                  <div className="text-center text-gray-500 dark:text-gray-400 py-8">
-                    No similar highlights found.
-                  </div>
-                )}
-              </div>
-            </div>
           </div>
           )}
         </div>

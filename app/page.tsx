@@ -425,7 +425,25 @@ export default function Home() {
                 <p className="text-sm" style={{ color: 'var(--text-tertiary)' }}>Find highlights</p>
               </div>
             </Link>
-            
+
+            <Link
+              href="/web"
+              className="glass-card glass-card-interactive p-5 flex items-center gap-4 group"
+            >
+              <div className="flex-shrink-0 w-11 h-11 rounded-xl bg-cyan-50 dark:bg-cyan-500/10 flex items-center justify-center group-hover:bg-cyan-100 dark:group-hover:bg-cyan-500/20 transition-colors">
+                <svg className="w-5 h-5 text-cyan-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <circle cx="5" cy="6" r="2" strokeWidth={1.5} />
+                  <circle cx="19" cy="6" r="2" strokeWidth={1.5} />
+                  <circle cx="12" cy="18" r="2" strokeWidth={1.5} />
+                  <path strokeLinecap="round" strokeWidth={1.5} d="M6.7 7.4l4 8.8M17.3 7.4l-4 8.8M7 6h10" />
+                </svg>
+              </div>
+              <div>
+                <h2 className="font-semibold text-gray-900 dark:text-white">Highlight Web</h2>
+                <p className="text-sm" style={{ color: 'var(--text-tertiary)' }}>Explore connections by meaning</p>
+              </div>
+            </Link>
+
             <Link
               href="/daily"
               className="glass-card glass-card-interactive p-5 flex items-center gap-4 group"
