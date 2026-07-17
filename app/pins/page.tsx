@@ -6,6 +6,7 @@ import { createClient } from '@/lib/supabase/client'
 import { Pin, PinOff } from 'lucide-react'
 import PinDialog from '@/components/PinDialog'
 import { renderHighlightHtml } from '@/lib/renderHighlightHtml'
+import ActionToast, { useActionToast } from '@/components/ActionToast'
 
 interface PinnedHighlight {
   id: string
@@ -25,6 +26,7 @@ export default function PinsPage() {
   const [pinnedHighlightIds, setPinnedHighlightIds] = useState<Set<string>>(new Set())
   const [pinDialogOpen, setPinDialogOpen] = useState(false)
   const [pendingPinHighlightId, setPendingPinHighlightId] = useState<string | null>(null)
+  const { toast, showToast } = useActionToast()
   const supabase = createClient()
 
   const loadPinnedHighlights = useCallback(async () => {
@@ -94,6 +96,7 @@ export default function PinsPage() {
 
         // Reload to update the list
         await loadPinnedHighlights()
+        showToast('Highlight unpinned')
       } else {
         // Pin
         const response = await fetch('/api/pins', {
@@ -115,6 +118,7 @@ export default function PinsPage() {
 
         setPinnedHighlightIds((prev) => new Set(prev).add(highlightId))
         await loadPinnedHighlights()
+        showToast('Highlight pinned')
       }
     } catch (error: any) {
       console.error('Error pinning/unpinning highlight:', error)
@@ -160,6 +164,7 @@ export default function PinsPage() {
         // Reload to update the list
         await loadPinnedHighlights()
       }
+      showToast('Removed from pin board')
     } catch (error: any) {
       console.error('Error removing from pin board:', error)
       alert(error.message || 'Failed to remove highlight from pin board')
@@ -280,6 +285,7 @@ export default function PinsPage() {
           setPendingPinHighlightId(null)
         }}
       />
+      <ActionToast toast={toast} />
     </main>
   )
 }

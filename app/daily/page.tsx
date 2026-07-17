@@ -25,6 +25,7 @@ import { isEffectivelyOffline } from '@/hooks/useManualOffline'
 import { useOfflineSyncState } from '@/hooks/useOfflineSyncState'
 import OfflineBanner from '@/components/OfflineBanner'
 import AutoArchiveToast from '@/components/AutoArchiveToast'
+import ActionToast, { useActionToast } from '@/components/ActionToast'
 import { countReplayable, drainOfflineQueue } from '@/lib/offlineReplay'
 import { fetchWithTimeout } from '@/lib/fetchWithTimeout'
 import {
@@ -254,6 +255,7 @@ export default function DailyPage() {
   // latest without re-binding; reviewEnabled drives the "off" empty state.
   const freqRef = useRef(1)
   const [reviewEnabled, setReviewEnabled] = useState(true)
+  const { toast, showToast } = useActionToast()
   const supabase = createClient()
   const router = useRouter()
 
@@ -1071,6 +1073,7 @@ export default function DailyPage() {
           },
         })
         handleCancelEdit()
+        showToast('Highlight updated')
         return
       }
 
@@ -1170,6 +1173,7 @@ export default function DailyPage() {
       const dateMonth = new Date(year, month - 1, 1)
       await loadMonthReviewStatus(dateMonth)
       handleCancelEdit()
+      showToast('Highlight updated')
     } catch (error) {
       console.error('Error updating highlight (falling back to offline queue):', error)
       // Network failed on weak signal — fall back to offline queueing.
@@ -1191,6 +1195,7 @@ export default function DailyPage() {
           },
         })
         handleCancelEdit()
+        showToast('Highlight updated')
       } catch (queueError) {
         console.error('Failed to queue offline edit:', queueError)
         alert('Failed to update highlight. Please try again.')
@@ -1225,6 +1230,7 @@ export default function DailyPage() {
         type: 'delete-highlight',
         params: { highlightId, text, htmlContent },
       })
+      showToast('Highlight deleted')
       return
     }
 
@@ -1255,6 +1261,7 @@ export default function DailyPage() {
       const dateMonth = new Date(year, month - 1, 1)
       await loadMonthReviewStatus(dateMonth)
       await loadMonthsWithAssignments()
+      showToast('Highlight deleted')
     } catch (error) {
       console.error('Error deleting highlight (falling back to offline queue):', error)
       try {
@@ -1262,6 +1269,7 @@ export default function DailyPage() {
           type: 'delete-highlight',
           params: { highlightId, text, htmlContent },
         })
+        showToast('Highlight deleted')
       } catch (queueError) {
         console.error('Failed to queue offline delete:', queueError)
         alert('Failed to delete highlight. Please try again.')
@@ -1367,6 +1375,7 @@ export default function DailyPage() {
       if (!isOnline) {
         await queueSplit()
         handleCancelSplit()
+        showToast('Highlight split')
         return
       }
 
@@ -1434,10 +1443,12 @@ export default function DailyPage() {
         handleCancelSplit()
         // Reload summary to reflect changes
         await loadDailySummary(date)
+        showToast('Highlight split')
       } catch (error) {
         console.error('Error splitting highlight (falling back to offline queue):', error)
         await queueSplit()
         handleCancelSplit()
+        showToast('Highlight split')
       }
     } catch (error) {
       // Nothing queued — this is a pre-network failure (parse error, IndexedDB
@@ -1470,6 +1481,7 @@ export default function DailyPage() {
         type: archive ? 'archive-highlight' : 'unarchive-highlight',
         params: { highlightId },
       })
+      showToast(archive ? 'Highlight archived' : 'Highlight unarchived')
       return
     }
 
@@ -1498,6 +1510,7 @@ export default function DailyPage() {
       const dateMonth = new Date(year, month - 1, 1)
       await loadMonthReviewStatus(dateMonth)
       await loadMonthsWithAssignments()
+      showToast(archive ? 'Highlight archived' : 'Highlight unarchived')
     } catch (error) {
       console.error('Error archiving highlight (falling back to offline queue):', error)
       try {
@@ -1505,6 +1518,7 @@ export default function DailyPage() {
           type: archive ? 'archive-highlight' : 'unarchive-highlight',
           params: { highlightId },
         })
+        showToast(archive ? 'Highlight archived' : 'Highlight unarchived')
       } catch (queueError) {
         console.error('Failed to queue offline archive:', queueError)
         alert('Failed to archive highlight. Please try again.')
@@ -1519,6 +1533,7 @@ export default function DailyPage() {
       // Optimistic unpin + cache
       setPinnedHighlightIds((prev) => { const next = new Set(prev); next.delete(highlightId); return next })
       await updateDailyCache((c) => ({ pinnedHighlightIds: c.pinnedHighlightIds.filter((id) => id !== highlightId) }))
+      showToast('Highlight unpinned')
 
       if (!isOnline) {
         await enqueueOfflineAction({ type: 'unpin-highlight', params: { highlightId } })
@@ -1554,6 +1569,7 @@ export default function DailyPage() {
         ? c.pinnedHighlightIds
         : [...c.pinnedHighlightIds, highlightId],
     }))
+    showToast('Highlight pinned')
 
     if (!isOnline) {
       await enqueueOfflineAction({ type: 'pin-highlight', params: { highlightId } })
@@ -2216,6 +2232,7 @@ export default function DailyPage() {
         }}
         onDismiss={() => setAutoArchivedId(null)}
       />
+      <ActionToast toast={toast} />
     </main>
   )
 }

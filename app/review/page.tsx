@@ -29,6 +29,7 @@ import { updateHighlightStatsAfterRating } from '@/lib/highlightStats'
 import { useOfflineSyncState } from '@/hooks/useOfflineSyncState'
 import OfflineBanner from '@/components/OfflineBanner'
 import AutoArchiveToast from '@/components/AutoArchiveToast'
+import ActionToast, { useActionToast } from '@/components/ActionToast'
 import { countReplayable, drainOfflineQueue } from '@/lib/offlineReplay'
 import { fetchWithTimeout } from '@/lib/fetchWithTimeout'
 import {
@@ -78,6 +79,7 @@ function ReviewPageContent() {
   const [ratingInProgress, setRatingInProgress] = useState(false)
   const autoRateProcessed = useRef(false)
   const highlightContentRef = useRef<HTMLDivElement | null>(null)
+  const { toast, showToast } = useActionToast()
   const supabase = createClient()
   const searchParams = useSearchParams()
   const router = useRouter()
@@ -908,6 +910,7 @@ function ReviewPageContent() {
       if (!isOnline) {
         await queueSplit()
         handleCancelSplit()
+        showToast('Highlight split')
         return
       }
 
@@ -982,6 +985,7 @@ function ReviewPageContent() {
       }
 
       handleCancelSplit()
+      showToast('Highlight split')
     } catch (error) {
       // Nothing queued and nothing optimistically shown beyond the cache patch
       // above — this is a pre-network failure (parse error, IndexedDB down).
@@ -1065,6 +1069,7 @@ function ReviewPageContent() {
           },
         })
         handleCancelEdit()
+        showToast('Highlight updated')
         return
       }
 
@@ -1107,6 +1112,7 @@ function ReviewPageContent() {
         )
       }
       handleCancelEdit()
+      showToast('Highlight updated')
     } catch (error) {
       console.error('Error saving edit (falling back to offline queue):', error)
       try {
@@ -1125,6 +1131,7 @@ function ReviewPageContent() {
           },
         })
         handleCancelEdit()
+        showToast('Highlight updated')
       } catch (queueError) {
         console.error('Failed to queue offline edit:', queueError)
       }
@@ -1164,6 +1171,7 @@ function ReviewPageContent() {
         : h
     setHighlights((prev) => prev.map(applyArchivePatch))
     await updateCache((c) => ({ highlights: c.highlights.map(applyArchivePatch) }))
+    showToast('Highlight archived')
 
     if (!isOnline) {
       await enqueueOfflineAction({ type: 'archive-highlight', params: { highlightId } })
@@ -1194,6 +1202,7 @@ function ReviewPageContent() {
         : h
     setHighlights((prev) => prev.map(applyUnarchivePatch))
     await updateCache((c) => ({ highlights: c.highlights.map(applyUnarchivePatch) }))
+    showToast('Highlight unarchived')
 
     if (!isOnline) {
       await enqueueOfflineAction({ type: 'unarchive-highlight', params: { highlightId } })
@@ -1230,6 +1239,7 @@ function ReviewPageContent() {
     await updateCache((c) => ({
       highlights: c.highlights.filter((h: any) => h.highlight_id !== highlightId),
     }))
+    showToast('Highlight deleted')
 
     if (!isOnline) {
       await enqueueOfflineAction({
@@ -1269,6 +1279,7 @@ function ReviewPageContent() {
       // Optimistic unpin + cache
       setPinnedHighlightIds((prev) => { const next = new Set(prev); next.delete(highlightId); return next })
       await updateCache((c) => ({ pinnedHighlightIds: c.pinnedHighlightIds.filter((id) => id !== highlightId) }))
+      showToast('Highlight unpinned')
 
       if (!isOnline) {
         await enqueueOfflineAction({ type: 'unpin-highlight', params: { highlightId } })
@@ -1304,6 +1315,7 @@ function ReviewPageContent() {
         ? c.pinnedHighlightIds
         : [...c.pinnedHighlightIds, highlightId],
     }))
+    showToast('Highlight pinned')
 
     if (!isOnline) {
       await enqueueOfflineAction({ type: 'pin-highlight', params: { highlightId } })
@@ -1937,6 +1949,7 @@ function ReviewPageContent() {
         }}
         onDismiss={() => setAutoArchivedId(null)}
       />
+      <ActionToast toast={toast} />
     </div>
   )
 }

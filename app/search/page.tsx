@@ -13,6 +13,7 @@ import { addToNotionSyncQueue } from '@/lib/notionSyncQueue'
 import { renderHighlightHtml } from '@/lib/renderHighlightHtml'
 import { embedText, preloadEmbedder } from '@/lib/clientEmbeddings'
 import { useEmbeddingSync } from '@/hooks/useEmbeddingSync'
+import ActionToast, { useActionToast } from '@/components/ActionToast'
 
 export default function SearchPage() {
   const [query, setQuery] = useState('')
@@ -34,6 +35,7 @@ export default function SearchPage() {
   const [pinDialogOpen, setPinDialogOpen] = useState(false)
   const [pendingPinHighlightId, setPendingPinHighlightId] = useState<string | null>(null)
   const [usedKeywordFallback, setUsedKeywordFallback] = useState(false)
+  const { toast, showToast } = useActionToast()
   const supabase = createClient()
 
   // Lazily (re-)embeds new or edited highlights in the browser so semantic
@@ -335,6 +337,7 @@ export default function SearchPage() {
       }
 
       handleCancelEdit()
+      showToast('Highlight updated')
     } catch (error) {
       console.error('Error updating highlight:', error)
       alert('Failed to update highlight. Please try again.')
@@ -366,6 +369,7 @@ export default function SearchPage() {
           next.delete(highlightId)
           return next
         })
+        showToast('Highlight unpinned')
       } else {
         // Pin
         const response = await fetch('/api/pins', {
@@ -386,6 +390,7 @@ export default function SearchPage() {
         }
 
         setPinnedHighlightIds((prev) => new Set(prev).add(highlightId))
+        showToast('Highlight pinned')
       }
     } catch (error: any) {
       console.error('Error pinning/unpinning highlight:', error)
@@ -472,6 +477,8 @@ export default function SearchPage() {
       if (query.trim()) {
         await performSearch(query, searchType)
       }
+
+      showToast('Highlight deleted')
     } catch (error) {
       console.error('Error deleting highlight:', error)
       alert('Failed to delete highlight. Please try again.')
@@ -838,6 +845,8 @@ export default function SearchPage() {
                                   if (query.trim()) {
                                     await performSearch(query, searchType)
                                   }
+
+                                  showToast('Highlight unarchived')
                                 } catch (error) {
                                   console.error('Error unarchiving highlight:', error)
                                   alert('Failed to unarchive highlight. Please try again.')
@@ -866,6 +875,8 @@ export default function SearchPage() {
                                   if (query.trim()) {
                                     await performSearch(query, searchType)
                                   }
+
+                                  showToast('Highlight archived')
                                 } catch (error) {
                                   console.error('Error archiving highlight:', error)
                                   alert('Failed to archive highlight. Please try again.')
@@ -905,6 +916,7 @@ export default function SearchPage() {
           setPendingPinHighlightId(null)
         }}
       />
+      <ActionToast toast={toast} />
     </main>
   )
 }

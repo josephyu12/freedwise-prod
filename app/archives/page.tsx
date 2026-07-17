@@ -5,6 +5,7 @@ import { createClient } from '@/lib/supabase/client'
 import { Highlight } from '@/types/database'
 import { addToNotionSyncQueue } from '@/lib/notionSyncQueue'
 import { renderHighlightHtml } from '@/lib/renderHighlightHtml'
+import ActionToast, { useActionToast } from '@/components/ActionToast'
 
 export default function ArchivesPage() {
   const [highlights, setHighlights] = useState<Highlight[]>([])
@@ -12,6 +13,7 @@ export default function ArchivesPage() {
   const [currentPage, setCurrentPage] = useState(1)
   const [itemsPerPage, setItemsPerPage] = useState(20)
   const [totalHighlights, setTotalHighlights] = useState(0)
+  const { toast, showToast } = useActionToast()
   const supabase = createClient()
 
   useEffect(() => {
@@ -103,6 +105,7 @@ export default function ArchivesPage() {
       if (error) throw error
 
       await loadHighlights()
+      showToast('Highlight unarchived')
     } catch (error) {
       console.error('Error unarchiving highlight:', error)
       alert('Failed to unarchive highlight. Please try again.')
@@ -140,6 +143,7 @@ export default function ArchivesPage() {
       await fetch('/api/daily/redistribute', { method: 'POST' })
 
       await loadHighlights()
+      showToast('Highlight deleted')
     } catch (error) {
       console.error('Error deleting highlight:', error)
       alert('Failed to delete highlight. Please try again.')
@@ -275,6 +279,7 @@ export default function ArchivesPage() {
           </div>
         </div>
       </div>
+      <ActionToast toast={toast} />
     </main>
   )
 }

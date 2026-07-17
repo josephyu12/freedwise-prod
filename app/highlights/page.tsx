@@ -15,6 +15,7 @@ import { callRedistribute } from '@/lib/redistribute'
 import { parseIntoParagraphs, groupParagraphsByDividers, ParagraphBlock, splitHtmlByBlankLines } from '@/lib/splitHighlightText'
 import { renderHighlightHtml } from '@/lib/renderHighlightHtml'
 import { sanitizeForRender } from '@/lib/sanitizeForRender'
+import ActionToast, { useActionToast } from '@/components/ActionToast'
 
 export default function HighlightsPage() {
   const [highlights, setHighlights] = useState<Highlight[]>([])
@@ -46,6 +47,7 @@ export default function HighlightsPage() {
   const [pinnedHighlightIds, setPinnedHighlightIds] = useState<Set<string>>(new Set())
   const [pinDialogOpen, setPinDialogOpen] = useState(false)
   const [pendingPinHighlightId, setPendingPinHighlightId] = useState<string | null>(null)
+  const { toast, showToast } = useActionToast()
   const supabase = createClient()
 
   // Synchronous re-entry guard. The `saving` state below is only set
@@ -605,6 +607,7 @@ export default function HighlightsPage() {
           next.delete(highlightId)
           return next
         })
+        showToast('Highlight unpinned')
       } else {
         // Pin
         const response = await fetch('/api/pins', {
@@ -625,6 +628,7 @@ export default function HighlightsPage() {
         }
 
         setPinnedHighlightIds((prev) => new Set(prev).add(highlightId))
+        showToast('Highlight pinned')
       }
     } catch (error: any) {
       console.error('Error pinning/unpinning highlight:', error)
@@ -691,6 +695,8 @@ export default function HighlightsPage() {
           .delete()
           .eq('id', id)
         if (error) throw error
+
+        showToast('Highlight deleted')
 
         // Only enqueue the Notion delete after the DB delete actually succeeded —
         // otherwise we can wipe the highlight from Notion while it's still in Supabase.
@@ -811,6 +817,8 @@ export default function HighlightsPage() {
             originalHtmlContent
           ).catch((err) => console.error('Error queueing Notion update:', err))
         }
+
+        showToast('Highlight updated')
       } catch (error: any) {
         console.error('Error updating highlight:', error)
         // Revert optimistic edit on failure.
@@ -1705,6 +1713,7 @@ export default function HighlightsPage() {
           setPendingPinHighlightId(null)
         }}
       />
+      <ActionToast toast={toast} />
     </main>
   )
 }
