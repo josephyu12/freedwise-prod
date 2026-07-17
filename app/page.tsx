@@ -432,10 +432,12 @@ export default function Home() {
             >
               <div className="flex-shrink-0 w-11 h-11 rounded-xl bg-cyan-50 dark:bg-cyan-500/10 flex items-center justify-center group-hover:bg-cyan-100 dark:group-hover:bg-cyan-500/20 transition-colors">
                 <svg className="w-5 h-5 text-cyan-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <circle cx="5" cy="6" r="2" strokeWidth={1.5} />
-                  <circle cx="19" cy="6" r="2" strokeWidth={1.5} />
-                  <circle cx="12" cy="18" r="2" strokeWidth={1.5} />
-                  <path strokeLinecap="round" strokeWidth={1.5} d="M6.7 7.4l4 8.8M17.3 7.4l-4 8.8M7 6h10" />
+                  <circle cx="11" cy="11" r="1.6" strokeWidth={1.5} />
+                  <circle cx="4.5" cy="4.5" r="2" strokeWidth={1.5} />
+                  <circle cx="19.5" cy="7" r="1.7" strokeWidth={1.5} />
+                  <circle cx="6" cy="19" r="1.7" strokeWidth={1.5} />
+                  <circle cx="18.5" cy="17.5" r="2.2" strokeWidth={1.5} />
+                  <path strokeLinecap="round" strokeWidth={1.5} d="M9.9 9.9L5.9 5.9M12.4 10.3L18 7.7M10.2 12.4L6.9 17.6M12.2 12.1L16.8 16.1M19.3 8.7L18.7 15.3" />
                 </svg>
               </div>
               <div>
