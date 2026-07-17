@@ -128,10 +128,21 @@ These migrations can be applied individually to update existing databases:
    - **Required before deploying the code that calls these functions.**
    - **Date:** 2026-07-09
 
-20. **`migration_notion_realtime.sql`** (Latest)
+20. **`migration_notion_realtime.sql`**
    - Adds `notion_sync_queue` to the `supabase_realtime` publication so queue
      changes push to the client over the websocket instead of a 10s poll.
    - **Date:** 2026-07-09
+
+21. **`migration_add_embeddings.sql`** (Latest)
+   - Enables the `vector` extension (pgvector) and adds `embedding vector(384)`
+     + `embedding_hash` columns to `highlights`, with an HNSW cosine index.
+   - Adds RPCs: `match_highlights` (semantic search), `similar_highlights`
+     (neighbors of an existing highlight), `embedding_pending` /
+     `embedding_pending_count` (lazy re-embedding of new or edited highlights).
+   - Embeddings are gte-small vectors computed client-side in the browser;
+     backfill for existing highlights runs once via script.
+   - **Required before deploying the pgvector semantic search + /web graph.**
+   - **Date:** 2026-07-16
 
 ## Migration Order
 
@@ -159,6 +170,7 @@ If applying migrations incrementally, use this order:
 19. `migration_highlight_score.sql`
 20. `migration_schedule_rpcs.sql`
 21. `migration_notion_realtime.sql`
+22. `migration_add_embeddings.sql`
 
 ## Usage
 

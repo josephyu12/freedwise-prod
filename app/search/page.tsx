@@ -11,6 +11,8 @@ import { useUnsavedChanges } from '@/hooks/useUnsavedChanges'
 import { Pin, PinOff } from 'lucide-react'
 import { addToNotionSyncQueue } from '@/lib/notionSyncQueue'
 import { renderHighlightHtml } from '@/lib/renderHighlightHtml'
+import { embedText, preloadEmbedder } from '@/lib/clientEmbeddings'
+import { useEmbeddingSync } from '@/hooks/useEmbeddingSync'
 
 export default function SearchPage() {
   const [query, setQuery] = useState('')
@@ -33,9 +35,20 @@ export default function SearchPage() {
   const [pinnedHighlightIds, setPinnedHighlightIds] = useState<Set<string>>(new Set())
   const [pinDialogOpen, setPinDialogOpen] = useState(false)
   const [pendingPinHighlightId, setPendingPinHighlightId] = useState<string | null>(null)
+  const [usedKeywordFallback, setUsedKeywordFallback] = useState(false)
   const supabase = createClient()
 
+  // Lazily (re-)embeds new or edited highlights in the browser so semantic
+  // search and the /web graph stay in sync with the library.
+  const embeddingSync = useEmbeddingSync()
+
   const debouncedQuery = useDebounce(query, 500)
+
+  // Warm the embedding model as soon as Semantic mode is selected, so the
+  // first search doesn't eat the model download+init latency.
+  useEffect(() => {
+    if (searchType === 'semantic') preloadEmbedder()
+  }, [searchType])
 
   const editingHighlight = editingId
     ? results.find((h) => h.id === editingId) || similarResults.find((h) => h.id === editingId)
@@ -112,6 +125,22 @@ export default function SearchPage() {
     loadPinnedHighlights()
   }, [supabase])
 
+  const fetchSimilarFor = useCallback(async (highlight: Highlight) => {
+    try {
+      const response = await fetch('/api/search/similar', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ highlightId: highlight.id }),
+      })
+      if (response.ok) {
+        const data = await response.json()
+        setSimilarResults(data.similar || [])
+      }
+    } catch (error) {
+      console.error('Error fetching similar highlights:', error)
+    }
+  }, [])
+
   const performSearch = useCallback(async (searchQuery: string, type: 'fulltext' | 'semantic') => {
     if (!searchQuery.trim()) {
       setResults([])
@@ -122,6 +151,18 @@ export default function SearchPage() {
 
     setLoading(true)
     try {
+      // Semantic mode: embed the query in the browser (gte-small). If the
+      // model can't load (offline, download blocked), send no vector and the
+      // server degrades to keyword search instead of failing.
+      let embedding: number[] | undefined
+      if (type === 'semantic') {
+        try {
+          embedding = await embedText(searchQuery.trim())
+        } catch (error) {
+          console.error('Query embedding failed, falling back to keyword search:', error)
+        }
+      }
+
       const response = await fetch('/api/search', {
         method: 'POST',
         headers: {
@@ -130,6 +171,7 @@ export default function SearchPage() {
         body: JSON.stringify({
           query: searchQuery.trim(),
           type,
+          embedding,
         }),
       })
 
@@ -140,10 +182,16 @@ export default function SearchPage() {
       const data = await response.json()
       setResults(data.results || [])
       setSimilarResults(data.similar || [])
-      
+      setUsedKeywordFallback(data.fallback === 'keyword')
+
       // If we have results, select the first one to show similar highlights
       if (data.results && data.results.length > 0) {
         setSelectedHighlight(data.results[0])
+        // Full-text responses no longer precompute "similar"; fetch it for
+        // the auto-selected first result (semantic responses already carry it).
+        if ((data.similar || []).length === 0) {
+          fetchSimilarFor(data.results[0])
+        }
       } else {
         setSelectedHighlight(null)
       }
@@ -154,7 +202,7 @@ export default function SearchPage() {
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [fetchSimilarFor])
 
   useEffect(() => {
     if (debouncedQuery) {
@@ -169,29 +217,10 @@ export default function SearchPage() {
   const handleHighlightClick = async (highlight: Highlight) => {
     if (editingId === highlight.id) return // Don't select if editing
     setSelectedHighlight(highlight)
-    
-    // Fetch similar highlights for the selected one
-    if (highlight.id) {
-      try {
-        const response = await fetch('/api/search/similar', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            highlightId: highlight.id,
-            text: highlight.text,
-            htmlContent: highlight.html_content,
-          }),
-        })
 
-        if (response.ok) {
-          const data = await response.json()
-          setSimilarResults(data.similar || [])
-        }
-      } catch (error) {
-        console.error('Error fetching similar highlights:', error)
-      }
+    // Fetch similar highlights for the selected one (pgvector neighbors)
+    if (highlight.id) {
+      await fetchSimilarFor(highlight)
     }
   }
 
@@ -568,8 +597,18 @@ export default function SearchPage() {
                   <span>
                     Found {results.length} result{results.length !== 1 ? 's' : ''}
                     {similarResults.length > 0 && ` · ${similarResults.length} similar`}
+                    {usedKeywordFallback && searchType === 'semantic' && (
+                      <span> · semantic model unavailable, showed keyword matches</span>
+                    )}
                   </span>
                 )}
+              </div>
+            )}
+            {embeddingSync.syncing && (
+              <div className="mt-2 text-xs" style={{ color: 'var(--text-tertiary)' }}>
+                Indexing highlights for semantic search…
+                {embeddingSync.remaining !== null && embeddingSync.total > 0 &&
+                  ` ${Math.max(embeddingSync.total - (embeddingSync.remaining ?? 0), 0)}/${embeddingSync.total}`}
               </div>
             )}
           </div>

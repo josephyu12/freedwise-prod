@@ -5,6 +5,23 @@ const nextConfig = {
   experimental: {
     // Loads instrumentation.ts (Sentry server/edge init) on Next 14.
     instrumentationHook: true,
+    serverComponentsExternalPackages: ['@xenova/transformers'],
+  },
+  webpack: (config, { isServer }) => {
+    // transformers.js only ever runs in the browser (lib/clientEmbeddings
+    // dynamic-imports it from effects/handlers). Alias out its Node-only
+    // deps so webpack never tries to parse native binaries, and keep the
+    // whole package off the server bundle. Matches the official
+    // transformers.js Next.js client-side setup.
+    config.resolve.alias = {
+      ...config.resolve.alias,
+      sharp$: false,
+      'onnxruntime-node$': false,
+    }
+    if (isServer) {
+      config.externals.push('@xenova/transformers')
+    }
+    return config
   },
 }
 
