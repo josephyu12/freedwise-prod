@@ -1469,47 +1469,52 @@ function ReviewPageContent() {
 
   if (allDone && !searchParams.get('id')) {
     return (
-      <div className="min-h-screen flex flex-col items-center justify-center bg-gradient-to-br from-blue-50 to-indigo-100 dark:from-gray-900 dark:to-gray-800 px-6">
-        <div className="text-6xl mb-4">🎉</div>
-        <h2 className="text-3xl font-bold text-gray-900 dark:text-white mb-2 text-center">
-          All Done!
-        </h2>
-        <p className="text-gray-600 dark:text-gray-300 mb-6 text-center">
-          {aheadMode
-            ? `You're ahead through the end of the cycle — all ${highlights.length} highlights reviewed.`
-            : highlights.length === todayHighlights.length
-            ? `You reviewed all ${todayHighlights.length} highlights for today.`
-            : `You're all caught up — ${todayHighlights.length} today plus ${highlights.length - todayHighlights.length} from earlier this cycle.`}
-        </p>
-        <div className="flex flex-col gap-3 w-full max-w-xs">
-          {!aheadMode && (
-            <Link
-              href="/review?ahead=1"
-              className="inline-flex items-center justify-center gap-2 px-6 py-3 bg-blue-600 text-white rounded-xl hover:bg-blue-700 transition font-medium whitespace-nowrap"
-            >
-              Review ahead
-              <ArrowRight className="w-4 h-4" />
-            </Link>
-          )}
-          <div className="flex gap-3">
-            <Link
-              href="/"
-              className={`flex-1 inline-flex items-center justify-center gap-2 px-4 py-3 rounded-xl transition font-medium whitespace-nowrap ${
-                aheadMode
-                  ? 'bg-blue-600 text-white hover:bg-blue-700'
-                  : 'bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-600'
-              }`}
-            >
-              <Home className="w-4 h-4" />
-              Home
-            </Link>
-            <Link
-              href="/daily"
-              className="flex-1 inline-flex items-center justify-center gap-2 px-4 py-3 bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-xl hover:bg-gray-300 dark:hover:bg-gray-600 transition font-medium whitespace-nowrap"
-            >
-              <CalendarDays className="w-4 h-4" />
-              Daily
-            </Link>
+      <div className="min-h-screen flex flex-col items-center bg-gradient-to-br from-blue-50 to-indigo-100 dark:from-gray-900 dark:to-gray-800">
+        <div className="w-full">
+          <OfflineBanner isOnline={isOnline} isSyncing={isSyncing} pendingCount={pendingSyncCount} />
+        </div>
+        <div className="flex-1 flex flex-col items-center justify-center px-6">
+          <div className="text-6xl mb-4">🎉</div>
+          <h2 className="text-3xl font-bold text-gray-900 dark:text-white mb-2 text-center">
+            All Done!
+          </h2>
+          <p className="text-gray-600 dark:text-gray-300 mb-6 text-center">
+            {aheadMode
+              ? `You're ahead through the end of the cycle — all ${highlights.length} highlights reviewed.`
+              : highlights.length === todayHighlights.length
+              ? `You reviewed all ${todayHighlights.length} highlights for today.`
+              : `You're all caught up — ${todayHighlights.length} today plus ${highlights.length - todayHighlights.length} from earlier this cycle.`}
+          </p>
+          <div className="flex flex-col gap-3 w-full max-w-xs">
+            {!aheadMode && (
+              <Link
+                href="/review?ahead=1"
+                className="inline-flex items-center justify-center gap-2 px-6 py-3 bg-blue-600 text-white rounded-xl hover:bg-blue-700 transition font-medium whitespace-nowrap"
+              >
+                Review ahead
+                <ArrowRight className="w-4 h-4" />
+              </Link>
+            )}
+            <div className="flex gap-3">
+              <Link
+                href="/"
+                className={`flex-1 inline-flex items-center justify-center gap-2 px-4 py-3 rounded-xl transition font-medium whitespace-nowrap ${
+                  aheadMode
+                    ? 'bg-blue-600 text-white hover:bg-blue-700'
+                    : 'bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-600'
+                }`}
+              >
+                <Home className="w-4 h-4" />
+                Home
+              </Link>
+              <Link
+                href="/daily"
+                className="flex-1 inline-flex items-center justify-center gap-2 px-4 py-3 bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-xl hover:bg-gray-300 dark:hover:bg-gray-600 transition font-medium whitespace-nowrap"
+              >
+                <CalendarDays className="w-4 h-4" />
+                Daily
+              </Link>
+            </div>
           </div>
         </div>
       </div>

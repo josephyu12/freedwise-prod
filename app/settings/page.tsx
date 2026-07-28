@@ -23,6 +23,7 @@ export default function SettingsPage() {
   const router = useRouter()
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [deleting, setDeleting] = useState(false)
   const [settings, setSettings] = useState<NotionSettings>({
     notion_api_key: '',
     notion_page_id: '',
@@ -318,6 +319,9 @@ export default function SettingsPage() {
       return
     }
 
+    setDeleting(true)
+    setMessage(null)
+
     try {
       const { data: { user } } = await supabase.auth.getUser()
       if (!user) return
@@ -338,6 +342,8 @@ export default function SettingsPage() {
     } catch (error: any) {
       console.error('Error deleting settings:', error)
       setMessage({ type: 'error', text: error.message || 'Failed to delete settings' })
+    } finally {
+      setDeleting(false)
     }
   }
 
@@ -482,7 +488,7 @@ export default function SettingsPage() {
               <div className="flex gap-3 pt-2">
                 <button
                   type="submit"
-                  disabled={saving}
+                  disabled={saving || deleting}
                   className="btn-primary"
                 >
                   {saving ? 'Saving…' : 'Save Settings'}
@@ -491,9 +497,10 @@ export default function SettingsPage() {
                   <button
                     type="button"
                     onClick={handleDelete}
-                    className="btn-danger"
+                    disabled={saving || deleting}
+                    className="btn-danger disabled:opacity-60"
                   >
-                    Delete Settings
+                    {deleting ? 'Deleting…' : 'Delete Settings'}
                   </button>
                 )}
               </div>

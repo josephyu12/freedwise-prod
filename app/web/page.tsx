@@ -544,10 +544,11 @@ export default function WebPage() {
                 </button>
                 <button
                   onClick={() => load(true)}
-                  className="px-3 py-2 text-sm rounded-lg transition"
+                  disabled={loading}
+                  className="px-3 py-2 text-sm rounded-lg transition disabled:opacity-60"
                   style={{ background: 'var(--surface-hover)', color: 'var(--text-secondary)' }}
                 >
-                  Rebuild
+                  {loading ? 'Rebuilding…' : 'Rebuild'}
                 </button>
               </div>
               <div

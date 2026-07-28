@@ -18,6 +18,7 @@ export default function Home() {
   const [showCategoryInput, setShowCategoryInput] = useState(false)
   const [saving, setSaving] = useState(false)
   const [saveSuccess, setSaveSuccess] = useState(false)
+  const [creatingCategory, setCreatingCategory] = useState(false)
   const [dupeNotice, setDupeNotice] = useState<string | null>(null)
   const [fullscreen, setFullscreen] = useState(false)
   const supabase = createClient()
@@ -69,7 +70,8 @@ export default function Home() {
   }, [loadCategories])
 
   const handleCreateCategory = async () => {
-    if (!newCategoryName.trim()) return
+    if (!newCategoryName.trim() || creatingCategory) return
+    setCreatingCategory(true)
 
     try {
       const { data: { user } } = await supabase.auth.getUser()
@@ -86,6 +88,8 @@ export default function Home() {
     } catch (error) {
       console.error('Error creating category:', error)
       alert('Failed to create category. Please try again.')
+    } finally {
+      setCreatingCategory(false)
     }
   }
 
@@ -323,13 +327,15 @@ export default function Home() {
                         className="input-inline-elegant"
                         placeholder="New category"
                         autoFocus
+                        disabled={creatingCategory}
                       />
                       <button
                         type="button"
                         onClick={handleCreateCategory}
-                        className="btn-primary text-xs !py-1.5 !px-3"
+                        disabled={creatingCategory}
+                        className="btn-primary text-xs !py-1.5 !px-3 disabled:opacity-60"
                       >
-                        Add
+                        {creatingCategory ? 'Adding…' : 'Add'}
                       </button>
                       <button
                         type="button"
