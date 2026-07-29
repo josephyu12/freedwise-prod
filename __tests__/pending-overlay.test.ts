@@ -136,6 +136,26 @@ describe('applyPendingActions', () => {
     expect(twice).toEqual(once)
   })
 
+  it('preserves fields it does not know about (/daily rows carry extras)', () => {
+    // /daily's rows hang linked_highlights off the highlight and a
+    // daily_summary_id off the row. The overlay is shared with /review, so it
+    // must patch through those rather than flatten them away.
+    const dailyRow = {
+      ...row('r1', 'h1'),
+      daily_summary_id: 's1',
+      highlight: { ...row('r1', 'h1').highlight!, linked_highlights: [{ id: 'l1' }] },
+    }
+    const [out] = applyPendingActions(
+      [dailyRow],
+      [{ type: 'edit-highlight', params: { highlightId: 'h1', text: 'edited' } }]
+    )
+    expect(out.daily_summary_id).toBe('s1')
+    expect(out.highlight).toMatchObject({
+      text: 'edited',
+      linked_highlights: [{ id: 'l1' }],
+    })
+  })
+
   it('ignores action types it has no projection for', () => {
     const out = applyPendingActions(ROWS, [{ type: 'pin-highlight', params: { highlightId: 'h1' } }])
     expect(out).toEqual(ROWS)

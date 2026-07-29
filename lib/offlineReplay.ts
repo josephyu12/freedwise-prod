@@ -113,6 +113,74 @@ export interface DrainHooks {
   onComplete?: (result: ReplayResult) => void
 }
 
+// ─── Yielding to page loads ─────────────────────────────────
+//
+// A drain is a long SERIAL run of writes — 2-4 round trips per action, and the
+// queue is hundreds deep after a real offline stretch. Nothing WAITS on it any
+// more (pages read the server immediately and project the queue over the result
+// — see lib/pendingOverlay.ts), but "not waiting" isn't "not competing": a drain
+// that reconnect kicked off keeps the connection busy for minutes, and the user
+// wanting to open something — review ahead, another page — is exactly the moment
+// it shouldn't. So a load can SUSPEND the drain for the length of its reads.
+//
+// The replay loop already re-checks between actions to catch a mid-drain
+// disconnect; suspension uses that same boundary. The write in flight is allowed
+// to finish (aborting a half-replayed action buys nothing — the queue would just
+// retry it), then the loop parks until the load releases it.
+//
+// It PARKS rather than bailing out, which matters: the drain stays in flight, so
+// the single-flight guard still holds, the banner keeps reporting "syncing"
+// honestly instead of blinking off and on, and no premature `offline-sync-
+// complete` fires a page reload underneath the very load we're yielding to.
+const SUSPEND_MAX_MS = 15_000
+
+let suspendDepth = 0
+let suspendWaiters: Array<() => void> = []
+let suspendTimer: ReturnType<typeof setTimeout> | null = null
+
+export function isDrainSuspended(): boolean {
+  return suspendDepth > 0
+}
+
+/** Wake every parked drain and clear the suspension outright. */
+function endSuspension(): void {
+  suspendDepth = 0
+  if (suspendTimer) {
+    clearTimeout(suspendTimer)
+    suspendTimer = null
+  }
+  const waiters = suspendWaiters
+  suspendWaiters = []
+  for (const wake of waiters) wake()
+}
+
+/**
+ * Park the offline drain at its next action boundary.
+ *
+ * ALWAYS pair with resumeDrain() in a `finally` — though a leak is survivable:
+ * the first suspension arms a watchdog that force-resumes after SUSPEND_MAX_MS,
+ * so a caller that dies mid-read can't hold the queue shut. Counted, so two
+ * overlapping loads nest correctly.
+ */
+export function suspendDrain(): void {
+  if (suspendDepth === 0) suspendTimer = setTimeout(endSuspension, SUSPEND_MAX_MS)
+  suspendDepth++
+}
+
+/** Release one suspendDrain(); the drain resumes when the last one releases. */
+export function resumeDrain(): void {
+  if (suspendDepth > 0) suspendDepth--
+  if (suspendDepth === 0) endSuspension()
+}
+
+/** Resolves once nothing is holding the drain suspended. */
+function awaitResume(): Promise<void> {
+  if (suspendDepth === 0) return Promise.resolve()
+  return new Promise<void>((resolve) => {
+    suspendWaiters.push(resolve)
+  })
+}
+
 // Module-level single-flight guard for the drain, shared by every caller (the
 // global <OfflineSync> AND page loads that drain before reading the server). A
 // caller arriving while a drain is in flight JOINS that drain's promise and
@@ -167,6 +235,10 @@ export function drainOfflineQueue(supabase: any, hooks: DrainHooks = {}): Promis
         // Clear before each pass: a trigger arriving during this pass sets it
         // again, so we loop and pick up work enqueued mid-drain.
         drainDirty = false
+        // Don't open a pass while a load is reading — announcing "start" and
+        // burning round trips is exactly the competition suspension exists to
+        // avoid. Park here, same as the per-action boundary in the loop.
+        while (isDrainSuspended()) await awaitResume()
         const pending = await countReplayable()
         if (pending === 0) break
         syncSnapshot = { isSyncing: true, pendingCount: pending }
@@ -272,6 +344,11 @@ export async function replayPendingActions(
   let stalled = false
 
   for (const action of actions) {
+    // Yield to a page load that suspended us (see suspendDrain above). Checked
+    // first, and in a loop, so a second load arriving while we're parked keeps
+    // us parked rather than letting one action slip through between them.
+    while (isDrainSuspended()) await awaitResume()
+
     // Re-check between actions: the user can flip manual offline (or lose the
     // connection) mid-drain. Supabase writes abort on their own via the shared
     // manual-offline signal, but the raw-fetch replays (pin/unpin) and this

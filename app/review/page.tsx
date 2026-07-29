@@ -28,7 +28,12 @@ import { getUserReviewSettings, getCycleForDate, cycleKeyForDate } from '@/lib/c
 import { updateHighlightStatsAfterRating } from '@/lib/highlightStats'
 import AutoArchiveToast from '@/components/AutoArchiveToast'
 import ActionToast, { useActionToast } from '@/components/ActionToast'
-import { listReplayable, drainOfflineQueue } from '@/lib/offlineReplay'
+import {
+  listReplayable,
+  drainOfflineQueue,
+  suspendDrain,
+  resumeDrain,
+} from '@/lib/offlineReplay'
 import { applyPendingActions, applyPendingPins } from '@/lib/pendingOverlay'
 import type { OfflineAction } from '@/lib/offlineStore'
 import { fetchWithTimeout } from '@/lib/fetchWithTimeout'
@@ -234,6 +239,11 @@ function ReviewPageContent() {
           setUsingCachedData(true)
           const firstUnrated = cached.highlights.findIndex((h: any) => h.rating === null)
           setCurrentIndex(firstUnrated >= 0 ? firstUnrated : 0)
+          // This return skips the `finally` below (it's outside the try), so the
+          // in-flight flag has to be cleared by hand. Leaving it set stranded
+          // the sync-complete listener: every later drain saw a load "in flight"
+          // and never refreshed the page after reconnect.
+          loadInFlightRef.current = false
           setLoading(false)
           return
         }
@@ -243,6 +253,12 @@ function ReviewPageContent() {
         console.warn('Failed to load cached review data (offline):', e)
       }
     }
+
+    // Park any in-flight drain for the duration of this load's reads, so a sync
+    // that reconnect started doesn't hold the connection while you're waiting on
+    // "Review ahead". It finishes the write it's on and parks; the `finally`
+    // below releases it. See suspendDrain in lib/offlineReplay.
+    suspendDrain()
 
     try {
       // Online, but there are still queued offline writes? Snapshot them and
@@ -506,6 +522,7 @@ function ReviewPageContent() {
         console.error('Failed to load cached data:', cacheError)
       }
     } finally {
+      resumeDrain()
       loadInFlightRef.current = false
       setLoading(false)
       // Highlights are on screen — NOW start syncing. Fire-and-forget: it shares
