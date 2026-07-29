@@ -105,13 +105,37 @@ export interface DrainHooks {
 let drainPromise: Promise<ReplayResult | null> | null = null
 let drainDirty = false
 
+// Live snapshot of the drain, kept here rather than only in the window events.
+// The events are fire-and-forget: anything that mounts AFTER a drain has already
+// started (a page still on its "Loading…" screen, a banner in the layout whose
+// effect runs after <OfflineSync>'s) never hears `offline-sync-start` and would
+// render nothing while a sync is visibly in progress. Reading this on mount
+// closes that race.
+let syncSnapshot: { isSyncing: boolean; pendingCount: number } = {
+  isSyncing: false,
+  pendingCount: 0,
+}
+
+export function getSyncSnapshot(): { isSyncing: boolean; pendingCount: number } {
+  return syncSnapshot
+}
+
+// Progress broadcast, owned by the drain itself rather than by whichever caller
+// happened to pass hooks. It has to be every drain: the hook-less pre-read
+// drains in /review and /daily move the snapshot too, and a banner that seeded
+// "syncing" from one of those would never hear it end and would spin forever.
+function announce(type: 'start' | 'progress' | 'complete', detail: unknown) {
+  if (typeof window === 'undefined') return
+  window.dispatchEvent(new CustomEvent(`offline-sync-${type}`, { detail }))
+}
+
 /**
  * Drain the offline queue once, end to end, behind a process-wide single-flight
  * guard. Returns the last ReplayResult, or null if nothing was drained (offline,
- * or queue empty). Hooks belong to the FIRST caller of an in-flight drain;
- * callers that join an existing drain pass no hooks. The global <OfflineSync>
- * uses the hooks to broadcast its window events; page loads await it hook-less
- * so they can read fresh server truth only after queued writes have landed.
+ * or queue empty). Progress is broadcast on the window (`offline-sync-start` /
+ * `-progress` / `-complete`) and mirrored into the snapshot above, for ANY
+ * caller. Hooks are the extra per-caller callbacks, and belong to the FIRST
+ * caller of an in-flight drain; callers that join an existing drain pass none.
  */
 export function drainOfflineQueue(supabase: any, hooks: DrainHooks = {}): Promise<ReplayResult | null> {
   if (drainPromise) {
@@ -128,8 +152,16 @@ export function drainOfflineQueue(supabase: any, hooks: DrainHooks = {}): Promis
         drainDirty = false
         const pending = await countReplayable()
         if (pending === 0) break
+        syncSnapshot = { isSyncing: true, pendingCount: pending }
+        announce('start', { pending })
         hooks.onStart?.(pending)
-        last = await replayPendingActions(supabase, hooks.onProgress)
+        last = await replayPendingActions(supabase, (remaining) => {
+          syncSnapshot = { isSyncing: true, pendingCount: remaining }
+          announce('progress', { remaining })
+          hooks.onProgress?.(remaining)
+        })
+        syncSnapshot = { isSyncing: false, pendingCount: last.remaining }
+        announce('complete', last)
         hooks.onComplete?.(last)
         // Stop if the pass stalled on a transient failure: re-looping would just
         // re-hit the same blocked action at the front of the queue. The next real
@@ -151,11 +183,16 @@ export function drainOfflineQueue(supabase: any, hooks: DrainHooks = {}): Promis
         stalled: true,
         dropped: 0,
       }
+      syncSnapshot = { isSyncing: false, pendingCount: last.remaining }
+      announce('complete', last)
       hooks.onComplete?.(last)
     }
     return last
   })().finally(() => {
     drainPromise = null
+    // Belt and braces: whatever path we left by, the drain is over — never leave
+    // a spinner stuck on in the snapshot.
+    if (syncSnapshot.isSyncing) syncSnapshot = { ...syncSnapshot, isSyncing: false }
   })
   return drainPromise
 }

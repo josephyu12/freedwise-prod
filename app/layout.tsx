@@ -4,6 +4,7 @@ import './globals.css'
 import AppHeader from '@/components/AppHeader'
 import ServiceWorkerRegistrar from '@/components/ServiceWorkerRegistrar'
 import OfflineSync from '@/components/OfflineSync'
+import SyncBanner from '@/components/SyncBanner'
 import DiscardedChangesBanner from '@/components/DiscardedChangesBanner'
 import TutorialModal from '@/components/TutorialModal'
 
@@ -53,6 +54,10 @@ export default function RootLayout({
         <DiscardedChangesBanner />
         <TutorialModal />
         <AppHeader />
+        {/* Sits between the header and the page so it holds the same position
+            it used to have inside /review and /daily — but now it's also there
+            during every loading screen, on every route. */}
+        <SyncBanner />
         <div className="flex-1">
           {children}
         </div>

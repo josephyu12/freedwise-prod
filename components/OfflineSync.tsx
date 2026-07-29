@@ -20,8 +20,9 @@ const STALL_RETRY_MAX = 5
 // /daily. Pages keep their own optimistic-write + enqueue logic; this owns the
 // draining. It runs on three triggers: reconnect (isOnline → true), app load,
 // and whenever an action is enqueued (so a weak-signal failure retries promptly
-// instead of waiting for the next reconnect). It broadcasts window events so
-// banners can show progress and pages can reload their view when sync finishes:
+// instead of waiting for the next reconnect). The drain broadcasts window events
+// so banners can show progress and pages can reload their view when sync
+// finishes — see `announce()` in lib/offlineReplay:
 //   • offline-sync-start    { pending }
 //   • offline-sync-progress { remaining }
 //   • offline-sync-complete ReplayResult
@@ -47,12 +48,10 @@ export default function OfflineSync() {
       retryTimerRef.current = null
     }
     drainOfflineQueue(supabaseRef.current, {
-      onStart: (pending) =>
-        window.dispatchEvent(new CustomEvent('offline-sync-start', { detail: { pending } })),
-      onProgress: (remaining) =>
-        window.dispatchEvent(new CustomEvent('offline-sync-progress', { detail: { remaining } })),
+      // The progress window events are broadcast by drainOfflineQueue itself
+      // (for every drain, not just this one), so all that's left here is the
+      // stall retry.
       onComplete: (result) => {
-        window.dispatchEvent(new CustomEvent('offline-sync-complete', { detail: result }))
         // Transient stall with work left and we still believe we're online:
         // schedule a bounded retry so the queue doesn't sit until the next
         // reconnect/enqueue/navigation.

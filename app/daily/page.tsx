@@ -22,8 +22,6 @@ import { removeReviewedOnClear } from '@/lib/reviewedLedger'
 import { removeFromFutureMonths } from '@/lib/removeFromFutureMonths'
 import { useOfflineStatus } from '@/hooks/useOfflineStatus'
 import { isEffectivelyOffline } from '@/hooks/useManualOffline'
-import { useOfflineSyncState } from '@/hooks/useOfflineSyncState'
-import OfflineBanner from '@/components/OfflineBanner'
 import AutoArchiveToast from '@/components/AutoArchiveToast'
 import ActionToast, { useActionToast } from '@/components/ActionToast'
 import { countReplayable, drainOfflineQueue } from '@/lib/offlineReplay'
@@ -266,10 +264,15 @@ export default function DailyPage() {
     pinnedIdsRef.current = pinnedHighlightIds
   }, [pinnedHighlightIds])
 
-  // Offline state. Draining is owned by the global <OfflineSync>; we just read
-  // its progress for the banner.
+  // Offline state. Draining is owned by the global <OfflineSync>, and the
+  // "syncing…" banner by the global <SyncBanner> in the root layout — so it
+  // stays on screen through this page's loading state too. Here we only need to
+  // know whether we're online.
   const { isOnline } = useOfflineStatus()
-  const { isSyncing, pendingCount: pendingSyncCount } = useOfflineSyncState()
+  // True while loadDailySummary is running. It drains the offline queue itself
+  // before reading the server, so the `offline-sync-complete` that drain fires
+  // would otherwise bounce us into a second, redundant load.
+  const loadInFlightRef = useRef(false)
   const [usingCachedData, setUsingCachedData] = useState(false)
   // Highlight just auto-archived by the two-low-cycles rule; drives the undo toast.
   const [autoArchivedId, setAutoArchivedId] = useState<string | null>(null)
@@ -428,6 +431,7 @@ export default function DailyPage() {
   }, [supabase])
 
   const loadDailySummary = useCallback(async (selectedDate: string) => {
+    loadInFlightRef.current = true
     setLoading(true)
     setUsingCachedData(false)
 
@@ -444,6 +448,7 @@ export default function DailyPage() {
           if (cached.categories) setCategories(cached.categories as any[])
           if (cached.pinnedHighlightIds) setPinnedHighlightIds(new Set(cached.pinnedHighlightIds))
           setUsingCachedData(true)
+          loadInFlightRef.current = false
           setLoading(false)
           return
         }
@@ -589,6 +594,7 @@ export default function DailyPage() {
         }
       }
     } finally {
+      loadInFlightRef.current = false
       setLoading(false)
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1661,6 +1667,9 @@ export default function DailyPage() {
   // a sync finishes and something was persisted, reload to show server truth.
   useEffect(() => {
     const onComplete = (e: Event) => {
+      // Already loading — that load drained the queue itself and will read
+      // server truth on its own; reloading now would just duplicate it.
+      if (loadInFlightRef.current) return
       const result = (e as CustomEvent).detail
       // Reload on a drop too: a discarded poison action's optimistic change must
       // be reverted to server truth.
@@ -1713,9 +1722,6 @@ export default function DailyPage() {
 
   return (
     <main className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 dark:from-gray-900 dark:to-gray-800">
-      {/* Offline Banner */}
-      <OfflineBanner isOnline={isOnline} isSyncing={isSyncing} pendingCount={pendingSyncCount} />
-
       <div className="container mx-auto px-4 py-8">
         <div className="max-w-4xl mx-auto">
           <div className="mb-4 sm:mb-8">

@@ -26,8 +26,6 @@ import {
 } from '@/lib/aheadOrder'
 import { getUserReviewSettings, getCycleForDate, cycleKeyForDate } from '@/lib/cycle'
 import { updateHighlightStatsAfterRating } from '@/lib/highlightStats'
-import { useOfflineSyncState } from '@/hooks/useOfflineSyncState'
-import OfflineBanner from '@/components/OfflineBanner'
 import AutoArchiveToast from '@/components/AutoArchiveToast'
 import ActionToast, { useActionToast } from '@/components/ActionToast'
 import { countReplayable, drainOfflineQueue } from '@/lib/offlineReplay'
@@ -78,6 +76,11 @@ function ReviewPageContent() {
   const [loading, setLoading] = useState(true)
   const [ratingInProgress, setRatingInProgress] = useState(false)
   const autoRateProcessed = useRef(false)
+  // True while loadHighlights is running. loadHighlights drains the offline
+  // queue itself before reading the server, so the `offline-sync-complete` that
+  // drain fires would otherwise bounce us straight back into a second,
+  // redundant load of data we're already fetching.
+  const loadInFlightRef = useRef(false)
   const highlightContentRef = useRef<HTMLDivElement | null>(null)
   const { toast, showToast } = useActionToast()
   const supabase = createClient()
@@ -108,10 +111,11 @@ function ReviewPageContent() {
   const [pinDialogOpen, setPinDialogOpen] = useState(false)
   const [pendingPinHighlightId, setPendingPinHighlightId] = useState<string | null>(null)
 
-  // Offline state. Draining is owned by the global <OfflineSync>; we just read
-  // its progress for the banner.
+  // Offline state. Draining is owned by the global <OfflineSync>, and the
+  // "syncing…" banner by the global <SyncBanner> in the root layout — so it
+  // stays on screen through this page's loading state too. Here we only need to
+  // know whether we're online.
   const { isOnline } = useOfflineStatus()
-  const { isSyncing, pendingCount: pendingSyncCount } = useOfflineSyncState()
   const [usingCachedData, setUsingCachedData] = useState(false)
   // Highlight just auto-archived by the two-low-cycles rule; drives the undo toast.
   const [autoArchivedId, setAutoArchivedId] = useState<string | null>(null)
@@ -192,6 +196,7 @@ function ReviewPageContent() {
   }
 
   const loadHighlights = useCallback(async () => {
+    loadInFlightRef.current = true
     setLoading(true)
     setUsingCachedData(false)
 
@@ -462,6 +467,7 @@ function ReviewPageContent() {
         console.error('Failed to load cached data:', cacheError)
       }
     } finally {
+      loadInFlightRef.current = false
       setLoading(false)
     }
   }, [supabase, today, aheadMode])
@@ -1407,6 +1413,9 @@ function ReviewPageContent() {
   // a sync finishes and something was persisted, reload to show server truth.
   useEffect(() => {
     const onComplete = (e: Event) => {
+      // Already loading — that load drained the queue itself and will read
+      // server truth on its own; reloading now would just duplicate it.
+      if (loadInFlightRef.current) return
       const result = (e as CustomEvent).detail
       // Reload on a drop too: a discarded poison action's optimistic change must
       // be reverted to server truth.
@@ -1470,9 +1479,6 @@ function ReviewPageContent() {
   if (allDone && !searchParams.get('id')) {
     return (
       <div className="min-h-screen flex flex-col items-center bg-gradient-to-br from-blue-50 to-indigo-100 dark:from-gray-900 dark:to-gray-800">
-        <div className="w-full">
-          <OfflineBanner isOnline={isOnline} isSyncing={isSyncing} pendingCount={pendingSyncCount} />
-        </div>
         <div className="flex-1 flex flex-col items-center justify-center px-6">
           <div className="text-6xl mb-4">🎉</div>
           <h2 className="text-3xl font-bold text-gray-900 dark:text-white mb-2 text-center">
@@ -1523,9 +1529,6 @@ function ReviewPageContent() {
 
   return (
     <div className="min-h-screen flex flex-col bg-gradient-to-br from-blue-50 to-indigo-100 dark:from-gray-900 dark:to-gray-800">
-      {/* Offline Banner */}
-      <OfflineBanner isOnline={isOnline} isSyncing={isSyncing} pendingCount={pendingSyncCount} />
-
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 safe-area-top">
         <div className="text-sm font-medium text-gray-700 dark:text-gray-300">
