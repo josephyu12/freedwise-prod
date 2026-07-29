@@ -14,7 +14,12 @@
 // it). On any failure we stop and leave that action — and everything after it —
 // queued for the next retry. Nothing is ever dropped.
 
-import { getPendingActions, removeAction, incrementActionAttempts } from './offlineStore'
+import {
+  getPendingActions,
+  removeAction,
+  incrementActionAttempts,
+  type OfflineAction,
+} from './offlineStore'
 import { createClient } from './supabase/client'
 import { isEffectivelyOffline } from '@/hooks/useManualOffline'
 import { callRedistribute } from './redistribute'
@@ -79,15 +84,27 @@ export interface ReplayResult {
   dropped: number // poison actions discarded this run (server kept rejecting them)
 }
 
-/** Count replayable actions still queued for the SIGNED-IN user (best-effort; 0 on error). */
-export async function countReplayable(): Promise<number> {
+/**
+ * The replayable actions still queued for the SIGNED-IN user, oldest first
+ * (best-effort; empty on error).
+ *
+ * Callers that only need the number want countReplayable. This variant exists
+ * for /review, which projects the queue over a server read it takes WITHOUT
+ * waiting for the drain — see lib/pendingOverlay.ts.
+ */
+export async function listReplayable(): Promise<OfflineAction[]> {
   try {
     const all = await getPendingActions()
     const userId = await currentUserIdLocal()
-    return all.filter((a) => REPLAYABLE.has(a.type) && ownedBy(a, userId)).length
+    return all.filter((a) => REPLAYABLE.has(a.type) && ownedBy(a, userId))
   } catch {
-    return 0
+    return []
   }
+}
+
+/** Count replayable actions still queued for the SIGNED-IN user (best-effort; 0 on error). */
+export async function countReplayable(): Promise<number> {
+  return (await listReplayable()).length
 }
 
 export interface DrainHooks {

@@ -28,7 +28,9 @@ import { getUserReviewSettings, getCycleForDate, cycleKeyForDate } from '@/lib/c
 import { updateHighlightStatsAfterRating } from '@/lib/highlightStats'
 import AutoArchiveToast from '@/components/AutoArchiveToast'
 import ActionToast, { useActionToast } from '@/components/ActionToast'
-import { countReplayable, drainOfflineQueue } from '@/lib/offlineReplay'
+import { listReplayable, drainOfflineQueue } from '@/lib/offlineReplay'
+import { applyPendingActions, applyPendingPins } from '@/lib/pendingOverlay'
+import type { OfflineAction } from '@/lib/offlineStore'
 import { fetchWithTimeout } from '@/lib/fetchWithTimeout'
 import {
   cacheReviewData,
@@ -81,6 +83,16 @@ function ReviewPageContent() {
   // drain fires would otherwise bounce us straight back into a second,
   // redundant load of data we're already fetching.
   const loadInFlightRef = useRef(false)
+  // Set when a load found queued offline writes. The drain is kicked off in
+  // that load's `finally`, i.e. once the review UI is actually on screen —
+  // loading first and syncing second, rather than the other way round.
+  const drainAfterLoadRef = useRef(false)
+  // A drain finished while a load was in flight, so its reload was deferred to
+  // that load's `finally` rather than dropped (see the sync-complete listener).
+  const pendingReloadRef = useRef(false)
+  // Latest loadHighlights, so the deferred reload above can call it without the
+  // callback having to depend on itself.
+  const loadHighlightsRef = useRef<() => void>(() => {})
   const highlightContentRef = useRef<HTMLDivElement | null>(null)
   const { toast, showToast } = useActionToast()
   const supabase = createClient()
@@ -197,6 +209,7 @@ function ReviewPageContent() {
 
   const loadHighlights = useCallback(async () => {
     loadInFlightRef.current = true
+    drainAfterLoadRef.current = false
     setLoading(true)
     setUsingCachedData(false)
 
@@ -232,18 +245,35 @@ function ReviewPageContent() {
     }
 
     try {
-      // Online, but there are still queued offline writes? Drain them BEFORE
-      // reading the server. Otherwise this fetch returns (and re-caches) server
-      // truth that predates those queued edits/ratings — clobbering the
-      // optimistic cache and surfacing as "my edit didn't sync / I see the
-      // original highlight without its review". Shares the global single-flight
-      // guard, so this just joins an in-flight drain if <OfflineSync> is already
-      // running one. Best-effort: on failure we fall through and read anyway.
+      // Online, but there are still queued offline writes? Snapshot them and
+      // project them onto whatever the server returns, instead of waiting for
+      // the drain to finish first.
+      //
+      // This used to `await drainOfflineQueue(...)` right here. That was correct
+      // — the fetch below otherwise returns (and re-caches) server truth that
+      // predates every queued edit, surfacing as "my edit didn't sync / I see
+      // the original highlight without its review" — but it meant reconnecting
+      // with a deep queue parked you on "Loading…" behind the sync banner until
+      // the last action landed. Worse, it joined a drain <OfflineSync> had
+      // already started on reconnect, so the wait was the FULL queue every time.
+      // That's most painful on "Review ahead", which you tap right after a long
+      // offline stretch.
+      //
+      // Reading first is only safe because of the overlay below: it re-applies
+      // the queue's intent in memory, so nothing looks rolled back and the cache
+      // is written from optimistic state, not from the stale read. The snapshot
+      // is taken BEFORE the fetch so it's a superset of what's still queued, and
+      // every projection is an idempotent "set to this value" — an action that
+      // drains mid-fetch applies to state it already produced. See
+      // lib/pendingOverlay.ts. The drain itself starts in the `finally` below,
+      // and `offline-sync-complete` reloads real server truth once it lands.
+      let pendingActions: OfflineAction[] = []
       try {
-        if ((await countReplayable()) > 0) await drainOfflineQueue(supabase)
+        pendingActions = await listReplayable()
       } catch (e) {
-        console.warn('Pre-read drain failed; reading server anyway:', e)
+        console.warn('Failed to snapshot the offline queue; reading server anyway:', e)
       }
+      drainAfterLoadRef.current = pendingActions.length > 0
 
       // getSession reads from local cookie — no network call needed
       const { data: { session } } = await supabase.auth.getSession()
@@ -278,7 +308,10 @@ function ReviewPageContent() {
       ])
 
       setCategories(catResult.data || [])
-      const pinIds = (pinResult.data || []).map((p: any) => p.highlight_id)
+      const pinIds = applyPendingPins(
+        (pinResult.data || []).map((p: any) => p.highlight_id),
+        pendingActions
+      )
       setPinnedHighlightIds(new Set(pinIds))
 
       // Paginate to avoid Supabase's 1000-row cap. Without this, a month with
@@ -342,7 +375,7 @@ function ReviewPageContent() {
         return
       }
 
-      const allRows: ReviewHighlight[] = hlData.map((sh: any) => ({
+      const serverRows: ReviewHighlight[] = hlData.map((sh: any) => ({
         id: sh.id,
         daily_summary_id: sh.daily_summaries?.id || '',
         highlight_id: sh.highlight_id,
@@ -355,6 +388,12 @@ function ReviewPageContent() {
             }
           : null,
       }))
+
+      // Queued-but-undrained writes replayed over the server rows (see the note
+      // at the top of this load). Applied before the today/catch-up/ahead split
+      // so a highlight rated offline doesn't come back as unrated catch-up work,
+      // and one archived offline doesn't re-enter the queue at all.
+      const allRows = applyPendingActions(serverRows, pendingActions, catResult.data || [])
 
       // Today's highlights: keep both rated + unrated, sort by text length
       const todayRows = allRows
@@ -469,8 +508,30 @@ function ReviewPageContent() {
     } finally {
       loadInFlightRef.current = false
       setLoading(false)
+      // Highlights are on screen — NOW start syncing. Fire-and-forget: it shares
+      // the global single-flight guard (so it just joins whatever <OfflineSync>
+      // is already running), the banner reports its progress, and the
+      // `offline-sync-complete` listener below reloads once it lands, replacing
+      // the overlay with real server truth. loadInFlightRef is already cleared
+      // above so that listener won't skip the reload as a duplicate.
+      if (drainAfterLoadRef.current) {
+        drainAfterLoadRef.current = false
+        drainOfflineQueue(supabase).catch((e) =>
+          console.warn('Background offline drain failed:', e)
+        )
+      } else if (pendingReloadRef.current) {
+        // A drain landed mid-load and deferred its reload to here. Only when we
+        // didn't just start one ourselves — that drain's own completion will
+        // fire the reload instead of us doing it twice.
+        pendingReloadRef.current = false
+        loadHighlightsRef.current()
+      }
     }
   }, [supabase, today, aheadMode])
+
+  useEffect(() => {
+    loadHighlightsRef.current = loadHighlights
+  }, [loadHighlights])
 
   useEffect(() => {
     loadHighlights()
@@ -1413,13 +1474,20 @@ function ReviewPageContent() {
   // a sync finishes and something was persisted, reload to show server truth.
   useEffect(() => {
     const onComplete = (e: Event) => {
-      // Already loading — that load drained the queue itself and will read
-      // server truth on its own; reloading now would just duplicate it.
-      if (loadInFlightRef.current) return
       const result = (e as CustomEvent).detail
       // Reload on a drop too: a discarded poison action's optimistic change must
       // be reverted to server truth.
-      if (result?.processed > 0 || result?.touchedHighlights || result?.dropped > 0) loadHighlights()
+      if (!(result?.processed > 0 || result?.touchedHighlights || result?.dropped > 0)) return
+      // Already loading — reloading now would race that load. Defer to its
+      // `finally` rather than skipping: a load no longer drains the queue
+      // itself, so the replay's server-side effects that the in-memory overlay
+      // can't model (an auto-archive triggered by a replayed rating, say) would
+      // otherwise stay off screen until the next visit.
+      if (loadInFlightRef.current) {
+        pendingReloadRef.current = true
+        return
+      }
+      loadHighlights()
     }
     window.addEventListener('offline-sync-complete', onComplete)
     return () => window.removeEventListener('offline-sync-complete', onComplete)
