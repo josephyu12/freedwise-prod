@@ -23,6 +23,8 @@ const offlineMocks = vi.hoisted(() => ({
     state.queue = state.queue.filter((a) => a.id !== id)
   }),
   incrementActionAttempts: vi.fn(async () => 1),
+  // <OfflineSync> keeps the queue's owner stamp primed through this.
+  rememberUserId: vi.fn(),
 }))
 
 vi.mock('@/lib/offlineStore', () => offlineMocks)

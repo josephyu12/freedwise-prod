@@ -5,6 +5,7 @@ import { createClient } from '@/lib/supabase/client'
 import { useOfflineStatus } from '@/hooks/useOfflineStatus'
 import { isEffectivelyOffline } from '@/hooks/useManualOffline'
 import { drainOfflineQueue } from '@/lib/offlineReplay'
+import { rememberUserId } from '@/lib/offlineStore'
 
 // A stalled drain (transient failure mid-queue) retries on this backoff. Without
 // it, a one-off hiccup while the heartbeat still reports "online" left queued
@@ -75,6 +76,27 @@ export default function OfflineSync() {
       runSync()
     }
   }, [isOnline, runSync])
+
+  // Keep the offline queue's owner stamp available synchronously. Queue writes
+  // must never call auth.getSession() themselves — offline that can block on a
+  // doomed token refresh for tens of seconds (see enqueueOfflineAction) — so
+  // this subscription is where the id comes from. onAuthStateChange fires
+  // INITIAL_SESSION immediately on subscribe, priming it on every page load
+  // without anything on the user's critical path waiting.
+  useEffect(() => {
+    const { data } = supabaseRef.current!.auth.onAuthStateChange((event, session) => {
+      if (event === 'SIGNED_OUT') {
+        rememberUserId(null)
+      } else if (session?.user?.id) {
+        rememberUserId(session.user.id)
+      }
+      // A null session that ISN'T a sign-out (e.g. a token refresh that failed
+      // because we're offline) leaves the remembered id alone — dropping it
+      // there would strip the owner stamp from exactly the offline writes that
+      // need it most.
+    })
+    return () => data.subscription.unsubscribe()
+  }, [])
 
   // Drain when something is freshly queued (e.g. a weak-signal write that failed
   // while still online).

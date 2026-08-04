@@ -22,6 +22,8 @@ const offlineMocks = vi.hoisted(() => ({
     state.queue = state.queue.filter((a) => a.id !== id)
   }),
   incrementActionAttempts: vi.fn(async () => 1),
+  // <OfflineSync> keeps the queue's owner stamp primed through this.
+  rememberUserId: vi.fn(),
 }))
 
 vi.mock('@/lib/offlineStore', () => offlineMocks)
@@ -47,7 +49,12 @@ function LateMountingBanner() {
 
 const makeSupabase = () =>
   ({
-    auth: { getUser: vi.fn(async () => ({ data: { user: { id: 'u1' } } })) },
+    auth: {
+      getUser: vi.fn(async () => ({ data: { user: { id: 'u1' } } })),
+      // <OfflineSync> subscribes here to keep the offline queue's owner stamp
+      // primed without any auth call on the rating path.
+      onAuthStateChange: vi.fn(() => ({ data: { subscription: { unsubscribe: vi.fn() } } })),
+    },
     from: vi.fn(() => ({})),
   }) as any
 

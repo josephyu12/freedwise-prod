@@ -37,6 +37,8 @@ const offlineMocks = vi.hoisted(() => ({
     state.queue = state.queue.filter((a) => a.id !== id)
   }),
   enqueueOfflineAction: vi.fn(async () => 0),
+  // <OfflineSync> keeps the queue's owner stamp primed through this.
+  rememberUserId: vi.fn(),
 }))
 
 vi.mock('@/hooks/useOfflineStatus', () => ({
@@ -50,6 +52,9 @@ vi.mock('@/lib/removeFromFutureMonths', () => ({ removeFromFutureMonths: vi.fn(a
 const supabaseSingleton = {
   auth: {
     getUser: vi.fn(() => Promise.resolve({ data: { user: { id: 'u1' } } })),
+    // <OfflineSync> subscribes here to keep the offline queue's owner stamp
+    // primed without any auth call on the rating path.
+    onAuthStateChange: vi.fn(() => ({ data: { subscription: { unsubscribe: vi.fn() } } })),
   },
   // Serve the replay's review-settings read (no row -> monthly defaults); a
   // missing implementation reads as a failed settings fetch, which now stalls

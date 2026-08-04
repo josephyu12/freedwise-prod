@@ -58,8 +58,14 @@ export interface OfflineAction {
 
 // ─── DB Helpers ─────────────────────────────────────────────
 
+// One connection per page load instead of one per operation. Every rating
+// touches the DB 2-3 times (cache read, cache write, queue add); reopening the
+// database each time added avoidable latency to a path the user is waiting on.
+let dbPromise: Promise<IDBDatabase> | null = null
+
 function openDB(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
+  if (dbPromise) return dbPromise
+  dbPromise = new Promise<IDBDatabase>((resolve, reject) => {
     const request = indexedDB.open(DB_NAME, DB_VERSION)
 
     request.onupgradeneeded = () => {
@@ -72,9 +78,28 @@ function openDB(): Promise<IDBDatabase> {
       }
     }
 
-    request.onsuccess = () => resolve(request.result)
-    request.onerror = () => reject(request.error)
+    request.onsuccess = () => {
+      const db = request.result
+      // A closed/versionchanged connection can't serve transactions; drop the
+      // memo so the next call opens a fresh one.
+      db.onclose = () => {
+        dbPromise = null
+      }
+      db.onversionchange = () => {
+        dbPromise = null
+        db.close()
+      }
+      resolve(db)
+    }
+    request.onerror = () => {
+      dbPromise = null
+      reject(request.error)
+    }
+  }).catch((err) => {
+    dbPromise = null
+    throw err
   })
+  return dbPromise
 }
 
 function idbGet<T>(storeName: string, key: string): Promise<T | undefined> {
@@ -177,6 +202,74 @@ export async function getCachedReviewData(): Promise<CachedReviewData | undefine
   return idbGet<CachedReviewData>(CACHE_STORE, 'review')
 }
 
+// ─── Owner Stamp ────────────────────────────────────────────
+//
+// The signed-in user's id, kept where a queue write can read it with zero
+// awaits. Primed by <OfflineSync>'s onAuthStateChange listener on every page
+// load (and refreshed on every auth event), mirrored to localStorage so it
+// survives the full-page navigations between /review and /daily.
+
+const USER_ID_KEY = 'freedwise:offline-owner-id'
+let rememberedUserId: string | null = null
+
+/** Record (or clear, with null) the signed-in user for offline-queue stamping. */
+export function rememberUserId(userId: string | null): void {
+  rememberedUserId = userId
+  if (typeof window === 'undefined') return
+  try {
+    if (userId) window.localStorage.setItem(USER_ID_KEY, userId)
+    else window.localStorage.removeItem(USER_ID_KEY)
+  } catch {
+    // Private mode / quota — the in-memory copy still covers this page load.
+  }
+}
+
+/** The remembered owner id, synchronously. Undefined if nothing primed it. */
+function readRememberedUserId(): string | undefined {
+  if (rememberedUserId) return rememberedUserId
+  if (typeof window === 'undefined') return undefined
+  try {
+    const stored = window.localStorage.getItem(USER_ID_KEY)
+    if (stored) {
+      rememberedUserId = stored
+      return stored
+    }
+  } catch {
+    /* unreadable storage — fall through to unstamped */
+  }
+  return undefined
+}
+
+/** Resolve the owner off the critical path and stamp an already-queued action. */
+async function stampOwnerInBackground(id: number): Promise<void> {
+  try {
+    const { data } = await createClient().auth.getSession()
+    const userId = data?.session?.user?.id
+    if (!userId) return
+    rememberUserId(userId)
+    const db = await openDB()
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(QUEUE_STORE, 'readwrite')
+      const store = tx.objectStore(QUEUE_STORE)
+      const getReq = store.get(id)
+      getReq.onsuccess = () => {
+        const action = getReq.result as OfflineAction | undefined
+        // Already replayed and removed, or stamped by someone else — nothing to do.
+        if (!action || action.userId) {
+          resolve()
+          return
+        }
+        const putReq = store.put({ ...action, userId })
+        putReq.onsuccess = () => resolve()
+        putReq.onerror = () => reject(putReq.error)
+      }
+      getReq.onerror = () => reject(getReq.error)
+    })
+  } catch {
+    // Best effort: an unstamped action still replays as the current user's.
+  }
+}
+
 // ─── Offline Queue ──────────────────────────────────────────
 //
 // NOTE: this queue is NOT durable indefinitely. iOS Safari evicts IndexedDB
@@ -186,18 +279,24 @@ export async function getCachedReviewData(): Promise<CachedReviewData | undefine
 
 /** Add an action to the offline queue */
 export async function enqueueOfflineAction(action: Omit<OfflineAction, 'id' | 'createdAt'>): Promise<number> {
-  // Stamp the owner from the LOCAL session (no network — works offline) so
-  // replay can refuse to run this under a different account.
-  let userId = action.userId
-  if (!userId) {
-    try {
-      const { data } = await createClient().auth.getSession()
-      userId = data?.session?.user?.id ?? undefined
-    } catch {
-      // Unknown owner — replay treats an unstamped action as the current user's.
-    }
-  }
+  // Stamp the owner so replay can refuse to run this under a different account.
+  //
+  // This deliberately does NOT call auth.getSession(). Despite the name, that is
+  // not a local read: when the access token is at/near expiry it triggers a
+  // token refresh, and auth-js retries that request with exponential backoff for
+  // up to a full AUTO_REFRESH_TICK (~30s) while holding the auth lock. Offline,
+  // the refresh can never succeed, so every enqueue behind it stalled for the
+  // whole backoff — which is what made the rating buttons hang for tens of
+  // seconds on the first tap after going offline. rememberUserId() (called from
+  // <OfflineSync>'s auth listener) keeps the id available synchronously instead.
+  const userId = action.userId ?? readRememberedUserId()
   const id = await idbAdd(QUEUE_STORE, { ...action, ...(userId ? { userId } : {}), createdAt: Date.now() })
+  // No id on record yet (nothing has primed it this page load and localStorage
+  // is unavailable). Resolve it in the BACKGROUND and stamp the row after the
+  // fact, so the owner guarantee is preserved without the caller ever waiting.
+  // Until it lands the action is unstamped, which replay treats as the current
+  // user's — the same as a legacy action.
+  if (!userId) void stampOwnerInBackground(id)
   // Poke the global <OfflineSync> drainer so a write that failed on a weak
   // signal (queued while still "online") gets retried promptly, instead of
   // waiting for the next offline→online transition.
@@ -264,5 +363,6 @@ export async function hasPendingActions(): Promise<boolean> {
  * queue discards them as "done").
  */
 export async function clearAllOfflineData(): Promise<void> {
+  rememberUserId(null)
   await Promise.all([idbClearStore(CACHE_STORE), idbClearStore(QUEUE_STORE)])
 }
