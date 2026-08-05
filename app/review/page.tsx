@@ -37,6 +37,7 @@ import {
 import { applyPendingActions, applyPendingPins } from '@/lib/pendingOverlay'
 import type { OfflineAction } from '@/lib/offlineStore'
 import { fetchWithTimeout } from '@/lib/fetchWithTimeout'
+import { withDeadline } from '@/lib/withDeadline'
 import {
   cacheReviewData,
   getCachedReviewData,
@@ -684,16 +685,22 @@ function ReviewPageContent() {
       // supabase-js RESOLVES with { error } instead of rejecting (even on a dead
       // network), so both results must be checked or a failed write silently
       // reports success and the catch below never runs.
-      const [rateRes, ledgerRes] = await Promise.all([
-        (supabase.from('daily_summary_highlights') as any)
-          .update({ rating })
-          .eq('id', target.id),
-        (supabase.from('highlight_months_reviewed') as any)
-          .upsert(
-            { highlight_id: target.highlight_id, month_year: monthYear },
-            { onConflict: 'highlight_id,month_year' }
-          ),
-      ])
+      // Deadline-bounded: with an expired token on a dead network the token
+      // refresh alone holds this for ~30s (see lib/withDeadline.ts); past the
+      // deadline we throw into the offline-queue fallback below instead.
+      const [rateRes, ledgerRes] = await withDeadline(
+        Promise.all([
+          (supabase.from('daily_summary_highlights') as any)
+            .update({ rating })
+            .eq('id', target.id),
+          (supabase.from('highlight_months_reviewed') as any)
+            .upsert(
+              { highlight_id: target.highlight_id, month_year: monthYear },
+              { onConflict: 'highlight_id,month_year' }
+            ),
+        ]),
+        'rate-review write'
+      )
       if (rateRes.error) throw rateRes.error
       if (ledgerRes.error) throw ledgerRes.error
 
@@ -816,16 +823,22 @@ function ReviewPageContent() {
       // supabase-js RESOLVES with { error } instead of rejecting (even on a dead
       // network), so both results must be checked — an unchecked failure would
       // silently report success and skip the offline-queue fallback below.
-      const [rateRes, ledgerRes] = await Promise.all([
-        (supabase.from('daily_summary_highlights') as any)
-          .update({ rating })
-          .eq('id', current.id),
-        (supabase.from('highlight_months_reviewed') as any)
-          .upsert(
-            { highlight_id: current.highlight_id, month_year: monthYear },
-            { onConflict: 'highlight_id,month_year' }
-          ),
-      ])
+      // Deadline-bounded: with an expired token on a dead network the token
+      // refresh alone holds this for ~30s (see lib/withDeadline.ts); past the
+      // deadline we throw into the offline-queue fallback below instead.
+      const [rateRes, ledgerRes] = await withDeadline(
+        Promise.all([
+          (supabase.from('daily_summary_highlights') as any)
+            .update({ rating })
+            .eq('id', current.id),
+          (supabase.from('highlight_months_reviewed') as any)
+            .upsert(
+              { highlight_id: current.highlight_id, month_year: monthYear },
+              { onConflict: 'highlight_id,month_year' }
+            ),
+        ]),
+        'rate-review write'
+      )
       if (rateRes.error) throw rateRes.error
       if (ledgerRes.error) throw ledgerRes.error
 

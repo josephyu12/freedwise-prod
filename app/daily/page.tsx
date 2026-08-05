@@ -33,6 +33,7 @@ import {
 import { applyPendingActions, applyPendingPins } from '@/lib/pendingOverlay'
 import type { OfflineAction } from '@/lib/offlineStore'
 import { fetchWithTimeout } from '@/lib/fetchWithTimeout'
+import { withDeadline } from '@/lib/withDeadline'
 import {
   cacheDailyData,
   getCachedDailyData,
@@ -973,11 +974,17 @@ export default function DailyPage() {
     }
 
     try {
-      // Update the rating in daily_summary_highlights
-      const { error: updateError } = await (supabase
-        .from('daily_summary_highlights') as any)
-        .update({ rating })
-        .eq('id', summaryHighlightId)
+      // Update the rating in daily_summary_highlights.
+      // Deadline-bounded: with an expired token on a dead network the token
+      // refresh alone holds this for ~30s (see lib/withDeadline.ts); past the
+      // deadline we throw into the offline-queue fallback below instead.
+      const { error: updateError } = await withDeadline<any>(
+        (supabase
+          .from('daily_summary_highlights') as any)
+          .update({ rating })
+          .eq('id', summaryHighlightId),
+        'rate-daily write'
+      )
 
       if (updateError) throw updateError
 
@@ -989,19 +996,25 @@ export default function DailyPage() {
         // Checked: supabase-js resolves with { error } instead of rejecting, so an
         // unchecked failure here would silently skip the ledger row (undercounted
         // "reviewed this cycle", redistribute double-placing the highlight).
-        const { error: reviewedError } = await (supabase
-          .from('highlight_months_reviewed') as any)
-          .upsert(
-            { highlight_id: highlightId, month_year: monthYear },
-            { onConflict: 'highlight_id,month_year' }
-          )
+        const { error: reviewedError } = await withDeadline<any>(
+          (supabase
+            .from('highlight_months_reviewed') as any)
+            .upsert(
+              { highlight_id: highlightId, month_year: monthYear },
+              { onConflict: 'highlight_id,month_year' }
+            ),
+          'rate-daily ledger write'
+        )
         if (reviewedError) throw reviewedError
       } else if (rating === null && summary?.date) {
         // Clearing a rating must also drop the cycle's "reviewed" checkmark (unless
         // another rated day for this highlight remains in the cycle). Otherwise the
         // ledger row lingers with no rating behind it — a phantom that makes
         // redistribute treat the day as empty and skews reviewed-count stats.
-        const { data: { user: authUser } } = await supabase.auth.getUser()
+        const { data: { user: authUser } } = await withDeadline(
+          supabase.auth.getUser(),
+          'rate-daily clear getUser'
+        )
         if (authUser) {
           await removeReviewedOnClear(supabase, {
             userId: authUser.id,
