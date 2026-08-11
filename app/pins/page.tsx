@@ -7,6 +7,7 @@ import { Pin, PinOff } from 'lucide-react'
 import PinDialog from '@/components/PinDialog'
 import { renderHighlightHtml } from '@/lib/renderHighlightHtml'
 import ActionToast, { useActionToast } from '@/components/ActionToast'
+import { getUserReviewSettings, getCycleForDate } from '@/lib/cycle'
 
 interface PinnedHighlight {
   id: string
@@ -26,6 +27,7 @@ export default function PinsPage() {
   const [pinnedHighlightIds, setPinnedHighlightIds] = useState<Set<string>>(new Set())
   const [pinDialogOpen, setPinDialogOpen] = useState(false)
   const [pendingPinHighlightId, setPendingPinHighlightId] = useState<string | null>(null)
+  const [assignedDates, setAssignedDates] = useState<Map<string, string>>(new Map())
   const { toast, showToast } = useActionToast()
   const supabase = createClient()
 
@@ -59,6 +61,38 @@ export default function PinsPage() {
       const pinned = (data || []) as PinnedHighlight[]
       setPinnedHighlights(pinned)
       setPinnedHighlightIds(new Set(pinned.map((p) => p.highlight_id)))
+
+      // Fetch assigned review dates for the current cycle
+      try {
+        const now = new Date()
+        const todayIso = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
+        let freq = 1
+        try {
+          ;({ freq } = await getUserReviewSettings(supabase, user.id))
+        } catch { /* default to monthly */ }
+        const cycle = getCycleForDate(todayIso, freq)
+
+        const highlightIds = pinned.map((p) => p.highlight_id).filter(Boolean)
+        if (highlightIds.length > 0) {
+          const { data: summaries } = await (supabase
+            .from('daily_summaries') as any)
+            .select('date, daily_summary_highlights(highlight_id)')
+            .eq('user_id', user.id)
+            .gte('date', cycle.startDate)
+            .lte('date', cycle.endDate)
+          const dateMap = new Map<string, string>()
+          for (const ds of (summaries || []) as Array<{ date: string; daily_summary_highlights: Array<{ highlight_id: string }> }>) {
+            for (const dsh of ds.daily_summary_highlights || []) {
+              if (highlightIds.includes(dsh.highlight_id)) {
+                dateMap.set(dsh.highlight_id, ds.date)
+              }
+            }
+          }
+          setAssignedDates(dateMap)
+        }
+      } catch (e) {
+        // Non-critical: "Review on" tags just won't appear
+      }
     } catch (error) {
       console.error('Error loading pinned highlights:', error)
     } finally {
@@ -234,6 +268,15 @@ export default function PinsPage() {
                           }}
                         />
                         <div className="flex items-center gap-4 text-xs text-gray-500 dark:text-gray-400">
+                          {assignedDates.has(highlight.id) && (
+                            <span className="text-gray-500 dark:text-gray-400">
+                              Review on {(() => {
+                                const raw = assignedDates.get(highlight.id)!
+                                const [, m, d] = String(raw).split('T')[0].split('-').map(Number)
+                                return `${m}/${d}`
+                              })()}
+                            </span>
+                          )}
                           <span>
                             Pinned {new Date(pin.pinned_at).toLocaleDateString('en-US', {
                               month: 'short',

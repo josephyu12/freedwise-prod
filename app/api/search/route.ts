@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { getUserReviewSettings, getCycleForDate } from '@/lib/cycle'
 
 const EMBEDDING_DIM = 384
 
@@ -40,22 +41,18 @@ function normalizeMonthsReviewed(h: any): any[] {
   return Array.from(map.values()).sort((a, b) => a.month_year.localeCompare(b.month_year))
 }
 
-// Enrich highlight with current month's assigned_date (for "Review on" tags). Uses server's now so it updates when month rolls over.
-function enrichWithAssignedDate(h: any): any {
-  const now = new Date()
-  const year = now.getFullYear()
-  const month = now.getMonth() + 1
-  const currentMonthStart = `${year}-${String(month).padStart(2, '0')}-01`
-  const currentMonthEnd = `${year}-${String(month).padStart(2, '0')}-${String(new Date(year, month, 0).getDate()).padStart(2, '0')}`
+// Enrich highlight with the current cycle's assigned_date (for "Review on" tags).
+// Cycle-aware: uses the user's frequency to determine the review window.
+function enrichWithAssignedDate(h: any, cycleStart: string, cycleEnd: string): any {
   let assigned_date: string | null = null
   if (h.daily_assignments && Array.isArray(h.daily_assignments) && h.daily_assignments.length > 0) {
-    const currentMonthAssignment = h.daily_assignments.find((da: any) => {
+    const cycleAssignment = h.daily_assignments.find((da: any) => {
       const d = da.daily_summary?.date
       if (!d) return false
-      return d >= currentMonthStart && d <= currentMonthEnd
+      return d >= cycleStart && d <= cycleEnd
     })
-    if (currentMonthAssignment?.daily_summary?.date) {
-      assigned_date = currentMonthAssignment.daily_summary.date
+    if (cycleAssignment?.daily_summary?.date) {
+      assigned_date = cycleAssignment.daily_summary.date
     }
   }
   const months_reviewed = normalizeMonthsReviewed(h)
@@ -86,15 +83,15 @@ const detailSelect = `
   ${monthsReviewedSelect}
 `
 
-function processHighlight(h: any): any {
+function processHighlight(h: any, cycleStart: string, cycleEnd: string): any {
   return enrichWithAssignedDate({
     ...h,
     categories: h.highlight_categories?.map((hc: any) => hc.category) || [],
     linked_highlights: h.highlight_links_from || [],
-  })
+  }, cycleStart, cycleEnd)
 }
 
-async function keywordSearch(supabase: any, userId: string, query: string) {
+async function keywordSearch(supabase: any, userId: string, query: string, cycleStart: string, cycleEnd: string) {
   // Full-text search via ILIKE pattern matching.
   //
   // The term is double-quoted inside the .or() expression (with \ and "
@@ -112,7 +109,7 @@ async function keywordSearch(supabase: any, userId: string, query: string) {
     .limit(50)
 
   if (error) throw error
-  return (highlights || []).map(processHighlight)
+  return (highlights || []).map((h: any) => processHighlight(h, cycleStart, cycleEnd))
 }
 
 export async function POST(request: NextRequest) {
@@ -137,8 +134,19 @@ export async function POST(request: NextRequest) {
 
     const searchType = type || 'fulltext'
 
+    // Resolve the user's review cycle so "Review on" dates match the highlights page.
+    const now = new Date()
+    const todayIso = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
+    let freq = 1
+    try {
+      ;({ freq } = await getUserReviewSettings(supabase, user.id))
+    } catch (e) {
+      // Degrade to monthly window rather than failing the search.
+    }
+    const cycle = getCycleForDate(todayIso, freq)
+
     if (searchType !== 'semantic') {
-      const results = await keywordSearch(supabase, user.id, query)
+      const results = await keywordSearch(supabase, user.id, query, cycle.startDate, cycle.endDate)
       return NextResponse.json({ results })
     }
 
@@ -153,7 +161,7 @@ export async function POST(request: NextRequest) {
     if (!validEmbedding) {
       // Model unavailable in the client (offline, download failed) —
       // degrade to keyword search instead of erroring.
-      const results = await keywordSearch(supabase, user.id, query)
+      const results = await keywordSearch(supabase, user.id, query, cycle.startDate, cycle.endDate)
       return NextResponse.json({ results, fallback: 'keyword' })
     }
 
@@ -181,7 +189,7 @@ export async function POST(request: NextRequest) {
     const byId = new Map((details || []).map((h: any) => [h.id, h]))
     const ordered = ranked
       .filter((m) => byId.has(m.id))
-      .map((m) => processHighlight({ ...(byId.get(m.id) as any), similarity: m.similarity }))
+      .map((m) => processHighlight({ ...(byId.get(m.id) as any), similarity: m.similarity }, cycle.startDate, cycle.endDate))
 
     return NextResponse.json({ results: ordered })
   } catch (error: any) {
