@@ -1,16 +1,24 @@
 // Text-only, read-only highlight list for the weakest connections.
 //
-// The absolute-minimum view: a server component that pulls the highlights and
-// drops their plain text straight into the initial HTML. No rating, no offline
-// sync, no date labels, no client JS at all — nothing to download or hydrate.
-// The text is visible the instant the tiny page lands, so it loads even on the
-// slowest signal. For the full read-and-rate experience, use /review.
+// Near-minimum view: a server component pulls the highlights and drops their
+// plain text straight into the initial HTML — visible the instant the page
+// lands, even on the slowest signal.
+//
+// A small client island (LiteStaleFilter) runs on hydration to cross-reference
+// IndexedDB (the review-page cache + offline action queue) and hide highlights
+// the user has already rated or archived since the HTML was last fetched. This
+// patches stale service-worker cache entries without adding rating UI or
+// data-fetching logic. If JS fails to load, the full server-rendered list is
+// still visible (graceful degradation).
+//
+// For the full read-and-rate experience, use /review.
 
 import Link from 'next/link'
 import { cookies, headers } from 'next/headers'
 import { format } from 'date-fns'
 import { createClient } from '@/lib/supabase/server'
 import { getUserReviewSettings, getCycleForDate } from '@/lib/cycle'
+import LiteStaleFilter from '@/components/LiteStaleFilter'
 
 // "Today" in the user's local timezone, not the server's UTC. This is a server
 // component, so a bare `new Date()` would resolve in Vercel's UTC and roll the
@@ -89,21 +97,23 @@ export default async function ReviewLitePage({
   const cycle = getCycleForDate(today, freq)
   const firstOfCycle = cycle.startDate
 
-  // Text field only — the minimum payload. Unrated rows only (`rating IS NULL`)
-  // so the list doesn't re-surface highlights you've already rated; it's a plain
-  // column filter on this table, so it returns fewer rows, not more. Paginate to
+  // Include row `id` and `highlight_id` alongside the text so the client-side
+  // stale-cache filter (LiteStaleFilter) can cross-reference rated/removed
+  // highlights from IndexedDB. Unrated rows only (`rating IS NULL`) on the
+  // server side; the client component further hides any that were rated since
+  // the HTML was cached (offline serving via the service worker). Paginate to
   // stay under Supabase's 1000-row cap.
   //
   // Catch-up (default): the 1st through today.
   // Ahead: tomorrow through the end of the month (strictly after today).
   const PAGE = 1000
-  let texts: string[] = []
+  let items: Array<{ id: string; highlightId: string; text: string }> = []
   let from = 0
   try {
     while (true) {
       let query = supabase
         .from('daily_summary_highlights')
-        .select('daily_summaries!inner(date), highlight:highlights!inner(text, archived)')
+        .select('id, highlight_id, daily_summaries!inner(date), highlight:highlights!inner(text, archived)')
         .eq('daily_summaries.user_id', user.id)
         .eq('highlight.archived', false)
         .is('rating', null)
@@ -115,17 +125,25 @@ export default async function ReviewLitePage({
       const { data, error } = await query
       if (error) throw error
       const list = data || []
-      texts = texts.concat(list.map((sh: any) => sh.highlight?.text || '').filter(Boolean))
+      items = items.concat(
+        list
+          .filter((sh: any) => sh.highlight?.text)
+          .map((sh: any) => ({
+            id: sh.id,
+            highlightId: sh.highlight_id,
+            text: sh.highlight.text,
+          }))
+      )
       if (list.length < PAGE) break
       from += PAGE
     }
   } catch {
-    texts = []
+    items = []
   }
 
   // Empty state — render a real (tiny) page instead of a blank list, so a slow
   // connection landing here when there's nothing to show isn't a white screen.
-  if (texts.length === 0) {
+  if (items.length === 0) {
     return (
       <main className="max-w-2xl mx-auto px-4 py-10 text-center">
         {aheadMode ? (
@@ -156,29 +174,7 @@ export default async function ReviewLitePage({
 
   return (
     <main className="max-w-2xl mx-auto px-4 py-6">
-      {aheadMode && (
-        <p className="mb-3 text-sm text-gray-500 dark:text-gray-400">Coming up this cycle</p>
-      )}
-      <ul className="divide-y divide-gray-200 dark:divide-gray-700">
-        {texts.map((text, i) => (
-          <li
-            key={i}
-            className="py-2 whitespace-pre-wrap text-base text-gray-900 dark:text-gray-100"
-          >
-            {text}
-          </li>
-        ))}
-      </ul>
-      {!aheadMode && (
-        <div className="mt-6 text-center">
-          <Link
-            href="/review/lite?ahead=1"
-            className="text-sm text-blue-600 dark:text-blue-400 underline"
-          >
-            Review ahead →
-          </Link>
-        </div>
-      )}
+      <LiteStaleFilter items={items} aheadMode={aheadMode} />
     </main>
   )
 }
