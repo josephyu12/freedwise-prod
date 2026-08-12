@@ -202,6 +202,31 @@ export async function getCachedReviewData(): Promise<CachedReviewData | undefine
   return idbGet<CachedReviewData>(CACHE_STORE, 'review')
 }
 
+// ─── Ahead Pre-load Cache ───────────────────────────────────
+//
+// Pre-loaded review-ahead data, written in the background while the user is
+// still on the normal /review page. Stored under a separate key so the normal
+// review cache isn't bloated or overwritten. Read when opening ?ahead=1 while
+// offline to provide a seamless transition.
+
+export interface CachedReviewAheadData {
+  key: 'review-ahead'
+  highlights: any[] // ReviewHighlight[] — full [today + catchUp + ahead] array
+  categories: any[]
+  pinnedHighlightIds: string[]
+  cachedAt: number
+}
+
+/** Cache pre-loaded review-ahead data (background pre-fetch). */
+export async function cacheReviewAheadData(data: Omit<CachedReviewAheadData, 'key'>): Promise<void> {
+  await idbPut(CACHE_STORE, { key: 'review-ahead', ...data })
+}
+
+/** Get pre-loaded review-ahead data (written by the background pre-fetcher). */
+export async function getCachedReviewAheadData(): Promise<CachedReviewAheadData | undefined> {
+  return idbGet<CachedReviewAheadData>(CACHE_STORE, 'review-ahead')
+}
+
 // ─── Owner Stamp ────────────────────────────────────────────
 //
 // The signed-in user's id, kept where a queue write can read it with zero

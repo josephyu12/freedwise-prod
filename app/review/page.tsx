@@ -25,6 +25,7 @@ import {
   storeAheadOrder,
 } from '@/lib/aheadOrder'
 import { getUserReviewSettings, getCycleForDate, cycleKeyForDate } from '@/lib/cycle'
+import type { Cycle } from '@/lib/cycle'
 import { updateHighlightStatsAfterRating } from '@/lib/highlightStats'
 import AutoArchiveToast from '@/components/AutoArchiveToast'
 import ActionToast, { useActionToast } from '@/components/ActionToast'
@@ -41,8 +42,10 @@ import { withDeadline } from '@/lib/withDeadline'
 import {
   cacheReviewData,
   getCachedReviewData,
+  getCachedReviewAheadData,
   enqueueOfflineAction,
 } from '@/lib/offlineStore'
+import { preloadAheadHighlights } from '@/lib/preloadAhead'
 
 interface ReviewHighlight {
   id: string
@@ -99,6 +102,15 @@ function ReviewPageContent() {
   // Latest loadHighlights, so the deferred reload above can call it without the
   // callback having to depend on itself.
   const loadHighlightsRef = useRef<() => void>(() => {})
+  // Context stashed by the try block for the `finally` block's background ahead
+  // pre-load. Null when in ahead mode or when the online load didn't succeed.
+  const preloadCtxRef = useRef<{
+    userId: string
+    cycle: Cycle
+    allRows: ReviewHighlight[]
+    categories: { id: string; name: string }[]
+    pinnedIds: string[]
+  } | null>(null)
   const highlightContentRef = useRef<HTMLDivElement | null>(null)
   const { toast, showToast } = useActionToast()
   const supabase = createClient()
@@ -232,7 +244,13 @@ function ReviewPageContent() {
     // offline preserves them either way.
     if (isEffectivelyOffline()) {
       try {
-        const cached = await getCachedReviewData()
+        // In ahead mode, prefer the pre-loaded ahead cache (populated in the
+        // background during the last online normal-mode load) so the user gets
+        // the full ahead queue. Falls back to the normal cache if no pre-load
+        // ran (e.g. first visit, or ahead was never pre-fetched).
+        const cached = aheadMode
+          ? (await getCachedReviewAheadData()) ?? (await getCachedReviewData())
+          : await getCachedReviewData()
         if (cached) {
           setHighlights(cached.highlights)
           setCategories(cached.categories || [])
@@ -501,6 +519,12 @@ function ReviewPageContent() {
         console.warn('Failed to cache review data:', e)
       }
 
+      // Stash context for the background ahead pre-load kicked off in `finally`.
+      // These locals are scoped to the try block and not accessible there.
+      preloadCtxRef.current = !aheadMode
+        ? { userId: user.id, cycle, allRows, categories: catResult.data || [], pinnedIds: pinIds }
+        : null
+
       // Start at the first unrated highlight
       const firstUnrated = processed.findIndex((h) => h.rating === null)
       setCurrentIndex(firstUnrated >= 0 ? firstUnrated : 0)
@@ -543,6 +567,22 @@ function ReviewPageContent() {
         // fire the reload instead of us doing it twice.
         pendingReloadRef.current = false
         loadHighlightsRef.current()
+      }
+      // Background pre-load of ahead highlights so switching to ?ahead=1 while
+      // offline is seamless. Only in normal mode (no point pre-loading what we
+      // already have) and only when online (the fetch would fail offline).
+      const ctx = preloadCtxRef.current
+      if (ctx && !isEffectivelyOffline()) {
+        preloadCtxRef.current = null
+        void preloadAheadHighlights({
+          supabase,
+          userId: ctx.userId,
+          cycle: ctx.cycle,
+          today,
+          allRows: ctx.allRows,
+          categories: ctx.categories,
+          pinnedIds: ctx.pinnedIds,
+        })
       }
     }
   }, [supabase, today, aheadMode])
