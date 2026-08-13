@@ -48,7 +48,9 @@ function makeSupabase() {
       return chain(result)
     },
     eq: () => chain(result),
+    or: () => chain(result),
     not: () => chain(result),
+    maybeSingle: () => Promise.resolve(result),
     single: () => Promise.resolve(result),
     then: (resolve: any) => resolve(result),
   })

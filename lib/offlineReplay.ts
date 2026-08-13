@@ -27,6 +27,7 @@ import { removeFromFutureMonths } from './removeFromFutureMonths'
 import { getUserFrequency, cycleKeyForDate } from './cycle'
 import { updateHighlightStatsAfterRating } from './highlightStats'
 import { removeReviewedOnClear } from './reviewedLedger'
+import { applySummaryHighlightRating } from './applyRating'
 import { recordDiscardedChange, describeDiscardedAction } from './discardedChanges'
 import { reportError } from './reportError'
 import { fetchWithTimeout } from './fetchWithTimeout'
@@ -338,6 +339,17 @@ export async function replayPendingActions(
   // text into this account. They resume when their owner signs back in.
   const actions = all.filter((a) => REPLAYABLE.has(a.type) && ownedBy(a, userId))
 
+  // Same-device last write wins (rate then change/clear before sync): only the
+  // last queued rating per summary row is written. Earlier ones are dropped
+  // without a write. Cross-device conflicts still use the earlier tap — see
+  // applySummaryHighlightRating.
+  const lastRatingActionId = new Map<string, number>()
+  for (const a of actions) {
+    if ((a.type === 'rate-review' || a.type === 'rate-daily') && a.params?.summaryHighlightId && a.id != null) {
+      lastRatingActionId.set(a.params.summaryHighlightId, a.id)
+    }
+  }
+
   let processed = 0
   let dropped = 0
   let touchedHighlights = false
@@ -359,6 +371,18 @@ export async function replayPendingActions(
       break
     }
     try {
+      if (
+        (action.type === 'rate-review' || action.type === 'rate-daily') &&
+        action.params?.summaryHighlightId &&
+        lastRatingActionId.get(action.params.summaryHighlightId) !== action.id
+      ) {
+        // A later rating of this same row is still queued — skip the write so
+        // this device's last tap is what we send, then drop this action.
+        await removeAction(action.id!)
+        processed++
+        onProgress?.(actions.length - processed - dropped)
+        continue
+      }
       const touched = await replayOne(supabase, action, userId, freq)
       if (touched) touchedHighlights = true
       await removeAction(action.id!)
@@ -426,19 +450,25 @@ async function replayOne(supabase: any, action: any, userId: string, freq: numbe
       const ledgerDate = summaryDate || actionToday
       const monthYear = cycleKeyForDate(ledgerDate, freq)
 
-      const { error: rateError } = await supabase
-        .from('daily_summary_highlights')
-        .update({ rating })
-        .eq('id', summaryHighlightId)
-      if (rateError) throw rateError
+      await applySummaryHighlightRating(supabase, {
+        summaryHighlightId,
+        rating,
+        ratedAt: action.params.ratedAt ?? action.createdAt,
+      })
 
-      const { error: reviewedError } = await supabase
-        .from('highlight_months_reviewed')
-        .upsert(
-          { highlight_id: highlightId, month_year: monthYear },
-          { onConflict: 'highlight_id,month_year' }
-        )
-      if (reviewedError) throw reviewedError
+      // Ledger + stats still run when we lost the conflict: the earlier tap
+      // already rated this appearance, so the cycle is reviewed and averages
+      // should match whatever is stored. A clear that lost must NOT drop the
+      // winner's ledger row.
+      if (rating !== null) {
+        const { error: reviewedError } = await supabase
+          .from('highlight_months_reviewed')
+          .upsert(
+            { highlight_id: highlightId, month_year: monthYear },
+            { onConflict: 'highlight_id,month_year' }
+          )
+        if (reviewedError) throw reviewedError
+      }
 
       await updateHighlightStatsAfterRating(supabase, {
         highlightId,
@@ -451,11 +481,11 @@ async function replayOne(supabase: any, action: any, userId: string, freq: numbe
     case 'rate-daily': {
       const { summaryHighlightId, highlightId, rating, summaryDate } = action.params
 
-      const { error: rateError } = await supabase
-        .from('daily_summary_highlights')
-        .update({ rating })
-        .eq('id', summaryHighlightId)
-      if (rateError) throw rateError
+      const applied = await applySummaryHighlightRating(supabase, {
+        summaryHighlightId,
+        rating,
+        ratedAt: action.params.ratedAt ?? action.createdAt,
+      })
 
       if (rating !== null && summaryDate) {
         const monthYear = cycleKeyForDate(summaryDate, freq)
@@ -466,7 +496,7 @@ async function replayOne(supabase: any, action: any, userId: string, freq: numbe
             { onConflict: 'highlight_id,month_year' }
           )
         if (reviewedError) throw reviewedError
-      } else if (rating === null && summaryDate) {
+      } else if (rating === null && applied.applied && summaryDate) {
         // Clearing a rating must also drop the cycle's "reviewed" checkmark (unless
         // another rated day remains in the cycle), or a phantom ledger row lingers.
         await removeReviewedOnClear(supabase, { userId, highlightId, summaryDate, freq })

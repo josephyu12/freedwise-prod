@@ -88,9 +88,15 @@ CREATE TABLE IF NOT EXISTS daily_summary_highlights (
   daily_summary_id UUID NOT NULL REFERENCES daily_summaries(id) ON DELETE CASCADE,
   highlight_id UUID NOT NULL REFERENCES highlights(id) ON DELETE CASCADE,
   rating TEXT CONSTRAINT rating_values CHECK (rating IN ('low', 'med', 'high') OR rating IS NULL),
+  -- Client timestamp of the tap that set `rating`. Used so two offline devices
+  -- rating the same appearance converge on the earlier tap, not last-sync-wins.
+  rated_at TIMESTAMPTZ,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
   UNIQUE(daily_summary_id, highlight_id)
 );
+
+CREATE INDEX IF NOT EXISTS idx_daily_summary_highlights_rated_at
+  ON daily_summary_highlights (rated_at);
 
 -- Create table to track which months each highlight has been reviewed
 CREATE TABLE IF NOT EXISTS highlight_months_reviewed (
@@ -260,6 +266,12 @@ BEGIN
     WHERE h.id = sub.highlight_id;
   END IF;
 END $$;
+
+-- Client timestamp of the tap that set rating (see migration_rating_rated_at.sql).
+ALTER TABLE daily_summary_highlights
+  ADD COLUMN IF NOT EXISTS rated_at TIMESTAMPTZ;
+CREATE INDEX IF NOT EXISTS idx_daily_summary_highlights_rated_at
+  ON daily_summary_highlights (rated_at);
 
 -- Drop the sync-queue FK cascade if an older install still has it
 -- (see migration_drop_sync_queue_cascade.sql).

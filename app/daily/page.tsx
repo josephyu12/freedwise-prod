@@ -34,6 +34,7 @@ import { applyPendingActions, applyPendingPins } from '@/lib/pendingOverlay'
 import type { OfflineAction } from '@/lib/offlineStore'
 import { fetchWithTimeout } from '@/lib/fetchWithTimeout'
 import { withDeadline } from '@/lib/withDeadline'
+import { applySummaryHighlightRating } from '@/lib/applyRating'
 import {
   cacheDailyData,
   getCachedDailyData,
@@ -887,6 +888,13 @@ export default function DailyPage() {
     highlightId: string,
     rating: 'low' | 'med' | 'high' | null
   ) => {
+    const previousRating =
+      summary?.highlights.find((sh) => sh.id === summaryHighlightId)?.rating ?? null
+    // First tap on an unrated row uses earlier-timestamp-wins (two offline
+    // devices). Changing or clearing a rating the user can already see always
+    // overwrites.
+    const overwrite = previousRating !== null || rating === null
+
     // Optimistic UI update (runs whether online or offline)
     if (summary) {
       const updatedHighlights = summary.highlights.map((sh) => {
@@ -945,6 +953,7 @@ export default function DailyPage() {
           highlightId,
           rating,
           summaryDate: summary?.date || date,
+          ratedAt: Date.now(),
         },
       })
 
@@ -978,15 +987,33 @@ export default function DailyPage() {
       // Deadline-bounded: with an expired token on a dead network the token
       // refresh alone holds this for ~30s (see lib/withDeadline.ts); past the
       // deadline we throw into the offline-queue fallback below instead.
-      const { error: updateError } = await withDeadline<any>(
-        (supabase
-          .from('daily_summary_highlights') as any)
-          .update({ rating })
-          .eq('id', summaryHighlightId),
+      const rateRes = await withDeadline(
+        applySummaryHighlightRating(supabase, {
+          summaryHighlightId,
+          rating,
+          ratedAt: Date.now(),
+          overwrite,
+        }),
         'rate-daily write'
       )
 
-      if (updateError) throw updateError
+      if (!rateRes.applied && rateRes.rating !== rating && summary) {
+        const kept = rateRes.rating
+        setSummary({
+          ...summary,
+          highlights: summary.highlights.map((sh) =>
+            sh.id === summaryHighlightId ? { ...sh, rating: kept } : sh
+          ),
+        })
+        await updateDailyCache((c) => ({
+          summary: {
+            ...c.summary,
+            highlights: c.summary.highlights.map((sh: any) =>
+              sh.id === summaryHighlightId ? { ...sh, rating: kept } : sh
+            ),
+          },
+        }))
+      }
 
       // Mark highlight as reviewed for the CYCLE of the summary being reviewed (not
       // "today"), so reviewing an earlier day's assignment records that day's cycle.

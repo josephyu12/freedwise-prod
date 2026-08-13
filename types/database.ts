@@ -57,6 +57,7 @@ export interface DailySummaryHighlight {
   daily_summary_id: string
   highlight_id: string
   rating?: 'low' | 'med' | 'high' | null
+  rated_at?: string | null
   highlight?: Highlight
 }
 
@@ -222,6 +223,7 @@ export type Database = {
           daily_summary_id: string
           highlight_id: string
           rating: 'low' | 'med' | 'high' | null
+          rated_at: string | null
           created_at: string
         }
         Insert: {
@@ -229,6 +231,7 @@ export type Database = {
           daily_summary_id: string
           highlight_id: string
           rating?: 'low' | 'med' | 'high' | null
+          rated_at?: string | null
           created_at?: string
         }
         Update: {
@@ -236,6 +239,7 @@ export type Database = {
           daily_summary_id?: string
           highlight_id?: string
           rating?: 'low' | 'med' | 'high' | null
+          rated_at?: string | null
           created_at?: string
         }
       }

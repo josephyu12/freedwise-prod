@@ -133,7 +133,7 @@ These migrations can be applied individually to update existing databases:
      changes push to the client over the websocket instead of a 10s poll.
    - **Date:** 2026-07-09
 
-21. **`migration_add_embeddings.sql`** (Latest)
+21. **`migration_add_embeddings.sql`**
    - Enables the `vector` extension (pgvector) and adds `embedding vector(384)`
      + `embedding_hash` columns to `highlights`, with an HNSW cosine index.
    - Adds RPCs: `match_highlights` (semantic search), `similar_highlights`
@@ -143,6 +143,11 @@ These migrations can be applied individually to update existing databases:
      backfill for existing highlights runs once via script.
    - **Required before deploying the pgvector semantic search + /web graph.**
    - **Date:** 2026-07-16
+
+22. **`migration_rating_rated_at.sql`** (Latest)
+   - Adds `daily_summary_highlights.rated_at` so two offline devices that rated
+     the same appearance converge on the earlier tap instead of last-sync-wins.
+   - **Date:** 2026-08-13
 
 ## Migration Order
 
@@ -171,6 +176,7 @@ If applying migrations incrementally, use this order:
 20. `migration_schedule_rpcs.sql`
 21. `migration_notion_realtime.sql`
 22. `migration_add_embeddings.sql`
+23. `migration_rating_rated_at.sql`
 
 ## Usage
 
@@ -203,11 +209,15 @@ If applying migrations incrementally, use this order:
 \i migration_highlight_score.sql
 \i migration_schedule_rpcs.sql
 \i migration_notion_realtime.sql
+\i migration_add_embeddings.sql
+\i migration_rating_rated_at.sql
 ```
 
 ## Notes
 
 - All migrations are idempotent (safe to run multiple times)
 - The complete migration includes all incremental changes
+- `migration_rating_rated_at.sql` is required before deploying the rating
+  conflict filter (UPDATE … WHERE rated_at is later / rating is null)
 - Always backup your database before running migrations in production
 

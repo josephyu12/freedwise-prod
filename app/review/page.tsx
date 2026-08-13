@@ -39,6 +39,7 @@ import { applyPendingActions, applyPendingPins } from '@/lib/pendingOverlay'
 import type { OfflineAction } from '@/lib/offlineStore'
 import { fetchWithTimeout } from '@/lib/fetchWithTimeout'
 import { withDeadline } from '@/lib/withDeadline'
+import { applySummaryHighlightRating } from '@/lib/applyRating'
 import {
   cacheReviewData,
   getCachedReviewData,
@@ -750,6 +751,7 @@ function ReviewPageContent() {
           // The rated highlight's own day — replay keys the ledger by its cycle,
           // not `today`, so ahead/catch-up ratings mark the right cycle.
           summaryDate: target.date,
+          ratedAt: Date.now(),
         },
       })
     const advanceToNextUnrated = () =>
@@ -796,9 +798,11 @@ function ReviewPageContent() {
       // deadline we throw into the offline-queue fallback below instead.
       const [rateRes, ledgerRes] = await withDeadline(
         Promise.all([
-          (supabase.from('daily_summary_highlights') as any)
-            .update({ rating })
-            .eq('id', target.id),
+          applySummaryHighlightRating(supabase, {
+            summaryHighlightId: target.id,
+            rating,
+            ratedAt: Date.now(),
+          }),
           (supabase.from('highlight_months_reviewed') as any)
             .upsert(
               { highlight_id: target.highlight_id, month_year: monthYear },
@@ -807,10 +811,15 @@ function ReviewPageContent() {
         ]),
         'rate-review write'
       )
-      if (rateRes.error) throw rateRes.error
       if (ledgerRes.error) throw ledgerRes.error
 
-      advanceToNextUnrated()
+      const keptRating = rateRes.applied ? rating : rateRes.rating
+      setHighlights((prev) => {
+        const updated = prev.map((h) => (h.id === target.id ? { ...h, rating: keptRating } : h))
+        const nextUnrated = updated.findIndex((h) => h.rating === null)
+        if (nextUnrated >= 0) setCurrentIndex(nextUnrated)
+        return updated
+      })
       setRatingInProgress(false)
 
       // Background: stats/auto-archive (doesn't block UI)
@@ -890,6 +899,7 @@ function ReviewPageContent() {
             // The rated highlight's own day — replay keys the ledger by its cycle,
             // not `today`, so ahead/catch-up ratings mark the right cycle.
             summaryDate: current.date,
+            ratedAt: Date.now(),
           },
         })
         // Move to next unrated
@@ -934,9 +944,11 @@ function ReviewPageContent() {
       // deadline we throw into the offline-queue fallback below instead.
       const [rateRes, ledgerRes] = await withDeadline(
         Promise.all([
-          (supabase.from('daily_summary_highlights') as any)
-            .update({ rating })
-            .eq('id', current.id),
+          applySummaryHighlightRating(supabase, {
+            summaryHighlightId: current.id,
+            rating,
+            ratedAt: Date.now(),
+          }),
           (supabase.from('highlight_months_reviewed') as any)
             .upsert(
               { highlight_id: current.highlight_id, month_year: monthYear },
@@ -945,12 +957,12 @@ function ReviewPageContent() {
         ]),
         'rate-review write'
       )
-      if (rateRes.error) throw rateRes.error
       if (ledgerRes.error) throw ledgerRes.error
 
+      const keptRating = rateRes.applied ? rating : rateRes.rating
       setHighlights((prev) => {
         const updated = prev.map((h) =>
-          h.id === current.id ? { ...h, rating } : h
+          h.id === current.id ? { ...h, rating: keptRating } : h
         )
         const nextUnrated = updated.findIndex(
           (h, i) => h.rating === null && i !== currentIndex
@@ -977,6 +989,7 @@ function ReviewPageContent() {
             // The rated highlight's own day — replay keys the ledger by its cycle,
             // not `today`, so ahead/catch-up ratings mark the right cycle.
             summaryDate: current.date,
+            ratedAt: Date.now(),
           },
         })
         // Advance to next unrated highlight
