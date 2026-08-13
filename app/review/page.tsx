@@ -273,6 +273,72 @@ function ReviewPageContent() {
       }
     }
 
+    // Online + ahead mode: the background pre-load (fired after the normal
+    // /review load — see `finally` below) may have already fetched and cached
+    // the full ahead queue. If so, serve it immediately instead of re-fetching
+    // from the network. The data was built from the same cycle's server rows
+    // moments ago, so it's fresh. Falls through to the network path if the
+    // pre-load hasn't run or hasn't finished yet.
+    //
+    // The ahead cache is a snapshot from load time — highlights rated, edited,
+    // archived, or deleted during the review session aren't reflected. The
+    // normal `review` cache IS patched on every such action (via updateCache),
+    // so we overlay it here: same frozen ahead order, but with up-to-date
+    // ratings and removals, so already-reviewed highlights show as green and
+    // archived/deleted ones are gone.
+    if (aheadMode && !isEffectivelyOffline()) {
+      try {
+        const cached = await getCachedReviewAheadData()
+        if (cached) {
+          let highlights = cached.highlights
+          let cats = cached.categories || []
+          let pinIds = cached.pinnedHighlightIds || []
+
+          try {
+            const reviewCache = await getCachedReviewData()
+            if (reviewCache) {
+              // Build a lookup of current state from the continuously-patched
+              // review cache. Keyed by row id (daily_summary_highlight id).
+              const currentState = new Map(
+                (reviewCache.highlights || []).map((h: any) => [h.id, h])
+              )
+              highlights = highlights
+                .map((h: any) => {
+                  const current = currentState.get(h.id)
+                  if (!current) return h
+                  // Carry over rating + any edits (text, categories, etc.)
+                  return { ...h, ...current }
+                })
+                // Drop rows that were removed from the review cache (archived/deleted)
+                .filter((h: any) => {
+                  const current = currentState.get(h.id)
+                  // Row not in review cache → it's a future-only row, keep it
+                  if (!current) return true
+                  // Row still present and not archived → keep it
+                  return !current.highlight?.archived
+                })
+              // Also pick up latest categories and pins
+              if (reviewCache.categories) cats = reviewCache.categories
+              if (reviewCache.pinnedHighlightIds) pinIds = reviewCache.pinnedHighlightIds
+            }
+          } catch {
+            // Non-fatal: worst case some today/catch-up rows show stale ratings
+          }
+
+          setHighlights(highlights)
+          setCategories(cats)
+          setPinnedHighlightIds(new Set(pinIds))
+          const firstUnrated = highlights.findIndex((h: any) => h.rating === null)
+          setCurrentIndex(firstUnrated >= 0 ? firstUnrated : 0)
+          loadInFlightRef.current = false
+          setLoading(false)
+          return
+        }
+      } catch (e) {
+        console.warn('Failed to load preloaded ahead cache:', e)
+      }
+    }
+
     // Park any in-flight drain for the duration of this load's reads, so a sync
     // that reconnect started doesn't hold the connection while you're waiting on
     // "Review ahead". It finishes the write it's on and parks; the `finally`
