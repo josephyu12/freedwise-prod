@@ -6,6 +6,156 @@ import { formatDistanceToNow } from 'date-fns'
 import { createClient } from '@/lib/supabase/client'
 import { Highlight } from '@/types/database'
 import { renderHighlightHtml } from '@/lib/renderHighlightHtml'
+import { getHighlightBlockDiff } from '@/lib/highlightDiff'
+
+function DiffBlock({
+  text,
+  variant,
+}: {
+  text: string
+  variant: 'added' | 'removed'
+}) {
+  const isAdded = variant === 'added'
+  return (
+    <div
+      className={`rounded-md px-3 py-2 border-l-4 ${
+        isAdded
+          ? 'bg-green-50 dark:bg-green-900/20 border-green-500'
+          : 'bg-red-50 dark:bg-red-900/20 border-red-500 opacity-80'
+      }`}
+    >
+      <div
+        className={`highlight-content text-sm prose dark:prose-invert max-w-none ${
+          isAdded ? '' : 'line-through'
+        }`}
+        dangerouslySetInnerHTML={{
+          __html: renderHighlightHtml(null, text),
+        }}
+      />
+    </div>
+  )
+}
+
+function HighlightDiff({ highlight }: { highlight: Highlight }) {
+  const [showFull, setShowFull] = useState(false)
+  const diff = getHighlightBlockDiff(
+    highlight.previous_html_content,
+    highlight.previous_text,
+    highlight.html_content,
+    highlight.text
+  )
+
+  const hasChanges =
+    diff.added.length > 0 || diff.removed.length > 0 || diff.modified.length > 0
+
+  if (!diff.hasPrevious) {
+    return (
+      <div className="space-y-3">
+        <p className="text-sm text-gray-500 dark:text-gray-400 italic">
+          No edit snapshot yet — make another edit to see what changed.
+        </p>
+        <button
+          type="button"
+          onClick={() => setShowFull((v) => !v)}
+          className="text-sm text-orange-600 dark:text-orange-400 hover:underline"
+        >
+          {showFull ? 'Hide full highlight' : 'Show full highlight'}
+        </button>
+        {showFull && (
+          <div
+            className="highlight-content text-base prose dark:prose-invert max-w-none opacity-80"
+            dangerouslySetInnerHTML={{
+              __html: renderHighlightHtml(highlight.html_content, highlight.text),
+            }}
+          />
+        )}
+      </div>
+    )
+  }
+
+  if (!hasChanges) {
+    return (
+      <div className="space-y-3">
+        <p className="text-sm text-gray-500 dark:text-gray-400 italic">
+          Edit detected, but no paragraph-level changes found (formatting-only change).
+        </p>
+        <button
+          type="button"
+          onClick={() => setShowFull((v) => !v)}
+          className="text-sm text-orange-600 dark:text-orange-400 hover:underline"
+        >
+          {showFull ? 'Hide full highlight' : 'Show full highlight'}
+        </button>
+        {showFull && (
+          <div
+            className="highlight-content text-base prose dark:prose-invert max-w-none opacity-80"
+            dangerouslySetInnerHTML={{
+              __html: renderHighlightHtml(highlight.html_content, highlight.text),
+            }}
+          />
+        )}
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-3">
+      {diff.modified.length > 0 && (
+        <div className="space-y-2">
+          <p className="text-xs font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-400">
+            Modified ({diff.modified.length})
+          </p>
+          {diff.modified.map((item, i) => (
+            <div
+              key={`modified-${i}`}
+              className="rounded-md px-3 py-2 border-l-4 bg-amber-50 dark:bg-amber-900/20 border-amber-500"
+            >
+              <div
+                className="highlight-content text-sm prose dark:prose-invert max-w-none"
+                dangerouslySetInnerHTML={{ __html: item.diffHtml }}
+              />
+            </div>
+          ))}
+        </div>
+      )}
+      {diff.added.length > 0 && (
+        <div className="space-y-2">
+          <p className="text-xs font-semibold uppercase tracking-wide text-green-700 dark:text-green-400">
+            Added ({diff.added.length})
+          </p>
+          {diff.added.map((text, i) => (
+            <DiffBlock key={`added-${i}`} text={text} variant="added" />
+          ))}
+        </div>
+      )}
+      {diff.removed.length > 0 && (
+        <div className="space-y-2">
+          <p className="text-xs font-semibold uppercase tracking-wide text-red-700 dark:text-red-400">
+            Removed ({diff.removed.length})
+          </p>
+          {diff.removed.map((text, i) => (
+            <DiffBlock key={`removed-${i}`} text={text} variant="removed" />
+          ))}
+        </div>
+      )}
+      <button
+        type="button"
+        onClick={() => setShowFull((v) => !v)}
+        className="text-sm text-orange-600 dark:text-orange-400 hover:underline"
+      >
+        {showFull ? 'Hide full highlight' : 'Show full highlight'}
+      </button>
+      {showFull && (
+        <div
+          className="highlight-content text-base prose dark:prose-invert max-w-none opacity-80 border-t border-gray-200 dark:border-gray-700 pt-3"
+          dangerouslySetInnerHTML={{
+            __html: renderHighlightHtml(highlight.html_content, highlight.text),
+          }}
+        />
+      )}
+    </div>
+  )
+}
 
 export default function RecentHighlightsPage() {
   const [highlights, setHighlights] = useState<Highlight[]>([])
@@ -89,7 +239,7 @@ export default function RecentHighlightsPage() {
               Recently Edited
             </h1>
             <p className="text-sm sm:text-base text-gray-600 dark:text-gray-300">
-              Highlights you&apos;ve updated recently — find what you just changed
+              Shows what changed in your last text edit — added, removed, or tweaked bullets
             </p>
           </div>
 
@@ -124,14 +274,9 @@ export default function RecentHighlightsPage() {
                   key={highlight.id}
                   className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-lg border border-orange-200 dark:border-orange-800/50"
                 >
-                  <div
-                    className="highlight-content text-base mb-3 prose dark:prose-invert max-w-none"
-                    dangerouslySetInnerHTML={{
-                      __html: renderHighlightHtml(highlight.html_content, highlight.text),
-                    }}
-                  />
+                  <HighlightDiff highlight={highlight} />
                   {highlight.categories && highlight.categories.length > 0 && (
-                    <div className="flex flex-wrap gap-2 mb-3">
+                    <div className="flex flex-wrap gap-2 mt-4 mb-3">
                       {highlight.categories.map((cat) => (
                         <span
                           key={cat.id}

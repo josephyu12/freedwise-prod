@@ -1,14 +1,19 @@
 -- Migration: Add updated_at column to highlights
 -- Tracks when a highlight's text or html_content was last edited.
+-- Also snapshots the pre-edit content so the recent-edits page can show a diff.
 
 ALTER TABLE highlights ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ;
+ALTER TABLE highlights ADD COLUMN IF NOT EXISTS previous_text TEXT;
+ALTER TABLE highlights ADD COLUMN IF NOT EXISTS previous_html_content TEXT;
 
--- Auto-set updated_at on text/html_content edits
+-- Auto-set updated_at and snapshot previous content on text/html_content edits
 CREATE OR REPLACE FUNCTION set_highlight_updated_at()
 RETURNS TRIGGER AS $$
 BEGIN
   IF OLD.text IS DISTINCT FROM NEW.text
      OR OLD.html_content IS DISTINCT FROM NEW.html_content THEN
+    NEW.previous_text = OLD.text;
+    NEW.previous_html_content = OLD.html_content;
     NEW.updated_at = NOW();
   END IF;
   RETURN NEW;

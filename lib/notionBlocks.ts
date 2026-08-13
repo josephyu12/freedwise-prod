@@ -777,6 +777,69 @@ export function htmlToBlockText(html: string): string {
   return parts.filter((p) => p.length > 0).join(BLOCK_BOUNDARY)
 }
 
+/**
+ * Split highlight content into block-order plain-text segments using the same
+ * rules as Notion sync (htmlToBlockText + BLOCK_BOUNDARY).
+ */
+export function highlightToBlockTexts(
+  htmlContent: string | null | undefined,
+  plainText: string | null | undefined
+): string[] {
+  const plain = (plainText || '').trim()
+  let blockOrder = ''
+
+  if (htmlContent?.trim()) {
+    blockOrder = htmlToBlockText(htmlContent).trim()
+  }
+  if (!blockOrder && plain) {
+    blockOrder = htmlToBlockText(plain).trim()
+    // Plain newline-separated text without block tags: one segment per line.
+    if (!blockOrder.includes(BLOCK_BOUNDARY) && /\r?\n/.test(plain)) {
+      return plain.split(/\r?\n+/).map((line) => line.trim()).filter(Boolean)
+    }
+  }
+  if (!blockOrder) return []
+
+  return blockOrder
+    .split(BLOCK_BOUNDARY)
+    .map((segment) => segment.trim())
+    .filter((segment) => segment.length > 0)
+}
+
+/** True when two block texts match after normalizeForBlockCompare. */
+export function blocksMatchForCompare(a: string, b: string): boolean {
+  return normalizeForBlockCompare(a) === normalizeForBlockCompare(b)
+}
+
+/**
+ * Score whether two block texts are likely the same block edited in place.
+ * Mirrors findMatchingHighlightBlocks: first normalized word must match, then
+ * require ≥50% leading alignment on the shorter side.
+ */
+export function blockEditSimilarity(a: string, b: string): number {
+  const normA = normalizeForBlockCompare(a)
+  const normB = normalizeForBlockCompare(b)
+  if (!normA || !normB) return 0
+  if (normA === normB) return 1
+
+  const wordsA = normA.split(' ').filter(Boolean)
+  const wordsB = normB.split(' ').filter(Boolean)
+  if (wordsA.length === 0 || wordsB.length === 0) return 0
+  if (wordsA[0] !== wordsB[0]) return 0
+
+  let leading = 0
+  const limit = Math.min(wordsA.length, wordsB.length)
+  for (let i = 0; i < limit; i++) {
+    if (wordsA[i] === wordsB[i]) leading++
+    else break
+  }
+
+  const shorter = Math.min(wordsA.length, wordsB.length)
+  if (leading < Math.ceil(shorter * 0.5)) return 0
+
+  return leading / Math.max(wordsA.length, wordsB.length, 1)
+}
+
 /** Separator between blocks/layers when building combined text. Normalized to space for comparison. */
 export const BLOCK_BOUNDARY = '\u2029'
 

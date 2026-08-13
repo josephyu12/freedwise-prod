@@ -20,6 +20,8 @@ export interface Highlight {
   author?: string
   created_at: string
   updated_at?: string
+  previous_text?: string
+  previous_html_content?: string
   last_resurfaced?: string
   resurface_count: number
   average_rating?: number
@@ -89,6 +91,8 @@ export type Database = {
           author: string | null
           created_at: string
           updated_at: string | null
+          previous_text: string | null
+          previous_html_content: string | null
           last_resurfaced: string | null
           resurface_count: number
           average_rating: number | null
@@ -106,6 +110,8 @@ export type Database = {
           author?: string | null
           created_at?: string
           updated_at?: string | null
+          previous_text?: string | null
+          previous_html_content?: string | null
           last_resurfaced?: string | null
           resurface_count?: number
           average_rating?: number | null
@@ -123,6 +129,8 @@ export type Database = {
           author?: string | null
           created_at?: string
           updated_at?: string | null
+          previous_text?: string | null
+          previous_html_content?: string | null
           last_resurfaced?: string | null
           resurface_count?: number
           average_rating?: number | null
