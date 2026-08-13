@@ -32,6 +32,18 @@ export interface Highlight {
   months_reviewed?: HighlightMonthReviewed[]
 }
 
+export interface HighlightEditLog {
+  id: string
+  highlight_id: string
+  user_id: string
+  previous_text?: string | null
+  previous_html_content?: string | null
+  new_text?: string | null
+  new_html_content?: string | null
+  created_at: string
+  highlight?: Highlight
+}
+
 export interface HighlightLink {
   id: string
   from_highlight_id: string
@@ -356,6 +368,38 @@ export type Database = {
           created_at?: string
           updated_at?: string
           processed_at?: string | null
+        }
+      }
+      highlight_edit_logs: {
+        Row: {
+          id: string
+          highlight_id: string
+          user_id: string
+          previous_text: string | null
+          previous_html_content: string | null
+          new_text: string | null
+          new_html_content: string | null
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          highlight_id: string
+          user_id: string
+          previous_text?: string | null
+          previous_html_content?: string | null
+          new_text?: string | null
+          new_html_content?: string | null
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          highlight_id?: string
+          user_id?: string
+          previous_text?: string | null
+          previous_html_content?: string | null
+          new_text?: string | null
+          new_html_content?: string | null
+          created_at?: string
         }
       }
       pinned_highlights: {

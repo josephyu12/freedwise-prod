@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react'
 import Link from 'next/link'
 import { formatDistanceToNow } from 'date-fns'
 import { createClient } from '@/lib/supabase/client'
-import { Highlight } from '@/types/database'
+import { HighlightEditLog } from '@/types/database'
 import { renderHighlightHtml } from '@/lib/renderHighlightHtml'
 import { getHighlightBlockDiff } from '@/lib/highlightDiff'
 
@@ -36,13 +36,23 @@ function DiffBlock({
   )
 }
 
-function HighlightDiff({ highlight }: { highlight: Highlight }) {
+function HighlightDiff({
+  previousHtml,
+  previousText,
+  currentHtml,
+  currentText,
+}: {
+  previousHtml?: string | null
+  previousText?: string | null
+  currentHtml?: string | null
+  currentText?: string | null
+}) {
   const [showFull, setShowFull] = useState(false)
   const diff = getHighlightBlockDiff(
-    highlight.previous_html_content,
-    highlight.previous_text,
-    highlight.html_content,
-    highlight.text
+    previousHtml,
+    previousText,
+    currentHtml,
+    currentText
   )
 
   const hasChanges =
@@ -65,7 +75,7 @@ function HighlightDiff({ highlight }: { highlight: Highlight }) {
           <div
             className="highlight-content text-base prose dark:prose-invert max-w-none opacity-80"
             dangerouslySetInnerHTML={{
-              __html: renderHighlightHtml(highlight.html_content, highlight.text),
+              __html: renderHighlightHtml(currentHtml, currentText),
             }}
           />
         )}
@@ -90,7 +100,7 @@ function HighlightDiff({ highlight }: { highlight: Highlight }) {
           <div
             className="highlight-content text-base prose dark:prose-invert max-w-none opacity-80"
             dangerouslySetInnerHTML={{
-              __html: renderHighlightHtml(highlight.html_content, highlight.text),
+              __html: renderHighlightHtml(currentHtml, currentText),
             }}
           />
         )}
@@ -149,7 +159,7 @@ function HighlightDiff({ highlight }: { highlight: Highlight }) {
         <div
           className="highlight-content text-base prose dark:prose-invert max-w-none opacity-80 border-t border-gray-200 dark:border-gray-700 pt-3"
           dangerouslySetInnerHTML={{
-            __html: renderHighlightHtml(highlight.html_content, highlight.text),
+            __html: renderHighlightHtml(currentHtml, currentText),
           }}
         />
       )}
@@ -158,19 +168,19 @@ function HighlightDiff({ highlight }: { highlight: Highlight }) {
 }
 
 export default function RecentHighlightsPage() {
-  const [highlights, setHighlights] = useState<Highlight[]>([])
+  const [editLogs, setEditLogs] = useState<HighlightEditLog[]>([])
   const [loading, setLoading] = useState(true)
   const [currentPage, setCurrentPage] = useState(1)
   const [itemsPerPage] = useState(20)
-  const [totalHighlights, setTotalHighlights] = useState(0)
+  const [totalEdits, setTotalEdits] = useState(0)
   const supabase = createClient()
 
   useEffect(() => {
-    loadHighlights()
+    loadEditLogs()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentPage])
 
-  const loadHighlights = async () => {
+  const loadEditLogs = async () => {
     try {
       setLoading(true)
 
@@ -181,38 +191,44 @@ export default function RecentHighlightsPage() {
       }
 
       const { count, error: countError } = await supabase
-        .from('highlights')
+        .from('highlight_edit_logs')
         .select('*', { count: 'exact', head: true })
         .eq('user_id', user.id)
-        .not('updated_at', 'is', null)
 
       if (countError) throw countError
-      setTotalHighlights(count || 0)
+      setTotalEdits(count || 0)
 
       const from = (currentPage - 1) * itemsPerPage
       const to = from + itemsPerPage - 1
 
       const { data, error } = await supabase
-        .from('highlights')
+        .from('highlight_edit_logs')
         .select(`
           *,
-          highlight_categories (
-            category:categories (*)
+          highlight:highlights (
+            *,
+            highlight_categories (
+              category:categories (*)
+            )
           )
         `)
         .eq('user_id', user.id)
-        .not('updated_at', 'is', null)
-        .order('updated_at', { ascending: false })
+        .order('created_at', { ascending: false })
         .range(from, to)
 
       if (error) throw error
 
-      const processedHighlights = (data || []).map((h: any) => ({
-        ...h,
-        categories: h.highlight_categories?.map((hc: any) => hc.category) || [],
+      const processedLogs = (data || []).map((log: any) => ({
+        ...log,
+        highlight: log.highlight
+          ? {
+              ...log.highlight,
+              categories: log.highlight.highlight_categories?.map((hc: any) => hc.category) || [],
+            }
+          : undefined,
       }))
 
-      setHighlights(processedHighlights)
+      setEditLogs(processedLogs)
     } catch (error) {
       console.error('Error loading recently edited highlights:', error)
     } finally {
@@ -220,7 +236,7 @@ export default function RecentHighlightsPage() {
     }
   }
 
-  const totalPages = Math.ceil(totalHighlights / itemsPerPage)
+  const totalPages = Math.ceil(totalEdits / itemsPerPage)
 
   if (loading) {
     return (
@@ -239,14 +255,15 @@ export default function RecentHighlightsPage() {
               Recently Edited
             </h1>
             <p className="text-sm sm:text-base text-gray-600 dark:text-gray-300">
-              Shows what changed in your last text edit — added, removed, or tweaked bullets
+              Every text edit is logged, including multiple edits to the same highlight.
+              Logs older than 90 days are removed.
             </p>
           </div>
 
           <div className="space-y-4">
             <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
               <h2 className="text-2xl font-semibold text-gray-900 dark:text-white">
-                Edited Highlights ({totalHighlights})
+                Edit log ({totalEdits})
               </h2>
               <Link
                 href="/highlights"
@@ -256,7 +273,7 @@ export default function RecentHighlightsPage() {
               </Link>
             </div>
 
-            {highlights.length === 0 ? (
+            {editLogs.length === 0 ? (
               <div className="bg-white dark:bg-gray-800 p-8 rounded-lg shadow-lg text-center">
                 <p className="text-gray-500 dark:text-gray-400 mb-4">
                   No edited highlights yet. When you update a highlight&apos;s text, it will appear here.
@@ -269,13 +286,20 @@ export default function RecentHighlightsPage() {
                 </Link>
               </div>
             ) : (
-              highlights.map((highlight) => (
+              editLogs.map((log) => {
+                const highlight = log.highlight
+                return (
                 <div
-                  key={highlight.id}
+                  key={log.id}
                   className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-lg border border-orange-200 dark:border-orange-800/50"
                 >
-                  <HighlightDiff highlight={highlight} />
-                  {highlight.categories && highlight.categories.length > 0 && (
+                  <HighlightDiff
+                    previousHtml={log.previous_html_content}
+                    previousText={log.previous_text}
+                    currentHtml={log.new_html_content}
+                    currentText={log.new_text}
+                  />
+                  {highlight?.categories && highlight.categories.length > 0 && (
                     <div className="flex flex-wrap gap-2 mt-4 mb-3">
                       {highlight.categories.map((cat) => (
                         <span
@@ -287,7 +311,7 @@ export default function RecentHighlightsPage() {
                       ))}
                     </div>
                   )}
-                  {(highlight.source || highlight.author) && (
+                  {(highlight?.source || highlight?.author) && (
                     <p className="text-sm text-gray-500 dark:text-gray-400 mb-3">
                       {highlight.author && <span>{highlight.author}</span>}
                       {highlight.author && highlight.source && <span> • </span>}
@@ -296,34 +320,37 @@ export default function RecentHighlightsPage() {
                   )}
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                     <div className="flex flex-wrap items-center gap-3 text-xs text-gray-500 dark:text-gray-400">
-                      {highlight.updated_at && (
-                        <span className="font-medium text-orange-600 dark:text-orange-400">
-                          Edited {formatDistanceToNow(new Date(highlight.updated_at), { addSuffix: true })}
+                      <span className="font-medium text-orange-600 dark:text-orange-400">
+                        Edited {formatDistanceToNow(new Date(log.created_at), { addSuffix: true })}
+                      </span>
+                      {highlight?.created_at && (
+                        <span>
+                          Created {new Date(highlight.created_at).toLocaleDateString('en-US', {
+                            month: 'short',
+                            day: 'numeric',
+                            year: 'numeric',
+                          })}
                         </span>
                       )}
-                      <span>
-                        Created {new Date(highlight.created_at).toLocaleDateString('en-US', {
-                          month: 'short',
-                          day: 'numeric',
-                          year: 'numeric',
-                        })}
-                      </span>
                     </div>
-                    <Link
-                      href={`/highlights#highlight-${highlight.id}`}
-                      className="inline-flex items-center justify-center px-3 py-1.5 text-sm bg-orange-100 dark:bg-orange-900/40 text-orange-700 dark:text-orange-300 rounded hover:bg-orange-200 dark:hover:bg-orange-800/60 transition"
-                    >
-                      Open in Highlights
-                    </Link>
+                    {highlight?.id && (
+                      <Link
+                        href={`/highlights#highlight-${highlight.id}`}
+                        className="inline-flex items-center justify-center px-3 py-1.5 text-sm bg-orange-100 dark:bg-orange-900/40 text-orange-700 dark:text-orange-300 rounded hover:bg-orange-200 dark:hover:bg-orange-800/60 transition"
+                      >
+                        Open in Highlights
+                      </Link>
+                    )}
                   </div>
                 </div>
-              ))
+                )
+              })
             )}
 
             {totalPages > 1 && (
               <div className="flex flex-col sm:flex-row justify-between items-center gap-4 pt-4 border-t border-gray-200 dark:border-gray-700">
                 <div className="text-sm text-gray-600 dark:text-gray-400">
-                  Showing {((currentPage - 1) * itemsPerPage) + 1} to {Math.min(currentPage * itemsPerPage, totalHighlights)} of {totalHighlights} highlights
+                  Showing {((currentPage - 1) * itemsPerPage) + 1} to {Math.min(currentPage * itemsPerPage, totalEdits)} of {totalEdits} edits
                 </div>
                 <div className="flex gap-2">
                   <button
