@@ -403,6 +403,21 @@ export default function Home() {
           {/* Navigation Cards */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
             <Link
+              href="/highlights/recent"
+              className="glass-card glass-card-interactive p-5 flex items-center gap-4 group"
+            >
+              <div className="flex-shrink-0 w-11 h-11 rounded-xl bg-orange-50 dark:bg-orange-500/10 flex items-center justify-center group-hover:bg-orange-100 dark:group-hover:bg-orange-500/20 transition-colors">
+                <svg className="w-5 h-5 text-orange-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+              </div>
+              <div>
+                <h2 className="font-semibold text-gray-900 dark:text-white">Recently Edited</h2>
+                <p className="text-sm" style={{ color: 'var(--text-tertiary)' }}>Find what you just changed</p>
+              </div>
+            </Link>
+
+            <Link
               href="/highlights"
               className="glass-card glass-card-interactive p-5 flex items-center gap-4 group"
             >

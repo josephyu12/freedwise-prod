@@ -19,6 +19,7 @@ export interface Highlight {
   source?: string
   author?: string
   created_at: string
+  updated_at?: string
   last_resurfaced?: string
   resurface_count: number
   average_rating?: number
@@ -87,6 +88,7 @@ export type Database = {
           source: string | null
           author: string | null
           created_at: string
+          updated_at: string | null
           last_resurfaced: string | null
           resurface_count: number
           average_rating: number | null
@@ -103,6 +105,7 @@ export type Database = {
           source?: string | null
           author?: string | null
           created_at?: string
+          updated_at?: string | null
           last_resurfaced?: string | null
           resurface_count?: number
           average_rating?: number | null
@@ -119,6 +122,7 @@ export type Database = {
           source?: string | null
           author?: string | null
           created_at?: string
+          updated_at?: string | null
           last_resurfaced?: string | null
           resurface_count?: number
           average_rating?: number | null
