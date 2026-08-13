@@ -4,13 +4,12 @@ import { useEffect } from 'react'
 
 // Registers the offline service worker (public/sw.js) at ROOT scope so it can
 // serve every in-app page offline (network-first page shells) plus immutable
-// build assets (cache-first) — letting /daily, /review/lite, and the rest load
+// build assets (cache-first) — letting /daily, /review, and the rest load
 // and hydrate with no signal, at which point each page's existing IndexedDB
 // cache + offline queue takes over.
 //
 // Mounted once in the root layout so the worker is registered no matter which
-// page the user lands on first. The worker special-cases /review (the
-// weak-signal auto-switch to /review/lite) and passes every non-GET /
+// page the user lands on first. The worker passes every non-GET /
 // cross-origin request straight through, so widening the scope doesn't change
 // how any of those requests behave.
 export default function ServiceWorkerRegistrar() {

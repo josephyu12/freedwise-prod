@@ -1,19 +1,14 @@
 'use client'
 
-import Link from 'next/link'
 import { useManualOffline } from '@/hooks/useManualOffline'
 
 interface OfflineBannerProps {
   isOnline: boolean
   isSyncing?: boolean
   pendingCount?: number
-  // True when the banner is mounted on /review/lite itself. The weak-signal
-  // message normally offers a "Switch to text-only →" link, but that's a no-op
-  // here (you're already there), so we drop the link and keep just the message.
-  onLitePage?: boolean
 }
 
-export default function OfflineBanner({ isOnline, isSyncing, pendingCount, onLitePage }: OfflineBannerProps) {
+export default function OfflineBanner({ isOnline, isSyncing, pendingCount }: OfflineBannerProps) {
   const { manualOffline, setManualOffline } = useManualOffline()
 
   // manualOffline is checked here too (not just via isOnline) so the banner
@@ -55,17 +50,7 @@ export default function OfflineBanner({ isOnline, isSyncing, pendingCount, onLit
           Syncing {pendingCount ? `${pendingCount} pending` : ''} change{pendingCount !== 1 ? 's' : ''}…
         </span>
       ) : isWeakSignal ? (
-        <span>
-          📶 Weak connection — ratings will be saved and synced automatically.
-          {!onLitePage && (
-            <>
-              {' '}
-              <Link href="/review/lite" className="underline font-semibold">
-                Switch to text-only →
-              </Link>
-            </>
-          )}
-        </span>
+        <span>📶 Weak connection — ratings will be saved and synced automatically.</span>
       ) : (
         <span>⚡ You&apos;re offline — ratings will sync when you reconnect</span>
       )}

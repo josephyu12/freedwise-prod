@@ -212,18 +212,10 @@ export default function HelpPage() {
               </Rule>
             </Section>
 
-            <Section title="Notion sync & lite mode">
+            <Section title="Notion sync">
               <Rule>
                 With Notion sync configured, every add, edit, and delete is queued automatically
                 and pushed by the sync button in the header (the badge shows the pending count).
-              </Rule>
-              <Rule>
-                On a very slow connection,{' '}
-                <Link href="/review/lite" className="text-blue-600 dark:text-blue-400 underline">
-                  /review/lite
-                </Link>{' '}
-                is a text-only, read-only version of the review list that loads almost
-                instantly (add <code>?ahead=1</code> for the review-ahead list).
               </Rule>
             </Section>
           </div>

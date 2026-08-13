@@ -36,7 +36,7 @@ export default function RootLayout({
         <meta name="theme-color" content="#6366f1" />
         {/*
           Record the browser's IANA timezone in a cookie so server-rendered
-          pages (e.g. /review/lite) can compute "today" in the user's local
+          pages can compute "today" in the user's local
           time instead of the server's UTC. Runs synchronously while the head
           is parsed — before any client navigation — so the cookie is already
           present on the RSC request for the next page.

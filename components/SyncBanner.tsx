@@ -1,6 +1,5 @@
 'use client'
 
-import { usePathname } from 'next/navigation'
 import OfflineBanner from '@/components/OfflineBanner'
 import { useOfflineStatus } from '@/hooks/useOfflineStatus'
 import { useOfflineSyncState } from '@/hooks/useOfflineSyncState'
@@ -16,7 +15,6 @@ import { useOfflineSyncState } from '@/hooks/useOfflineSyncState'
 // page's own `if (loading)` return, so hoisting the banner here makes it visible
 // during all of them, on every route.
 export default function SyncBanner() {
-  const pathname = usePathname()
   const { isOnline } = useOfflineStatus()
   const { isSyncing, pendingCount } = useOfflineSyncState()
 
@@ -25,7 +23,6 @@ export default function SyncBanner() {
       isOnline={isOnline}
       isSyncing={isSyncing}
       pendingCount={pendingCount}
-      onLitePage={pathname?.startsWith('/review/lite') ?? false}
     />
   )
 }

@@ -1,12 +1,12 @@
 // Single source of truth for replaying the offline action queue.
 //
-// Previously /review and /daily each had their own ~250-line copy of this loop,
-// and /review/lite a third (rate-review only). They drifted (e.g. archive's
-// future-month cleanup and unarchive's unarchived_at existed only in /review),
-// and — the bug this fixes — the queue only drained on those pages: finish a
-// review offline, leave to Home/Daily, reconnect there, and the queued ratings
-// never synced. This module runs from one global <OfflineSync> in the layout,
-// so the whole queue drains on reconnect from ANY page.
+// Previously /review and /daily each had their own ~250-line copy of this loop.
+// They drifted (e.g. archive's future-month cleanup and unarchive's
+// unarchived_at existed only in /review), and — the bug this fixes — the queue
+// only drained on those pages: finish a review offline, leave to Home/Daily,
+// reconnect there, and the queued ratings never synced. This module runs from
+// one global <OfflineSync> in the layout, so the whole queue drains on reconnect
+// from ANY page.
 //
 // Behavior is intentionally data-safe: every write checks the Supabase result
 // error and throws (Supabase RESOLVES rather than rejecting on a dead network,
