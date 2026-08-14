@@ -43,7 +43,9 @@ import { applySummaryHighlightRating } from '@/lib/applyRating'
 import {
   cacheReviewData,
   getCachedReviewData,
+  cacheReviewAheadData,
   getCachedReviewAheadData,
+  isReviewAheadCacheFresh,
   enqueueOfflineAction,
 } from '@/lib/offlineStore'
 import { preloadAheadHighlights } from '@/lib/preloadAhead'
@@ -71,9 +73,6 @@ export default function ReviewPage() {
       <Suspense fallback={
       <div className="min-h-screen flex flex-col items-center justify-center gap-4 bg-gradient-to-br from-blue-50 to-indigo-100 dark:from-gray-900 dark:to-gray-800 px-6">
         <div className="text-xl text-gray-600 dark:text-gray-300">Loading...</div>
-        <Link href="/review/lite" className="text-sm text-blue-600 dark:text-blue-400 underline">
-          Slow connection? Switch to text-only →
-        </Link>
       </div>
     }>
       <ReviewPageContent />
@@ -103,6 +102,12 @@ function ReviewPageContent() {
   // Latest loadHighlights, so the deferred reload above can call it without the
   // callback having to depend on itself.
   const loadHighlightsRef = useRef<() => void>(() => {})
+  // Set when an offline-sync drain just landed: the next load must read server
+  // truth from the network instead of early-returning the ahead snapshot from
+  // IndexedDB — that snapshot predates everything the drain just wrote (and the
+  // replay's server-side effects, like auto-archives, aren't in any local
+  // cache). Cleared once a network load succeeds.
+  const forceNetworkRef = useRef(false)
   // Context stashed by the try block for the `finally` block's background ahead
   // pre-load. Null when in ahead mode or when the online load didn't succeed.
   const preloadCtxRef = useRef<{
@@ -148,6 +153,10 @@ function ReviewPageContent() {
   // know whether we're online.
   const { isOnline } = useOfflineStatus()
   const [usingCachedData, setUsingCachedData] = useState(false)
+  // True while we're offline AND the pre-loaded review-ahead snapshot is
+  // missing or from a previous day — i.e. "Review ahead" can't show the full
+  // queue until we're back online. Drives the explanatory banner.
+  const [aheadCacheStale, setAheadCacheStale] = useState(false)
   // Highlight just auto-archived by the two-low-cycles rule; drives the undo toast.
   const [autoArchivedId, setAutoArchivedId] = useState<string | null>(null)
   // Review cadence: the cycle key/window for ledger writes + catch-up/ahead. Held
@@ -196,6 +205,11 @@ function ReviewPageContent() {
   }
 
   // Patch the cached review data so changes made offline survive a reload.
+  // Patches BOTH the normal 'review' cache and the pre-loaded 'review-ahead'
+  // snapshot: the ahead snapshot is otherwise frozen at pre-load time, so a
+  // rating made in ahead mode (whose row often exists only there) would vanish
+  // on the next ?ahead=1 load and bounce the resume point back to the highlight
+  // the session started at.
   const updateCache = async (
     patch: (cached: {
       highlights: any[]
@@ -209,20 +223,42 @@ function ReviewPageContent() {
   ) => {
     try {
       const cached = await getCachedReviewData()
-      if (!cached) return
-      const next = patch({
-        highlights: cached.highlights || [],
-        categories: cached.categories || [],
-        pinnedHighlightIds: cached.pinnedHighlightIds || [],
-      })
-      await cacheReviewData({
-        highlights: next.highlights ?? cached.highlights,
-        categories: next.categories ?? cached.categories,
-        pinnedHighlightIds: next.pinnedHighlightIds ?? cached.pinnedHighlightIds,
-        cachedAt: Date.now(),
-      })
+      if (cached) {
+        const next = patch({
+          highlights: cached.highlights || [],
+          categories: cached.categories || [],
+          pinnedHighlightIds: cached.pinnedHighlightIds || [],
+        })
+        await cacheReviewData({
+          highlights: next.highlights ?? cached.highlights,
+          categories: next.categories ?? cached.categories,
+          pinnedHighlightIds: next.pinnedHighlightIds ?? cached.pinnedHighlightIds,
+          cachedAt: Date.now(),
+        })
+      }
     } catch (e) {
       console.warn('Failed to update offline cache:', e)
+    }
+    try {
+      const ahead = await getCachedReviewAheadData()
+      if (ahead) {
+        const next = patch({
+          highlights: ahead.highlights || [],
+          categories: ahead.categories || [],
+          pinnedHighlightIds: ahead.pinnedHighlightIds || [],
+        })
+        // Keep the original `today`/`cachedAt` stamps — a patch is an in-place
+        // edit of the snapshot, not a re-fetch, so its freshness day is unchanged.
+        await cacheReviewAheadData({
+          highlights: next.highlights ?? ahead.highlights,
+          categories: next.categories ?? ahead.categories,
+          pinnedHighlightIds: next.pinnedHighlightIds ?? ahead.pinnedHighlightIds,
+          today: ahead.today,
+          cachedAt: ahead.cachedAt,
+        })
+      }
+    } catch (e) {
+      console.warn('Failed to update offline ahead cache:', e)
     }
   }
 
@@ -277,9 +313,10 @@ function ReviewPageContent() {
     // Online + ahead mode: the background pre-load (fired after the normal
     // /review load — see `finally` below) may have already fetched and cached
     // the full ahead queue. If so, serve it immediately instead of re-fetching
-    // from the network. The data was built from the same cycle's server rows
-    // moments ago, so it's fresh. Falls through to the network path if the
-    // pre-load hasn't run or hasn't finished yet.
+    // from the network. Falls through to the network path when the pre-load
+    // hasn't run, the snapshot is from a previous day (its today/catch-up/ahead
+    // split no longer holds), or an offline-sync drain just landed (the
+    // snapshot predates the drain's server-side effects — see forceNetworkRef).
     //
     // The ahead cache is a snapshot from load time — highlights rated, edited,
     // archived, or deleted during the review session aren't reflected. The
@@ -287,10 +324,10 @@ function ReviewPageContent() {
     // so we overlay it here: same frozen ahead order, but with up-to-date
     // ratings and removals, so already-reviewed highlights show as green and
     // archived/deleted ones are gone.
-    if (aheadMode && !isEffectivelyOffline()) {
+    if (aheadMode && !isEffectivelyOffline() && !forceNetworkRef.current) {
       try {
         const cached = await getCachedReviewAheadData()
-        if (cached) {
+        if (cached && isReviewAheadCacheFresh(cached, today)) {
           let highlights = cached.highlights
           let cats = cached.categories || []
           let pinIds = cached.pinnedHighlightIds || []
@@ -573,6 +610,9 @@ function ReviewPageContent() {
       const processed = [...todayRows, ...catchUpRows, ...aheadRows]
 
       setHighlights(processed)
+      // This load read server truth, so the post-sync "don't trust the ahead
+      // snapshot" flag is satisfied.
+      forceNetworkRef.current = false
 
       // Cache highlights for offline use
       try {
@@ -584,6 +624,23 @@ function ReviewPageContent() {
         })
       } catch (e) {
         console.warn('Failed to cache review data:', e)
+      }
+
+      // An ahead-mode network load has the full ahead queue in hand — refresh
+      // the pre-loaded snapshot too, so the next ?ahead=1 load (and offline use)
+      // starts from this server truth instead of the older background pre-load.
+      if (aheadMode) {
+        try {
+          await cacheReviewAheadData({
+            highlights: processed,
+            categories: catResult.data || [],
+            pinnedHighlightIds: pinIds,
+            today,
+            cachedAt: Date.now(),
+          })
+        } catch (e) {
+          console.warn('Failed to cache review-ahead data:', e)
+        }
       }
 
       // Stash context for the background ahead pre-load kicked off in `finally`.
@@ -661,6 +718,31 @@ function ReviewPageContent() {
   useEffect(() => {
     loadHighlights()
   }, [loadHighlights])
+
+  // "Review ahead not fully loaded" detection. The ahead snapshot is filled by
+  // a background pre-load that only runs after an ONLINE normal-mode load — so
+  // flipping offline (manual switch or a detected weak/dead connection) before
+  // it lands leaves "Review ahead" with nothing beyond the normal cache.
+  // Re-checked on every connectivity change so the banner appears the moment
+  // the user goes offline, not only on the next full load.
+  useEffect(() => {
+    if (isOnline) {
+      setAheadCacheStale(false)
+      return
+    }
+    let cancelled = false
+    ;(async () => {
+      try {
+        const cached = await getCachedReviewAheadData()
+        if (!cancelled) setAheadCacheStale(!isReviewAheadCacheFresh(cached, today))
+      } catch {
+        if (!cancelled) setAheadCacheStale(true)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [isOnline, today])
 
   // Handle auto-rating and actions from URL params (widget tap)
   useEffect(() => {
@@ -1627,6 +1709,11 @@ function ReviewPageContent() {
       // Reload on a drop too: a discarded poison action's optimistic change must
       // be reverted to server truth.
       if (!(result?.processed > 0 || result?.touchedHighlights || result?.dropped > 0)) return
+      // The reload must read the network: the ahead snapshot in IndexedDB
+      // predates everything this drain just wrote, so early-returning it would
+      // resurrect already-synced highlights as unrated ("I synced, came back,
+      // and it showed the highlight I started at").
+      forceNetworkRef.current = true
       // Already loading — reloading now would race that load. Defer to its
       // `finally` rather than skipping: a load no longer drains the queue
       // itself, so the replay's server-side effects that the in-memory overlay
@@ -1648,12 +1735,6 @@ function ReviewPageContent() {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center gap-4 bg-gradient-to-br from-blue-50 to-indigo-100 dark:from-gray-900 dark:to-gray-800 px-6">
         <div className="text-xl text-gray-600 dark:text-gray-300">Loading...</div>
-        <Link
-          href={aheadMode ? '/review/lite?ahead=1' : '/review/lite'}
-          className="text-sm text-blue-600 dark:text-blue-400 underline"
-        >
-          Slow connection? Switch to text-only →
-        </Link>
       </div>
     )
   }
@@ -1680,6 +1761,12 @@ function ReviewPageContent() {
   if (highlights.length === 0) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center bg-gradient-to-br from-blue-50 to-indigo-100 dark:from-gray-900 dark:to-gray-800 px-6">
+        {aheadMode && aheadCacheStale && (
+          <p className="mb-4 px-3 py-2 rounded-lg bg-amber-100 dark:bg-amber-900 text-amber-800 dark:text-amber-200 text-sm text-center max-w-sm">
+            Review-ahead highlights weren&apos;t fully loaded before you went
+            offline &mdash; reconnect briefly to load them.
+          </p>
+        )}
         <p className="text-xl text-gray-600 dark:text-gray-300 mb-6 text-center">
           No highlights to review today.
         </p>
@@ -1710,13 +1797,21 @@ function ReviewPageContent() {
           </p>
           <div className="flex flex-col gap-3 w-full max-w-xs">
             {!aheadMode && (
-              <Link
-                href="/review?ahead=1"
-                className="inline-flex items-center justify-center gap-2 px-6 py-3 bg-blue-600 text-white rounded-xl hover:bg-blue-700 transition font-medium whitespace-nowrap"
-              >
-                Review ahead
-                <ArrowRight className="w-4 h-4" />
-              </Link>
+              <>
+                {aheadCacheStale && (
+                  <p className="px-3 py-2 rounded-lg bg-amber-100 dark:bg-amber-900 text-amber-800 dark:text-amber-200 text-xs text-center">
+                    Review-ahead highlights aren&apos;t fully loaded yet &mdash; reconnect
+                    briefly to load them before reviewing ahead offline.
+                  </p>
+                )}
+                <Link
+                  href="/review?ahead=1"
+                  className="inline-flex items-center justify-center gap-2 px-6 py-3 bg-blue-600 text-white rounded-xl hover:bg-blue-700 transition font-medium whitespace-nowrap"
+                >
+                  Review ahead
+                  <ArrowRight className="w-4 h-4" />
+                </Link>
+              </>
             )}
             <div className="flex gap-3">
               <Link
@@ -1753,13 +1848,6 @@ function ReviewPageContent() {
         </div>
         <div className="flex items-center gap-4">
           <Link
-            href={aheadMode ? '/review/lite?ahead=1' : '/review/lite'}
-            className="text-sm text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition"
-            title="Minimal text-only view for weak connections"
-          >
-            Lite
-          </Link>
-          <Link
             href="/daily"
             className="text-sm text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 transition"
           >
@@ -1767,6 +1855,17 @@ function ReviewPageContent() {
           </Link>
         </div>
       </div>
+
+      {/* Offline and the ahead snapshot never finished pre-loading (or is from
+          a previous day) — warn before the user taps "Review ahead" and finds
+          a short or empty queue. */}
+      {aheadCacheStale && (
+        <div className="mx-4 mb-2 px-3 py-2 rounded-lg bg-amber-100 dark:bg-amber-900 text-amber-800 dark:text-amber-200 text-sm text-center">
+          {aheadMode
+            ? 'Review-ahead highlights weren\u2019t fully loaded before you went offline \u2014 showing what\u2019s available on this device.'
+            : 'Review-ahead highlights aren\u2019t fully loaded yet \u2014 reconnect briefly if you want to review ahead offline.'}
+        </div>
+      )}
 
       {/* Progress bar */}
       <div className="px-4">

@@ -199,6 +199,7 @@ async function doPreload({
       highlights: processed,
       categories,
       pinnedHighlightIds: pinnedIds,
+      today,
       cachedAt: Date.now(),
     })
   } catch (e) {

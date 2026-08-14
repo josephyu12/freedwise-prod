@@ -214,6 +214,11 @@ export interface CachedReviewAheadData {
   highlights: any[] // ReviewHighlight[] — full [today + catchUp + ahead] array
   categories: any[]
   pinnedHighlightIds: string[]
+  // The "today" (yyyy-MM-dd) the snapshot was built around. The today/catch-up/
+  // ahead split is only valid for that day — a snapshot from yesterday would
+  // misclassify rows, so readers treat a mismatched day as stale. Optional only
+  // because entries written before this field existed lack it.
+  today?: string
   cachedAt: number
 }
 
@@ -225,6 +230,26 @@ export async function cacheReviewAheadData(data: Omit<CachedReviewAheadData, 'ke
 /** Get pre-loaded review-ahead data (written by the background pre-fetcher). */
 export async function getCachedReviewAheadData(): Promise<CachedReviewAheadData | undefined> {
   return idbGet<CachedReviewAheadData>(CACHE_STORE, 'review-ahead')
+}
+
+/**
+ * Whether an ahead snapshot is usable for the given day. Entries from before
+ * the `today` stamp existed fall back to the day the entry was written.
+ */
+export function isReviewAheadCacheFresh(
+  cached: CachedReviewAheadData | undefined,
+  today: string
+): boolean {
+  if (!cached) return false
+  const snapshotDay = cached.today ?? localDateString(cached.cachedAt)
+  return snapshotDay === today
+}
+
+function localDateString(ts: number): string {
+  const d = new Date(ts)
+  const month = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${d.getFullYear()}-${month}-${day}`
 }
 
 // ─── Owner Stamp ────────────────────────────────────────────
