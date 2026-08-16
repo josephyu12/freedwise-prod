@@ -843,10 +843,11 @@ SECURITY DEFINER
 SET search_path = public
 AS $$
 DECLARE
-  v_user_id     uuid;
-  v_notion_on   boolean;
-  v_existing_id uuid;
-  v_pending_add uuid;
+  v_user_id       uuid;
+  v_notion_on     boolean;
+  v_existing_id   uuid;
+  v_pending_add   uuid;
+  v_failed_update uuid;
 BEGIN
   IF TG_OP = 'DELETE' THEN
     v_user_id := OLD.user_id;
@@ -887,6 +888,8 @@ BEGIN
       RETURN NULL;
     END IF;
 
+    -- (1) Fold into an existing pending 'update' (newest content wins;
+    -- original_* keep pointing at the content currently in Notion).
     SELECT id INTO v_existing_id
     FROM notion_sync_queue
     WHERE user_id        = NEW.user_id
@@ -901,16 +904,66 @@ BEGIN
       SET text         = NEW.text,
           html_content = NEW.html_content
       WHERE id = v_existing_id;
-    ELSE
-      INSERT INTO notion_sync_queue
-        (user_id, highlight_id, operation_type, text, html_content,
-         original_text, original_html_content,
-         status, retry_count, max_retries)
-      VALUES
-        (NEW.user_id, NEW.id, 'update', NEW.text, NEW.html_content,
-         OLD.text, OLD.html_content,
-         'pending', 0, 5);
+
+      RETURN NULL;
     END IF;
+
+    -- (2) Fold into a fresh pending 'add' (retry_count = 0): the highlight
+    -- isn't on the Notion page yet, so the add just carries the newest
+    -- content — no separate 'update' round trip needed. Retried adds are
+    -- excluded because retry recovery searches the page for the row's content.
+    SELECT id INTO v_pending_add
+    FROM notion_sync_queue
+    WHERE user_id        = NEW.user_id
+      AND highlight_id   = NEW.id
+      AND operation_type = 'add'
+      AND status         = 'pending'
+      AND retry_count    = 0
+    LIMIT 1;
+
+    IF v_pending_add IS NOT NULL THEN
+      UPDATE notion_sync_queue
+      SET text         = NEW.text,
+          html_content = NEW.html_content
+      WHERE id = v_pending_add;
+
+      RETURN NULL;
+    END IF;
+
+    -- (3) Resurrect the newest 'failed' update: its original_* still describe
+    -- the Notion page (a fresh row's original never reached Notion and could
+    -- never match). The new edit grants a fresh attempt cycle.
+    SELECT id INTO v_failed_update
+    FROM notion_sync_queue
+    WHERE user_id        = NEW.user_id
+      AND highlight_id   = NEW.id
+      AND operation_type = 'update'
+      AND status         = 'failed'
+    ORDER BY created_at DESC
+    LIMIT 1;
+
+    IF v_failed_update IS NOT NULL THEN
+      UPDATE notion_sync_queue
+      SET text          = NEW.text,
+          html_content  = NEW.html_content,
+          status        = 'pending',
+          retry_count   = 0,
+          next_retry_at = NULL,
+          error_message = NULL
+      WHERE id = v_failed_update;
+
+      RETURN NULL;
+    END IF;
+
+    -- (4) Nothing foldable (e.g. only sibling row is mid-flight 'processing'):
+    INSERT INTO notion_sync_queue
+      (user_id, highlight_id, operation_type, text, html_content,
+       original_text, original_html_content,
+       status, retry_count, max_retries)
+    VALUES
+      (NEW.user_id, NEW.id, 'update', NEW.text, NEW.html_content,
+       OLD.text, OLD.html_content,
+       'pending', 0, 5);
 
     RETURN NULL;
   END IF;

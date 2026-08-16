@@ -4,6 +4,12 @@
 -- Date: 2026-05-19
 -- Idempotent — safe to run more than once.
 --
+-- NOTE: the enqueue_notion_sync() function below has since been superseded by
+-- migration_notion_sync_coalesce.sql (folds edits into pending 'add' rows and
+-- resurrects 'failed' updates so multiple edits collapse into one Notion
+-- push). Apply that migration AFTER this one; this file is kept for history
+-- and still creates the triggers.
+--
 -- THE BUG THIS FIXES
 --   Adding / editing / deleting a highlight used to perform TWO independent
 --   network writes from the browser:

@@ -144,10 +144,20 @@ These migrations can be applied individually to update existing databases:
    - **Required before deploying the pgvector semantic search + /web graph.**
    - **Date:** 2026-07-16
 
-22. **`migration_rating_rated_at.sql`** (Latest)
+22. **`migration_rating_rated_at.sql`**
    - Adds `daily_summary_highlights.rated_at` so two offline devices that rated
      the same appearance converge on the earlier tap instead of last-sync-wins.
    - **Date:** 2026-08-13
+
+23. **`migration_notion_sync_coalesce.sql`** (Latest)
+   - Replaces `enqueue_notion_sync()` so multiple edits to the same highlight
+     collapse into ONE Notion push: edits fold into a fresh pending `add`
+     (the add just carries the newest content) and resurrect a `failed` update
+     (whose `original_*` still match the Notion page) instead of inserting a
+     fresh row that could never match and would duplicate on retry.
+   - Pairs with a POST /api/notion/sync change that marks superseded sibling
+     `update` rows completed after one successful push.
+   - **Date:** 2026-08-16
 
 ## Migration Order
 
@@ -177,6 +187,7 @@ If applying migrations incrementally, use this order:
 21. `migration_notion_realtime.sql`
 22. `migration_add_embeddings.sql`
 23. `migration_rating_rated_at.sql`
+24. `migration_notion_sync_coalesce.sql`
 
 ## Usage
 
@@ -211,6 +222,7 @@ If applying migrations incrementally, use this order:
 \i migration_notion_realtime.sql
 \i migration_add_embeddings.sql
 \i migration_rating_rated_at.sql
+\i migration_notion_sync_coalesce.sql
 ```
 
 ## Notes

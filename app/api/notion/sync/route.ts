@@ -92,6 +92,24 @@ async function deleteTopLevelBlocks(notion: any, ids: string[]): Promise<void> {
   }
 }
 
+// Mark superseded sibling 'update' rows completed after a successful push that
+// already carried their content. Guarded to pending/failed: a sibling that a
+// concurrent sync request claimed ('processing') between our snapshot and now
+// belongs to that request — completing it here could be overwritten by that
+// request's failure handler, resurrecting a row whose original no longer
+// matches the page. Leaving it alone costs at worst one redundant push.
+async function completeSupersededSiblings(supabase: any, ids: string[]): Promise<void> {
+  if (ids.length === 0) return
+  await (supabase
+    .from('notion_sync_queue') as any)
+    .update({
+      status: 'completed',
+      processed_at: new Date().toISOString(),
+    })
+    .in('id', ids)
+    .in('status', ['pending', 'failed'])
+}
+
 // Process a single queue item. Claim with status=processing first to avoid duplicate processing when multiple sync requests run.
 async function processQueueItem(supabase: any, queueItem: any, notionSettings: { notion_api_key: string; notion_page_id: string; enabled: boolean }) {
   // Claim this item so concurrent sync requests don't process it twice (fixes multiple items / bullet quadrupling)
@@ -108,6 +126,11 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
   const notion = new Client({
     auth: notionSettings.notion_api_key,
   })
+
+  // Sibling 'update' rows for the same highlight that this item's push fully
+  // covers (see snapshot in the update branch). Marked completed alongside the
+  // item itself so each one doesn't redo the same delete-and-recreate.
+  let supersededUpdateIds: string[] = []
 
   try {
     if (queueItem.operation_type === 'add') {
@@ -145,6 +168,30 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
 
       await appendBlocksDeep(notion, notionSettings.notion_page_id, blocks)
     } else if (queueItem.operation_type === 'update') {
+      // Coalesce multiple edits into one Notion push: snapshot the OTHER
+      // ready 'update' rows for this same highlight BEFORE reading the
+      // highlight's content from the DB below. The enqueue trigger writes the
+      // queue row and the highlight edit in one transaction, so every row
+      // visible now carries content no newer than what the DB reads below
+      // return — meaning our single push already includes those edits. After
+      // a successful push they are marked completed; otherwise each one would
+      // redo the same delete-and-recreate, and (worse) their original_text no
+      // longer matches the page, so they'd fail and the retry fallback would
+      // append a duplicate. Rows created AFTER the snapshot stay pending and
+      // sync normally. 'processing' siblings are owned by a concurrent
+      // request and are left alone.
+      if (queueItem.highlight_id) {
+        const { data: siblingRows } = await (supabase
+          .from('notion_sync_queue') as any)
+          .select('id')
+          .eq('user_id', queueItem.user_id)
+          .eq('highlight_id', queueItem.highlight_id)
+          .eq('operation_type', 'update')
+          .in('status', ['pending', 'failed'])
+          .neq('id', queueItem.id)
+        supersededUpdateIds = (siblingRows || []).map((r: any) => r.id)
+      }
+
       // For update, use the ORIGINAL text stored in the queue item to find the block.
       // Convert original_html_content to block-order text (same format as Notion: parts joined by space)
       // so paragraph + list highlights match.
@@ -245,7 +292,9 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
           const fallbackBlocks = htmlToNotionBlocks(fallbackHtml || fallbackText || '')
           fallbackBlocks.push({ type: 'paragraph', paragraph: { rich_text: [] } })
           await appendBlocksDeep(notion, notionSettings.notion_page_id, fallbackBlocks)
-          // Mark as completed (don't throw — the content is now back in Notion)
+          // Mark as completed (don't throw — the content is now back in Notion).
+          // Superseded siblings complete too: the re-added content is the
+          // latest from the DB, so their edits are already on the page.
           await (supabase
             .from('notion_sync_queue') as any)
             .update({
@@ -253,6 +302,7 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
               processed_at: new Date().toISOString(),
             })
             .eq('id', queueItem.id)
+          await completeSupersededSiblings(supabase, supersededUpdateIds)
           return { success: true }
         }
 
@@ -408,7 +458,8 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
       }
     }
 
-    // Mark as completed
+    // Mark as completed — then sweep any sibling 'update' rows this push
+    // already covered (supersededUpdateIds is only non-empty for updates).
     await (supabase
       .from('notion_sync_queue') as any)
       .update({
@@ -416,6 +467,7 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
         processed_at: new Date().toISOString(),
       })
       .eq('id', queueItem.id)
+    await completeSupersededSiblings(supabase, supersededUpdateIds)
 
     return { success: true }
   } catch (error: any) {
