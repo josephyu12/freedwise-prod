@@ -13,6 +13,11 @@ export default function ArchivesPage() {
   const [currentPage, setCurrentPage] = useState(1)
   const [itemsPerPage, setItemsPerPage] = useState(20)
   const [totalHighlights, setTotalHighlights] = useState(0)
+  const [selectMode, setSelectMode] = useState(false)
+  // Selection intentionally survives pagination — bulk actions apply to every
+  // selected id, even ones picked on other pages.
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [bulkWorking, setBulkWorking] = useState(false)
   const { toast, showToast } = useActionToast()
   const supabase = createClient()
 
@@ -150,6 +155,106 @@ export default function ArchivesPage() {
     }
   }
 
+  // ─── Select mode / bulk actions ────────────────────────────
+
+  const toggleSelectMode = () => {
+    if (selectMode) {
+      setSelectMode(false)
+      setSelectedIds(new Set())
+    } else {
+      setSelectMode(true)
+    }
+  }
+
+  const toggleSelected = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) {
+        next.delete(id)
+      } else {
+        next.add(id)
+      }
+      return next
+    })
+  }
+
+  const allOnPageSelected =
+    highlights.length > 0 && highlights.every((h) => selectedIds.has(h.id))
+
+  const toggleSelectPage = () => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      if (allOnPageSelected) {
+        highlights.forEach((h) => next.delete(h.id))
+      } else {
+        highlights.forEach((h) => next.add(h.id))
+      }
+      return next
+    })
+  }
+
+  const handleBulkUnarchive = async () => {
+    const ids = Array.from(selectedIds)
+    if (ids.length === 0 || bulkWorking) return
+    if (!confirm(`Are you sure you want to unarchive ${ids.length} highlight${ids.length === 1 ? '' : 's'}?`)) return
+
+    setBulkWorking(true)
+    try {
+      const { error } = await (supabase
+        .from('highlights') as any)
+        .update({ archived: false, unarchived_at: new Date().toISOString() })
+        .in('id', ids)
+      if (error) throw error
+
+      setSelectedIds(new Set())
+      setSelectMode(false)
+      await loadHighlights()
+      showToast(`${ids.length} highlight${ids.length === 1 ? '' : 's'} unarchived`)
+    } catch (error) {
+      console.error('Error bulk unarchiving highlights:', error)
+      alert('Failed to unarchive highlights. Please try again.')
+    } finally {
+      setBulkWorking(false)
+    }
+  }
+
+  const handleBulkDelete = async () => {
+    const ids = Array.from(selectedIds)
+    if (ids.length === 0 || bulkWorking) return
+    if (!confirm(`Are you sure you want to delete ${ids.length} highlight${ids.length === 1 ? '' : 's'}? This cannot be undone.`)) return
+
+    setBulkWorking(true)
+    try {
+      // Capture text for the Notion sync queue before rows leave state.
+      const byId = new Map(highlights.map((h) => [h.id, h]))
+
+      const { error } = await (supabase
+        .from('highlights') as any)
+        .delete()
+        .in('id', ids)
+      if (error) throw error
+
+      for (const id of ids) {
+        const h = byId.get(id)
+        await addToSyncQueue(id, 'delete', h?.text ?? null, h?.html_content ?? null).catch((err) =>
+          console.error('Error queueing Notion delete:', err)
+        )
+      }
+      // One redistribute for the whole batch keeps future daily reviews consistent.
+      await fetch('/api/daily/redistribute', { method: 'POST' }).catch(() => {})
+
+      setSelectedIds(new Set())
+      setSelectMode(false)
+      await loadHighlights()
+      showToast(`${ids.length} highlight${ids.length === 1 ? '' : 's'} deleted`)
+    } catch (error) {
+      console.error('Error bulk deleting highlights:', error)
+      alert('Failed to delete highlights. Please try again.')
+    } finally {
+      setBulkWorking(false)
+    }
+  }
+
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
@@ -162,10 +267,25 @@ export default function ArchivesPage() {
     <main className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 dark:from-gray-900 dark:to-gray-800">
       <div className="container mx-auto px-4 py-8">
         <div className="max-w-4xl mx-auto">
-          <div className="mb-6 sm:mb-8">
+          <div className="mb-6 sm:mb-8 flex flex-col sm:flex-row sm:justify-between sm:items-center gap-4">
             <h1 className="text-2xl sm:text-3xl lg:text-4xl font-bold text-gray-900 dark:text-white">
               Archived Highlights
             </h1>
+            {(totalHighlights > 0 || selectMode) && (
+              <button
+                onClick={toggleSelectMode}
+                className={`flex items-center gap-2 px-3.5 py-2 rounded-full transition-all text-sm font-medium ${
+                  selectMode
+                    ? 'bg-blue-600 text-white shadow-sm'
+                    : 'bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300 border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700'
+                }`}
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                <span>{selectMode ? 'Done' : 'Select'}</span>
+              </button>
+            )}
           </div>
 
           <div className="space-y-4">
@@ -204,8 +324,26 @@ export default function ArchivesPage() {
               highlights.map((highlight) => (
                 <div
                   key={highlight.id}
-                  className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-lg opacity-60 border-2 border-orange-300 dark:border-orange-700"
+                  onClick={selectMode ? () => toggleSelected(highlight.id) : undefined}
+                  className={`relative bg-white dark:bg-gray-800 p-6 rounded-lg shadow-lg opacity-60 border-2 border-orange-300 dark:border-orange-700 ${
+                    selectMode ? 'cursor-pointer select-none' : ''
+                  } ${selectMode && selectedIds.has(highlight.id) ? 'ring-2 ring-blue-500' : ''}`}
                 >
+                  {selectMode && (
+                    <div
+                      className={`absolute top-3 right-3 w-6 h-6 rounded-full border-2 flex items-center justify-center transition ${
+                        selectedIds.has(highlight.id)
+                          ? 'bg-blue-600 border-blue-600 text-white'
+                          : 'bg-white dark:bg-gray-700 border-gray-300 dark:border-gray-500'
+                      }`}
+                    >
+                      {selectedIds.has(highlight.id) && (
+                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                        </svg>
+                      )}
+                    </div>
+                  )}
                   <div
                     className="highlight-content text-base mb-3 prose dark:prose-invert max-w-none"
                     dangerouslySetInnerHTML={{
@@ -231,20 +369,22 @@ export default function ArchivesPage() {
                       {highlight.source && <span>{highlight.source}</span>}
                     </p>
                   )}
-                  <div className="flex flex-col sm:flex-row gap-2 mt-3">
-                    <button
-                      onClick={() => handleUnarchive(highlight.id)}
-                      className="px-3 py-1 text-sm bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300 rounded hover:bg-blue-200 dark:hover:bg-blue-800 transition"
-                    >
-                      Unarchive
-                    </button>
-                    <button
-                      onClick={() => handleDelete(highlight.id)}
-                      className="px-3 py-1 text-sm bg-red-100 dark:bg-red-900 text-red-700 dark:text-red-300 rounded hover:bg-red-200 dark:hover:bg-red-800 transition"
-                    >
-                      Delete
-                    </button>
-                  </div>
+                  {!selectMode && (
+                    <div className="flex flex-col sm:flex-row gap-2 mt-3">
+                      <button
+                        onClick={() => handleUnarchive(highlight.id)}
+                        className="px-3 py-1 text-sm bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300 rounded hover:bg-blue-200 dark:hover:bg-blue-800 transition"
+                      >
+                        Unarchive
+                      </button>
+                      <button
+                        onClick={() => handleDelete(highlight.id)}
+                        className="px-3 py-1 text-sm bg-red-100 dark:bg-red-900 text-red-700 dark:text-red-300 rounded hover:bg-red-200 dark:hover:bg-red-800 transition"
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  )}
                 </div>
               ))
             )}
@@ -279,6 +419,41 @@ export default function ArchivesPage() {
           </div>
         </div>
       </div>
+      {selectMode && (
+        <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 flex flex-wrap items-center justify-center gap-2 sm:gap-3 px-4 py-3 rounded-2xl shadow-2xl bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 max-w-[calc(100vw-2rem)]">
+          <span className="text-sm font-medium text-gray-900 dark:text-white whitespace-nowrap">
+            {selectedIds.size} selected
+          </span>
+          <button
+            onClick={toggleSelectPage}
+            disabled={bulkWorking}
+            className="px-3 py-1.5 text-sm bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-600 transition disabled:opacity-50"
+          >
+            {allOnPageSelected ? 'Deselect page' : 'Select page'}
+          </button>
+          <button
+            onClick={handleBulkUnarchive}
+            disabled={bulkWorking || selectedIds.size === 0}
+            className="px-3 py-1.5 text-sm bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300 rounded-lg hover:bg-blue-200 dark:hover:bg-blue-800 transition disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {bulkWorking ? 'Working…' : 'Unarchive'}
+          </button>
+          <button
+            onClick={handleBulkDelete}
+            disabled={bulkWorking || selectedIds.size === 0}
+            className="px-3 py-1.5 text-sm bg-red-100 dark:bg-red-900 text-red-700 dark:text-red-300 rounded-lg hover:bg-red-200 dark:hover:bg-red-800 transition disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {bulkWorking ? 'Working…' : 'Delete'}
+          </button>
+          <button
+            onClick={toggleSelectMode}
+            disabled={bulkWorking}
+            className="px-3 py-1.5 text-sm bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-600 transition disabled:opacity-50"
+          >
+            Cancel
+          </button>
+        </div>
+      )}
       <ActionToast toast={toast} />
     </main>
   )

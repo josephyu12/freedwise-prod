@@ -83,6 +83,9 @@ export default function HighlightsPage() {
   const [pinnedHighlightIds, setPinnedHighlightIds] = useState<Set<string>>(new Set())
   const [pinDialogOpen, setPinDialogOpen] = useState(false)
   const [pendingPinHighlightId, setPendingPinHighlightId] = useState<string | null>(null)
+  const [selectMode, setSelectMode] = useState(false)
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [bulkWorking, setBulkWorking] = useState(false)
   const { toast, showToast } = useActionToast()
   const supabase = createClient()
 
@@ -178,6 +181,7 @@ export default function HighlightsPage() {
 
   useEffect(() => {
     setCurrentPage(1) // Reset to first page when filter or sort changes
+    setSelectedIds(new Set()) // Selection may no longer match what's visible
   }, [showArchived, reviewFilter, selectedFilterCategories, excludedCategories, categoryFilterMode, sortBy])
 
   useEffect(() => {
@@ -766,6 +770,114 @@ export default function HighlightsPage() {
     })()
   }
 
+  // ─── Select mode / bulk actions ────────────────────────────
+
+  const toggleSelectMode = () => {
+    if (!selectMode) {
+      // Close any open editors so a card can't be both editing and selectable.
+      handleCancelEdit()
+      handleCancelSplit()
+      setSelectMode(true)
+    } else {
+      setSelectMode(false)
+      setSelectedIds(new Set())
+    }
+  }
+
+  const toggleSelected = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) {
+        next.delete(id)
+      } else {
+        next.add(id)
+      }
+      return next
+    })
+  }
+
+  const allOnPageSelected =
+    highlights.length > 0 && highlights.every((h) => selectedIds.has(h.id))
+
+  const toggleSelectPage = () => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      if (allOnPageSelected) {
+        highlights.forEach((h) => next.delete(h.id))
+      } else {
+        highlights.forEach((h) => next.add(h.id))
+      }
+      return next
+    })
+  }
+
+  const handleBulkArchive = async () => {
+    const ids = Array.from(selectedIds)
+    if (ids.length === 0 || bulkWorking) return
+    const verb = showArchived ? 'unarchive' : 'archive'
+    if (!confirm(`Are you sure you want to ${verb} ${ids.length} highlight${ids.length === 1 ? '' : 's'}?`)) return
+
+    setBulkWorking(true)
+    try {
+      const patch = showArchived
+        ? { archived: false, unarchived_at: new Date().toISOString() }
+        : { archived: true }
+      const { error } = await (supabase
+        .from('highlights') as any)
+        .update(patch)
+        .in('id', ids)
+      if (error) throw error
+
+      setSelectedIds(new Set())
+      setSelectMode(false)
+      await loadHighlights()
+      showToast(`${ids.length} highlight${ids.length === 1 ? '' : 's'} ${verb}d`)
+    } catch (error) {
+      console.error(`Error bulk ${verb}ing highlights:`, error)
+      alert(`Failed to ${verb} highlights. Please try again.`)
+    } finally {
+      setBulkWorking(false)
+    }
+  }
+
+  const handleBulkDelete = async () => {
+    const ids = Array.from(selectedIds)
+    if (ids.length === 0 || bulkWorking) return
+    if (!confirm(`Are you sure you want to delete ${ids.length} highlight${ids.length === 1 ? '' : 's'}? This cannot be undone.`)) return
+
+    setBulkWorking(true)
+    try {
+      // Capture text for the Notion sync queue before rows leave state.
+      // (Selections made on other pages won't be in state — that's fine, the
+      // queue write is keyed by highlight id.)
+      const byId = new Map(highlights.map((h) => [h.id, h]))
+
+      const { error } = await (supabase
+        .from('highlights') as any)
+        .delete()
+        .in('id', ids)
+      if (error) throw error
+
+      for (const id of ids) {
+        const h = byId.get(id)
+        addToSyncQueue(id, 'delete', h?.text ?? null, h?.html_content ?? null).catch((err) =>
+          console.error('Error queueing Notion delete:', err)
+        )
+      }
+      // One redistribute for the whole batch keeps future daily reviews consistent.
+      callRedistribute().catch(() => {})
+
+      setSelectedIds(new Set())
+      setSelectMode(false)
+      await loadHighlights()
+      showToast(`${ids.length} highlight${ids.length === 1 ? '' : 's'} deleted`)
+    } catch (error) {
+      console.error('Error bulk deleting highlights:', error)
+      alert('Failed to delete highlights. Please try again.')
+    } finally {
+      setBulkWorking(false)
+    }
+  }
 
   const handleStartEdit = (highlight: Highlight) => {
     setEditingId(highlight.id)
@@ -1073,6 +1185,19 @@ export default function HighlightsPage() {
                       {selectedFilterCategories.length + excludedCategories.length}
                     </span>
                   )}
+                </button>
+                <button
+                  onClick={toggleSelectMode}
+                  className={`flex items-center gap-2 px-3.5 py-2 rounded-full transition-all text-sm font-medium ${
+                    selectMode
+                      ? 'bg-blue-600 text-white shadow-sm'
+                      : 'btn-secondary !rounded-full !py-2 !px-3.5'
+                  }`}
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                  <span>{selectMode ? 'Done' : 'Select'}</span>
                 </button>
               </div>
             </div>
@@ -1409,10 +1534,28 @@ export default function HighlightsPage() {
                 <div
                   key={highlight.id}
                   id={`highlight-${highlight.id}`}
-                  className={`bg-white dark:bg-gray-800 p-6 rounded-lg shadow-lg ${
+                  onClick={selectMode ? () => toggleSelected(highlight.id) : undefined}
+                  className={`relative bg-white dark:bg-gray-800 p-6 rounded-lg shadow-lg ${
                     highlight.archived ? 'opacity-60 border-2 border-orange-300 dark:border-orange-700' : ''
+                  } ${selectMode ? 'cursor-pointer select-none' : ''} ${
+                    selectMode && selectedIds.has(highlight.id) ? 'ring-2 ring-blue-500' : ''
                   }`}
                 >
+                  {selectMode && (
+                    <div
+                      className={`absolute top-3 right-3 w-6 h-6 rounded-full border-2 flex items-center justify-center transition ${
+                        selectedIds.has(highlight.id)
+                          ? 'bg-blue-600 border-blue-600 text-white'
+                          : 'bg-white dark:bg-gray-700 border-gray-300 dark:border-gray-500'
+                      }`}
+                    >
+                      {selectedIds.has(highlight.id) && (
+                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                        </svg>
+                      )}
+                    </div>
+                  )}
                   {highlight.archived && (
                     <div className="mb-2 px-2 py-1 bg-orange-100 dark:bg-orange-900 text-orange-800 dark:text-orange-200 rounded text-xs font-semibold inline-block">
                       Archived (low two months in a row)
@@ -1601,7 +1744,7 @@ export default function HighlightsPage() {
                   )}
                   <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center mt-4 gap-3">
                     <div className="flex items-start gap-2">
-                      {editingId !== highlight.id && (
+                      {!selectMode && editingId !== highlight.id && (
                         <button
                           onClick={() => handlePin(highlight.id)}
                           className={`p-1 rounded transition flex-shrink-0 ${
@@ -1645,7 +1788,7 @@ export default function HighlightsPage() {
                       </div>
                     </div>
                     <div className="flex flex-row flex-wrap gap-2">
-                      {editingId !== highlight.id && (
+                      {!selectMode && editingId !== highlight.id && (
                         <>
                           <button
                             onClick={() => handleStartEdit(highlight)}
@@ -1760,6 +1903,45 @@ export default function HighlightsPage() {
           </div>
         </div>
       </div>
+      {selectMode && (
+        <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 flex flex-wrap items-center justify-center gap-2 sm:gap-3 px-4 py-3 rounded-2xl shadow-2xl bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 max-w-[calc(100vw-2rem)]">
+          <span className="text-sm font-medium text-gray-900 dark:text-white whitespace-nowrap">
+            {selectedIds.size} selected
+          </span>
+          <button
+            onClick={toggleSelectPage}
+            disabled={bulkWorking}
+            className="px-3 py-1.5 text-sm bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-600 transition disabled:opacity-50"
+          >
+            {allOnPageSelected ? 'Deselect page' : 'Select page'}
+          </button>
+          <button
+            onClick={handleBulkArchive}
+            disabled={bulkWorking || selectedIds.size === 0}
+            className={`px-3 py-1.5 text-sm rounded-lg transition disabled:opacity-50 disabled:cursor-not-allowed ${
+              showArchived
+                ? 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300 hover:bg-blue-200 dark:hover:bg-blue-800'
+                : 'bg-orange-100 dark:bg-orange-900 text-orange-700 dark:text-orange-300 hover:bg-orange-200 dark:hover:bg-orange-800'
+            }`}
+          >
+            {bulkWorking ? 'Working…' : showArchived ? 'Unarchive' : 'Archive'}
+          </button>
+          <button
+            onClick={handleBulkDelete}
+            disabled={bulkWorking || selectedIds.size === 0}
+            className="px-3 py-1.5 text-sm bg-red-100 dark:bg-red-900 text-red-700 dark:text-red-300 rounded-lg hover:bg-red-200 dark:hover:bg-red-800 transition disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {bulkWorking ? 'Working…' : 'Delete'}
+          </button>
+          <button
+            onClick={toggleSelectMode}
+            disabled={bulkWorking}
+            className="px-3 py-1.5 text-sm bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-600 transition disabled:opacity-50"
+          >
+            Cancel
+          </button>
+        </div>
+      )}
       <PinDialog
         isOpen={pinDialogOpen}
         onClose={() => {
