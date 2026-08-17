@@ -64,7 +64,6 @@ export default function HighlightsPage() {
   const [newCategoryName, setNewCategoryName] = useState('')
   const [showCategoryInput, setShowCategoryInput] = useState(false)
   const [showArchived, setShowArchived] = useState(false)
-  const [reviewFilter, setReviewFilter] = useState<'all' | 'reviewed' | 'not-reviewed'>('all')
   const [sortBy, setSortBy] = useState<HighlightSort>('newest')
   const [categoryFilterMode, setCategoryFilterMode] = useState<'or' | 'and'>('or')
   const [selectedFilterCategories, setSelectedFilterCategories] = useState<string[]>([])
@@ -184,12 +183,12 @@ export default function HighlightsPage() {
   useEffect(() => {
     setCurrentPage(1) // Reset to first page when filter or sort changes
     setSelectedIds(new Set()) // Selection may no longer match what's visible
-  }, [showArchived, reviewFilter, selectedFilterCategories, excludedCategories, categoryFilterMode, sortBy])
+  }, [showArchived, selectedFilterCategories, excludedCategories, categoryFilterMode, sortBy])
 
   useEffect(() => {
     loadHighlights()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [showArchived, reviewFilter, selectedFilterCategories, excludedCategories, categoryFilterMode, sortBy, currentPage, itemsPerPage])
+  }, [showArchived, selectedFilterCategories, excludedCategories, categoryFilterMode, sortBy, currentPage, itemsPerPage])
 
   const loadHighlights = async () => {
     try {
@@ -202,10 +201,7 @@ export default function HighlightsPage() {
         return
       }
       
-      // Note: We'll calculate the total count after filtering by review status
-      // For now, just get all highlights to filter them
-
-      // Get all data first (we need to filter by review status, which requires all highlights)
+      // Get all data first so category filters can run client-side.
       // Supabase has a default limit of 1000, so we need to explicitly request more or fetch in batches
       // The previous version of this query embedded `daily_assignments` for every
       // highlight (one row per (highlight, day)). With a few thousand highlights
@@ -274,12 +270,11 @@ export default function HighlightsPage() {
 
       const data = allHighlights
 
-      // Current review CYCLE for filtering (using local timezone). For monthly
-      // cadence the cycle key/window is the calendar month, identical to before.
+      // Current review cycle (local timezone) for "Review on" tags.
       const now = new Date()
       const todayIso = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
-      // Display-only use of the cadence ("Review on" tags): degrade to the
-      // monthly window rather than failing the whole list on a transient error.
+      // Display-only use of the cadence: degrade to the monthly window rather
+      // than failing the whole list on a transient error.
       let freq = 1
       try {
         ;({ freq } = await getUserReviewSettings(supabase, user.id))
@@ -287,7 +282,6 @@ export default function HighlightsPage() {
         console.warn('Failed to load review settings; using monthly window for display:', e)
       }
       const currentCycle = getCycleForDate(todayIso, freq)
-      const currentMonth = currentCycle.key
       const currentMonthStart = currentCycle.startDate
       const currentMonthEnd = currentCycle.endDate
 
@@ -323,14 +317,8 @@ export default function HighlightsPage() {
           .filter((mr: { month_year: string | null }) => !!mr.month_year)
           .sort((a: { month_year: string }, b: { month_year: string }) => a.month_year.localeCompare(b.month_year))
 
-        // Current month's assignment (date + rating) comes from the small follow-up query above
-        const currentAssignment = currentAssignments.get(h.id)
-        const assignedDate = currentAssignment?.date || null
-        const hasRatingThisMonth = currentAssignment?.rating != null
-
-        const reviewedForCurrentMonth =
-          hasRatingThisMonth ||
-          monthsReviewed.some((mr: { month_year: string }) => mr.month_year === currentMonth)
+        // Current month's assignment comes from the small follow-up query above
+        const assignedDate = currentAssignments.get(h.id)?.date || null
 
         return {
           ...h,
@@ -338,17 +326,8 @@ export default function HighlightsPage() {
           linked_highlights: h.highlight_links_from || [],
           months_reviewed: monthsReviewed,
           assigned_date: assignedDate,
-          reviewedForCurrentMonth,
         }
       })
-
-      // Filter by review status for current month BEFORE pagination.
-      // Consider "reviewed" if highlight_months_reviewed has this month OR this month's assignment has a rating.
-      if (reviewFilter === 'reviewed') {
-        processedHighlights = processedHighlights.filter((h: any) => h.reviewedForCurrentMonth === true)
-      } else if (reviewFilter === 'not-reviewed') {
-        processedHighlights = processedHighlights.filter((h: any) => h.reviewedForCurrentMonth !== true)
-      }
 
       // Filter by categories
       if (selectedFilterCategories.length > 0) {
@@ -528,7 +507,6 @@ export default function HighlightsPage() {
       linked_highlights: [],
       months_reviewed: [],
       assigned_date: null,
-      reviewedForCurrentMonth: false,
     })) as unknown as Highlight[]
 
     // Apply optimistic UI immediately: prepend new rows, bump count, clear the form.
@@ -1153,53 +1131,43 @@ export default function HighlightsPage() {
       <div className="container mx-auto px-4 py-8 sm:py-10">
         <div className="max-w-4xl mx-auto">
           <div className="mb-6 sm:mb-8">
-            <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-4 mb-4">
-              <h1 className="text-2xl sm:text-3xl font-bold tracking-tight" style={{ color: 'var(--text-primary)' }}>
-                {showArchived ? 'Archived Highlights' : 'My Highlights'}
-              </h1>
-              <div className="flex flex-wrap items-center gap-2">
-                <NotionSyncButton />
-                <button
-                  onClick={() => setShowArchived(!showArchived)}
-                  className={`flex items-center gap-2 px-3.5 py-2 rounded-full transition-all text-sm font-medium ${
-                    showArchived
-                      ? 'bg-amber-500 text-white shadow-sm'
-                      : 'btn-secondary !rounded-full !py-2 !px-3.5'
-                  }`}
-                >
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4" />
-                  </svg>
-                  <span className="hidden sm:inline">{showArchived ? 'Show Active' : 'Show Archived'}</span>
-                  <span className="sm:hidden">{showArchived ? 'Active' : 'Archived'}</span>
-                </button>
-                <select
-                  value={reviewFilter}
-                  onChange={(e) => setReviewFilter(e.target.value as 'all' | 'reviewed' | 'not-reviewed')}
-                  className="input-boxed-elegant !rounded-full !py-2 !px-3.5 !text-sm !w-auto"
-                >
-                  <option value="all">All</option>
-                  <option value="reviewed">Reviewed</option>
-                  <option value="not-reviewed">Not Reviewed</option>
-                </select>
-                <button
-                  onClick={() => setShowCategoryFilter(!showCategoryFilter)}
-                  className={`flex items-center gap-2 px-3.5 py-2 rounded-full transition-all text-sm font-medium ${
-                    showCategoryFilter || selectedFilterCategories.length > 0 || excludedCategories.length > 0
-                      ? 'bg-indigo-500 text-white shadow-sm'
-                      : 'btn-secondary !rounded-full !py-2 !px-3.5'
-                  }`}
-                >
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z" />
-                  </svg>
-                  <span className="hidden sm:inline">Categories</span>
-                  {(selectedFilterCategories.length > 0 || excludedCategories.length > 0) && (
-                    <span className="ml-1 px-1.5 py-0.5 bg-white/20 rounded-full text-xs">
-                      {selectedFilterCategories.length + excludedCategories.length}
-                    </span>
-                  )}
-                </button>
+            <h1 className="text-2xl sm:text-3xl font-bold tracking-tight mb-3" style={{ color: 'var(--text-primary)' }}>
+              {showArchived ? 'Archived Highlights' : 'My Highlights'}
+            </h1>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                onClick={() => setShowArchived(!showArchived)}
+                className={`flex items-center gap-2 px-3.5 py-2 rounded-full transition-all text-sm font-medium ${
+                  showArchived
+                    ? 'bg-amber-500 text-white shadow-sm'
+                    : 'btn-secondary !rounded-full !py-2 !px-3.5'
+                }`}
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4" />
+                </svg>
+                <span className="hidden sm:inline">{showArchived ? 'Show Active' : 'Show Archived'}</span>
+                <span className="sm:hidden">{showArchived ? 'Active' : 'Archived'}</span>
+              </button>
+              <button
+                onClick={() => setShowCategoryFilter(!showCategoryFilter)}
+                className={`flex items-center gap-2 px-3.5 py-2 rounded-full transition-all text-sm font-medium ${
+                  showCategoryFilter || selectedFilterCategories.length > 0 || excludedCategories.length > 0
+                    ? 'bg-indigo-500 text-white shadow-sm'
+                    : 'btn-secondary !rounded-full !py-2 !px-3.5'
+                }`}
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z" />
+                </svg>
+                <span className="hidden sm:inline">Categories</span>
+                {(selectedFilterCategories.length > 0 || excludedCategories.length > 0) && (
+                  <span className="ml-1 px-1.5 py-0.5 bg-white/20 rounded-full text-xs">
+                    {selectedFilterCategories.length + excludedCategories.length}
+                  </span>
+                )}
+              </button>
+              <div className="flex items-center gap-2 sm:ml-auto">
                 <button
                   onClick={toggleSelectMode}
                   className={`flex items-center gap-2 px-3.5 py-2 rounded-full transition-all text-sm font-medium ${
@@ -1213,6 +1181,7 @@ export default function HighlightsPage() {
                   </svg>
                   <span>{selectMode ? 'Done' : 'Select'}</span>
                 </button>
+                <NotionSyncButton />
               </div>
             </div>
           </div>
