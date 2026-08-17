@@ -7,6 +7,9 @@ import { Pin, PinOff } from 'lucide-react'
 import PinDialog from '@/components/PinDialog'
 import { renderHighlightHtml } from '@/lib/renderHighlightHtml'
 import ActionToast, { useActionToast } from '@/components/ActionToast'
+import SelectModeBar, { SelectCheck, archiveActionError } from '@/components/SelectModeBar'
+import { addToNotionSyncQueue } from '@/lib/notionSyncQueue'
+import { removeFromFutureMonths } from '@/lib/removeFromFutureMonths'
 import { getUserReviewSettings, getCycleForDate } from '@/lib/cycle'
 
 interface PinnedHighlight {
@@ -18,6 +21,7 @@ interface PinnedHighlight {
     text: string
     html_content: string | null
     created_at: string
+    archived?: boolean
   }
 }
 
@@ -28,6 +32,9 @@ export default function PinsPage() {
   const [pinDialogOpen, setPinDialogOpen] = useState(false)
   const [pendingPinHighlightId, setPendingPinHighlightId] = useState<string | null>(null)
   const [assignedDates, setAssignedDates] = useState<Map<string, string>>(new Map())
+  const [selectMode, setSelectMode] = useState(false)
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [bulkWorking, setBulkWorking] = useState(false)
   const { toast, showToast } = useActionToast()
   const supabase = createClient()
 
@@ -50,7 +57,8 @@ export default function PinsPage() {
             id,
             text,
             html_content,
-            created_at
+            created_at,
+            archived
           )
         `)
         .eq('user_id', user.id)
@@ -205,6 +213,121 @@ export default function PinsPage() {
     }
   }
 
+  // ─── Select mode / bulk actions ────────────────────────────
+
+  const toggleSelectMode = () => {
+    if (selectMode) {
+      setSelectMode(false)
+      setSelectedIds(new Set())
+    } else {
+      setSelectMode(true)
+    }
+  }
+
+  const toggleSelected = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  const allOnPageSelected =
+    pinnedHighlights.length > 0 &&
+    pinnedHighlights.every((p) => p.highlights && selectedIds.has(p.highlights.id))
+
+  const toggleSelectPage = () => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      if (allOnPageSelected) {
+        pinnedHighlights.forEach((p) => {
+          if (p.highlights) next.delete(p.highlights.id)
+        })
+      } else {
+        pinnedHighlights.forEach((p) => {
+          if (p.highlights) next.add(p.highlights.id)
+        })
+      }
+      return next
+    })
+  }
+
+  const selectedPins = pinnedHighlights.filter(
+    (p) => p.highlights && selectedIds.has(p.highlights.id)
+  )
+  const handleBulkArchive = async (archive: boolean) => {
+    const ids = selectedPins.map((p) => p.highlights.id)
+    if (ids.length === 0 || bulkWorking) return
+    const mismatch = archiveActionError(
+      archive ? 'archive' : 'unarchive',
+      selectedPins.map((p) => p.highlights)
+    )
+    if (mismatch) {
+      alert(mismatch)
+      return
+    }
+    const verb = archive ? 'archive' : 'unarchive'
+    if (!confirm(`Are you sure you want to ${verb} ${ids.length} highlight${ids.length === 1 ? '' : 's'}?`)) return
+
+    setBulkWorking(true)
+    try {
+      const patch = archive
+        ? { archived: true }
+        : { archived: false, unarchived_at: new Date().toISOString() }
+      const { error } = await (supabase.from('highlights') as any).update(patch).in('id', ids)
+      if (error) throw error
+      if (archive) {
+        await Promise.all(ids.map((id) => removeFromFutureMonths(supabase, id).catch(() => {})))
+      }
+      setSelectedIds(new Set())
+      setSelectMode(false)
+      await loadPinnedHighlights()
+      showToast(`${ids.length} highlight${ids.length === 1 ? '' : 's'} ${verb}d`)
+    } catch (error) {
+      console.error(`Error bulk ${verb}ing highlights:`, error)
+      alert(`Failed to ${verb} highlights. Please try again.`)
+    } finally {
+      setBulkWorking(false)
+    }
+  }
+
+  const handleBulkDelete = async () => {
+    const ids = Array.from(selectedIds)
+    if (ids.length === 0 || bulkWorking) return
+    if (!confirm(`Are you sure you want to delete ${ids.length} highlight${ids.length === 1 ? '' : 's'}? This cannot be undone.`)) return
+
+    setBulkWorking(true)
+    try {
+      const byId = new Map(
+        pinnedHighlights
+          .filter((p) => p.highlights)
+          .map((p) => [p.highlights.id, p.highlights])
+      )
+      const { error } = await (supabase.from('highlights') as any).delete().in('id', ids)
+      if (error) throw error
+      for (const id of ids) {
+        const h = byId.get(id)
+        addToNotionSyncQueue({
+          highlightId: id,
+          operationType: 'delete',
+          text: h?.text ?? null,
+          htmlContent: h?.html_content ?? null,
+        }).catch((err) => console.error('Error queueing Notion delete:', err))
+      }
+      await fetch('/api/daily/redistribute', { method: 'POST' }).catch(() => {})
+      setSelectedIds(new Set())
+      setSelectMode(false)
+      await loadPinnedHighlights()
+      showToast(`${ids.length} highlight${ids.length === 1 ? '' : 's'} deleted`)
+    } catch (error) {
+      console.error('Error bulk deleting highlights:', error)
+      alert('Failed to delete highlights. Please try again.')
+    } finally {
+      setBulkWorking(false)
+    }
+  }
+
   if (loading) {
     return (
       <main className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 dark:from-gray-900 dark:to-gray-800">
@@ -223,13 +346,30 @@ export default function PinsPage() {
     <main className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 dark:from-gray-900 dark:to-gray-800">
       <div className="container mx-auto px-4 py-8">
         <div className="max-w-4xl mx-auto">
-          <div className="mb-6 sm:mb-8">
+          <div className="mb-6 sm:mb-8 flex flex-col sm:flex-row sm:items-end sm:justify-between gap-3">
+            <div>
             <h1 className="text-2xl sm:text-3xl lg:text-4xl font-bold text-gray-900 dark:text-white mb-2">
               Pin Board
             </h1>
             <p className="text-sm sm:text-base text-gray-600 dark:text-gray-300">
               {pinnedHighlights.length} of 10 highlights pinned
             </p>
+            </div>
+            {pinnedHighlights.length > 0 && (
+              <button
+                onClick={toggleSelectMode}
+                className={`flex items-center gap-2 px-3.5 py-2 rounded-full transition-all text-sm font-medium self-start ${
+                  selectMode
+                    ? 'bg-blue-600 text-white shadow-sm'
+                    : 'bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300 border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700'
+                }`}
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                <span>{selectMode ? 'Done' : 'Select'}</span>
+              </button>
+            )}
           </div>
 
           {pinnedHighlights.length === 0 ? (
@@ -257,8 +397,14 @@ export default function PinsPage() {
                 return (
                   <div
                     key={pin.id}
-                    className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-lg border border-gray-200 dark:border-gray-700"
+                    onClick={selectMode ? () => toggleSelected(highlight.id) : undefined}
+                    className={`relative bg-white dark:bg-gray-800 p-6 rounded-lg shadow-lg border border-gray-200 dark:border-gray-700 ${
+                      selectMode ? 'cursor-pointer select-none' : ''
+                    } ${selectMode && selectedIds.has(highlight.id) ? 'ring-2 ring-blue-500' : ''} ${
+                      highlight.archived ? 'opacity-60 border-orange-300 dark:border-orange-700' : ''
+                    }`}
                   >
+                    {selectMode && <SelectCheck selected={selectedIds.has(highlight.id)} />}
                     <div className="flex items-start justify-between gap-4 mb-4">
                       <div className="flex-1">
                         <div
@@ -293,6 +439,7 @@ export default function PinsPage() {
                           </span>
                         </div>
                       </div>
+                      {!selectMode && (
                       <button
                         onClick={() => handlePin(highlight.id)}
                         className={`flex-shrink-0 px-3 py-2 rounded-lg transition ${
@@ -308,6 +455,7 @@ export default function PinsPage() {
                           <Pin className="w-5 h-5" />
                         )}
                       </button>
+                      )}
                     </div>
                   </div>
                 )
@@ -316,6 +464,20 @@ export default function PinsPage() {
           )}
         </div>
       </div>
+      {selectMode && pinnedHighlights.length > 0 && (
+        <SelectModeBar
+          selectedCount={selectedIds.size}
+          allOnPageSelected={allOnPageSelected}
+          bulkWorking={bulkWorking}
+          onTogglePage={toggleSelectPage}
+          selectPageLabel="Select all"
+          deselectPageLabel="Deselect all"
+          onArchive={() => handleBulkArchive(true)}
+          onUnarchive={() => handleBulkArchive(false)}
+          onDelete={handleBulkDelete}
+          onCancel={toggleSelectMode}
+        />
+      )}
       <PinDialog
         isOpen={pinDialogOpen}
         onClose={() => {

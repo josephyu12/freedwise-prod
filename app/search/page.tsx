@@ -14,6 +14,8 @@ import { renderHighlightHtml } from '@/lib/renderHighlightHtml'
 import { embedText, preloadEmbedder } from '@/lib/clientEmbeddings'
 import { useEmbeddingSync } from '@/hooks/useEmbeddingSync'
 import ActionToast, { useActionToast } from '@/components/ActionToast'
+import SelectModeBar, { SelectCheck, archiveActionError } from '@/components/SelectModeBar'
+import { removeFromFutureMonths } from '@/lib/removeFromFutureMonths'
 
 export default function SearchPage() {
   const [query, setQuery] = useState('')
@@ -35,6 +37,9 @@ export default function SearchPage() {
   const [pinDialogOpen, setPinDialogOpen] = useState(false)
   const [pendingPinHighlightId, setPendingPinHighlightId] = useState<string | null>(null)
   const [usedKeywordFallback, setUsedKeywordFallback] = useState(false)
+  const [selectMode, setSelectMode] = useState(false)
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [bulkWorking, setBulkWorking] = useState(false)
   const { toast, showToast } = useActionToast()
   const supabase = createClient()
 
@@ -178,6 +183,7 @@ export default function SearchPage() {
     } else {
       setResults([])
     }
+    setSelectedIds(new Set())
   }, [debouncedQuery, searchType, performSearch])
 
   const handleStartEdit = (highlight: Highlight, e?: React.MouseEvent) => {
@@ -485,6 +491,111 @@ export default function SearchPage() {
     }
   }
 
+  // ─── Select mode / bulk actions ────────────────────────────
+
+  const toggleSelectMode = () => {
+    if (selectMode) {
+      setSelectMode(false)
+      setSelectedIds(new Set())
+    } else {
+      handleCancelEdit()
+      setSelectMode(true)
+    }
+  }
+
+  const toggleSelected = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  const visibleResults = results
+  const allOnPageSelected =
+    visibleResults.length > 0 && visibleResults.every((h) => selectedIds.has(h.id))
+
+  const toggleSelectPage = () => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      if (allOnPageSelected) {
+        visibleResults.forEach((h) => next.delete(h.id))
+      } else {
+        visibleResults.forEach((h) => next.add(h.id))
+      }
+      return next
+    })
+  }
+
+  const selectedHighlights = results.filter((h) => selectedIds.has(h.id))
+
+  const handleBulkArchive = async (archive: boolean) => {
+    const ids = selectedHighlights.map((h) => h.id)
+    if (ids.length === 0 || bulkWorking) return
+    const mismatch = archiveActionError(archive ? 'archive' : 'unarchive', selectedHighlights)
+    if (mismatch) {
+      alert(mismatch)
+      return
+    }
+    const verb = archive ? 'archive' : 'unarchive'
+    if (!confirm(`Are you sure you want to ${verb} ${ids.length} highlight${ids.length === 1 ? '' : 's'}?`)) return
+
+    setBulkWorking(true)
+    try {
+      const patch = archive
+        ? { archived: true }
+        : { archived: false, unarchived_at: new Date().toISOString() }
+      const { error } = await (supabase.from('highlights') as any).update(patch).in('id', ids)
+      if (error) throw error
+
+      if (archive) {
+        await Promise.all(ids.map((id) => removeFromFutureMonths(supabase, id).catch(() => {})))
+      }
+
+      setSelectedIds(new Set())
+      setSelectMode(false)
+      if (query.trim()) await performSearch(query, searchType)
+      showToast(`${ids.length} highlight${ids.length === 1 ? '' : 's'} ${verb}d`)
+    } catch (error) {
+      console.error(`Error bulk ${verb}ing highlights:`, error)
+      alert(`Failed to ${verb} highlights. Please try again.`)
+    } finally {
+      setBulkWorking(false)
+    }
+  }
+
+  const handleBulkDelete = async () => {
+    const ids = Array.from(selectedIds)
+    if (ids.length === 0 || bulkWorking) return
+    if (!confirm(`Are you sure you want to delete ${ids.length} highlight${ids.length === 1 ? '' : 's'}? This cannot be undone.`)) return
+
+    setBulkWorking(true)
+    try {
+      const byId = new Map(results.map((h) => [h.id, h]))
+      const { error } = await (supabase.from('highlights') as any).delete().in('id', ids)
+      if (error) throw error
+
+      for (const id of ids) {
+        const h = byId.get(id)
+        addToSyncQueue(id, 'delete', h?.text ?? null, h?.html_content ?? null).catch((err) =>
+          console.error('Error queueing Notion delete:', err)
+        )
+      }
+      await fetch('/api/daily/redistribute', { method: 'POST' }).catch(() => {})
+
+      setSelectedIds(new Set())
+      setSelectMode(false)
+      if (query.trim()) await performSearch(query, searchType)
+      showToast(`${ids.length} highlight${ids.length === 1 ? '' : 's'} deleted`)
+    } catch (error) {
+      console.error('Error bulk deleting highlights:', error)
+      alert('Failed to delete highlights. Please try again.')
+    } finally {
+      setBulkWorking(false)
+    }
+  }
+
   return (
     <main className="min-h-screen" style={{ background: 'var(--background)' }}>
       <div className="container mx-auto px-4 py-8 sm:py-10">
@@ -611,13 +722,32 @@ export default function SearchPage() {
           {results.length > 0 && (
             <div>
               <div>
-                <h2 className="text-lg font-semibold mb-3" style={{ color: 'var(--text-primary)' }}>Results</h2>
+                <div className="flex items-center justify-between gap-3 mb-3">
+                  <h2 className="text-lg font-semibold" style={{ color: 'var(--text-primary)' }}>Results</h2>
+                  <button
+                    onClick={toggleSelectMode}
+                    className={`flex items-center gap-2 px-3.5 py-2 rounded-full transition-all text-sm font-medium ${
+                      selectMode
+                        ? 'bg-blue-600 text-white shadow-sm'
+                        : 'btn-secondary !rounded-full !py-2 !px-3.5'
+                    }`}
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                    <span>{selectMode ? 'Done' : 'Select'}</span>
+                  </button>
+                </div>
                 <div className="space-y-3">
                 {results.map((highlight) => (
                   <div
                     key={highlight.id}
-                    className="glass-card p-5 transition"
+                    onClick={selectMode ? () => toggleSelected(highlight.id) : undefined}
+                    className={`relative glass-card p-5 transition ${
+                      selectMode ? 'cursor-pointer select-none' : ''
+                    } ${selectMode && selectedIds.has(highlight.id) ? 'ring-2 ring-blue-500' : ''}`}
                   >
+                    {selectMode && <SelectCheck selected={selectedIds.has(highlight.id)} />}
                     {editingId === highlight.id ? (
                       <div className="space-y-4">
                         <div>
@@ -805,6 +935,7 @@ export default function SearchPage() {
                             {highlight.source && <span>{highlight.source}</span>}
                           </p>
                         )}
+                        {!selectMode && (
                         <div className="flex items-center gap-2 mt-3" onClick={(e) => e.stopPropagation()}>
                           <button
                             onClick={(e) => {
@@ -894,6 +1025,7 @@ export default function SearchPage() {
                             Delete
                           </button>
                         </div>
+                        )}
                       </>
                     )}
                   </div>
@@ -916,6 +1048,20 @@ export default function SearchPage() {
           setPendingPinHighlightId(null)
         }}
       />
+      {selectMode && results.length > 0 && (
+        <SelectModeBar
+          selectedCount={selectedIds.size}
+          allOnPageSelected={allOnPageSelected}
+          bulkWorking={bulkWorking}
+          onTogglePage={toggleSelectPage}
+          selectPageLabel="Select all"
+          deselectPageLabel="Deselect all"
+          onArchive={() => handleBulkArchive(true)}
+          onUnarchive={() => handleBulkArchive(false)}
+          onDelete={handleBulkDelete}
+          onCancel={toggleSelectMode}
+        />
+      )}
       <ActionToast toast={toast} />
     </main>
   )

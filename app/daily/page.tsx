@@ -17,13 +17,14 @@ import { renderHighlightHtml } from '@/lib/renderHighlightHtml'
 import { sanitizeForRender } from '@/lib/sanitizeForRender'
 import { computeMonthReviewStatus } from '@/lib/monthReviewStatus'
 import { getUserReviewSettings, getCycleForDate, nextCycle, cycleKeyForDate } from '@/lib/cycle'
-import { updateHighlightStatsOrQueue } from '@/lib/highlightStats'
+import { updateHighlightStatsAfterRating } from '@/lib/highlightStats'
 import { removeReviewedOnClear } from '@/lib/reviewedLedger'
 import { removeFromFutureMonths } from '@/lib/removeFromFutureMonths'
 import { useOfflineStatus } from '@/hooks/useOfflineStatus'
 import { isEffectivelyOffline } from '@/hooks/useManualOffline'
 import AutoArchiveToast from '@/components/AutoArchiveToast'
 import ActionToast, { useActionToast } from '@/components/ActionToast'
+import SelectModeBar, { SelectCheck, archiveActionError } from '@/components/SelectModeBar'
 import {
   listReplayable,
   drainOfflineQueue,
@@ -236,6 +237,9 @@ export default function DailyPage() {
   const [splitParagraphs, setSplitParagraphs] = useState<ParagraphBlock[]>([])
   const [splitPoints, setSplitPoints] = useState<Set<number>>(new Set())
   const [splittingInProgress, setSplittingInProgress] = useState(false)
+  const [selectMode, setSelectMode] = useState(false)
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [bulkWorking, setBulkWorking] = useState(false)
   const [monthReviewStatus, setMonthReviewStatus] = useState<Map<string, 'completed' | 'partial' | 'none'>>(new Map())
   const [pinnedHighlightIds, setPinnedHighlightIds] = useState<Set<string>>(new Set())
   const [pinDialogOpen, setPinDialogOpen] = useState(false)
@@ -294,6 +298,10 @@ export default function DailyPage() {
   const [usingCachedData, setUsingCachedData] = useState(false)
   // Highlight just auto-archived by the two-low-cycles rule; drives the undo toast.
   const [autoArchivedId, setAutoArchivedId] = useState<string | null>(null)
+
+  useEffect(() => {
+    setSelectedIds(new Set())
+  }, [date])
 
   const editingHighlight = editingId
     ? summary?.highlights.find((sh) => sh.highlight?.id === editingId)?.highlight
@@ -1061,11 +1069,14 @@ export default function DailyPage() {
       // this cycle and the previous one — see lib/highlightStats.ts). This page
       // used to archive on "2+ lows ever", so the same highlight archived or
       // survived depending on which page the rating came from.
-      const { archivedNow } = await updateHighlightStatsOrQueue(supabase, {
-        highlightId,
-        ratingDate: summary?.date || date,
-        freq: freqRef.current,
-      })
+      const { archivedNow } = await withDeadline(
+        updateHighlightStatsAfterRating(supabase, {
+          highlightId,
+          ratingDate: summary?.date || date,
+          freq: freqRef.current,
+        }),
+        'rate-daily stats'
+      )
       // The reload below drops the archived highlight from the day's list —
       // without the toast it just vanishes.
       if (archivedNow) setAutoArchivedId(highlightId)
@@ -1636,6 +1647,248 @@ export default function DailyPage() {
     }
   }
 
+  // ─── Select mode / bulk actions ────────────────────────────
+
+  const visibleDailyHighlights = (summary?.highlights || [])
+    .map((sh) => sh.highlight)
+    .filter((h): h is NonNullable<typeof h> => !!h)
+
+  const allOnPageSelected =
+    visibleDailyHighlights.length > 0 && visibleDailyHighlights.every((h) => selectedIds.has(h.id))
+
+  const toggleSelectMode = () => {
+    if (selectMode) {
+      setSelectMode(false)
+      setSelectedIds(new Set())
+    } else {
+      handleCancelEdit()
+      handleCancelSplit()
+      setSelectMode(true)
+    }
+  }
+
+  const toggleSelected = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  const toggleSelectPage = () => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      if (allOnPageSelected) {
+        visibleDailyHighlights.forEach((h) => next.delete(h.id))
+      } else {
+        visibleDailyHighlights.forEach((h) => next.add(h.id))
+      }
+      return next
+    })
+  }
+
+  const handleBulkArchive = async () => {
+    const ids = Array.from(selectedIds)
+    if (ids.length === 0 || bulkWorking) return
+    const selectedItems = ids.map(
+      (id) => visibleDailyHighlights.find((h) => h.id === id) ?? { archived: false }
+    )
+    const mismatch = archiveActionError('archive', selectedItems)
+    if (mismatch) {
+      alert(mismatch)
+      return
+    }
+    if (!confirm(`Are you sure you want to archive ${ids.length} highlight${ids.length === 1 ? '' : 's'}?`)) return
+
+    setBulkWorking(true)
+    const applyArchivePatch = (highlights: any[]) =>
+      highlights.filter((sh) => !ids.includes(sh.highlight?.id))
+    if (summary) {
+      setSummary({ ...summary, highlights: applyArchivePatch(summary.highlights) })
+    }
+    await updateDailyCache((c) => ({
+      summary: { ...c.summary, highlights: applyArchivePatch(c.summary.highlights) },
+    }))
+
+    const finish = () => {
+      setSelectedIds(new Set())
+      setSelectMode(false)
+      showToast(`${ids.length} highlight${ids.length === 1 ? '' : 's'} archived`)
+    }
+
+    if (!isOnline) {
+      await Promise.all(
+        ids.map((highlightId) =>
+          enqueueOfflineAction({ type: 'archive-highlight', params: { highlightId } })
+        )
+      )
+      finish()
+      setBulkWorking(false)
+      return
+    }
+
+    try {
+      const { error } = await (supabase.from('highlights') as any)
+        .update({ archived: true })
+        .in('id', ids)
+      if (error) throw error
+      await Promise.all(ids.map((id) => removeFromFutureMonths(supabase, id).catch(() => {})))
+      await loadDailySummary(date)
+      const [year, month] = date.split('-').map(Number)
+      const dateMonth = new Date(year, month - 1, 1)
+      await loadMonthReviewStatus(dateMonth)
+      await loadMonthsWithAssignments()
+      finish()
+    } catch (error) {
+      console.error('Error bulk archiving (falling back to offline queue):', error)
+      try {
+        await Promise.all(
+          ids.map((highlightId) =>
+            enqueueOfflineAction({ type: 'archive-highlight', params: { highlightId } })
+          )
+        )
+        finish()
+      } catch (queueError) {
+        console.error('Failed to queue offline bulk archive:', queueError)
+        alert('Failed to archive highlights. Please try again.')
+      }
+    } finally {
+      setBulkWorking(false)
+    }
+  }
+
+  const handleBulkUnarchive = async () => {
+    const ids = Array.from(selectedIds)
+    if (ids.length === 0 || bulkWorking) return
+    const selectedItems = ids.map(
+      (id) => visibleDailyHighlights.find((h) => h.id === id) ?? { archived: false }
+    )
+    const mismatch = archiveActionError('unarchive', selectedItems)
+    if (mismatch) {
+      alert(mismatch)
+      return
+    }
+    if (!confirm(`Are you sure you want to unarchive ${ids.length} highlight${ids.length === 1 ? '' : 's'}?`)) return
+
+    setBulkWorking(true)
+    const finish = () => {
+      setSelectedIds(new Set())
+      setSelectMode(false)
+      showToast(`${ids.length} highlight${ids.length === 1 ? '' : 's'} unarchived`)
+    }
+
+    if (!isOnline) {
+      await Promise.all(
+        ids.map((highlightId) =>
+          enqueueOfflineAction({ type: 'unarchive-highlight', params: { highlightId } })
+        )
+      )
+      finish()
+      setBulkWorking(false)
+      return
+    }
+
+    try {
+      const { error } = await (supabase.from('highlights') as any)
+        .update({ archived: false, unarchived_at: new Date().toISOString() })
+        .in('id', ids)
+      if (error) throw error
+      await loadDailySummary(date)
+      finish()
+    } catch (error) {
+      console.error('Error bulk unarchiving (falling back to offline queue):', error)
+      try {
+        await Promise.all(
+          ids.map((highlightId) =>
+            enqueueOfflineAction({ type: 'unarchive-highlight', params: { highlightId } })
+          )
+        )
+        finish()
+      } catch (queueError) {
+        console.error('Failed to queue offline bulk unarchive:', queueError)
+        alert('Failed to unarchive highlights. Please try again.')
+      }
+    } finally {
+      setBulkWorking(false)
+    }
+  }
+
+  const handleBulkDelete = async () => {
+    const ids = Array.from(selectedIds)
+    if (ids.length === 0 || bulkWorking) return
+    if (!confirm(`Are you sure you want to delete ${ids.length} highlight${ids.length === 1 ? '' : 's'}? This cannot be undone.`)) return
+
+    setBulkWorking(true)
+    const byId = new Map(visibleDailyHighlights.map((h) => [h.id, h]))
+    const applyDeletePatch = (highlights: any[]) =>
+      highlights.filter((sh) => !ids.includes(sh.highlight?.id))
+    if (summary) {
+      setSummary({ ...summary, highlights: applyDeletePatch(summary.highlights) })
+    }
+    await updateDailyCache((c) => ({
+      summary: { ...c.summary, highlights: applyDeletePatch(c.summary.highlights) },
+    }))
+
+    const finish = () => {
+      setSelectedIds(new Set())
+      setSelectMode(false)
+      showToast(`${ids.length} highlight${ids.length === 1 ? '' : 's'} deleted`)
+    }
+
+    if (!isOnline) {
+      await Promise.all(
+        ids.map((highlightId) => {
+          const h = byId.get(highlightId)
+          return enqueueOfflineAction({
+            type: 'delete-highlight',
+            params: { highlightId, text: h?.text ?? null, htmlContent: h?.html_content ?? null },
+          })
+        })
+      )
+      finish()
+      setBulkWorking(false)
+      return
+    }
+
+    try {
+      const { error } = await (supabase.from('highlights') as any).delete().in('id', ids)
+      if (error) throw error
+      for (const id of ids) {
+        const h = byId.get(id)
+        addToSyncQueue(id, 'delete', h?.text ?? null, h?.html_content ?? null).catch((err) =>
+          console.error('Error queueing Notion delete:', err)
+        )
+      }
+      await fetch('/api/daily/redistribute', { method: 'POST' }).catch(() => {})
+      await loadDailySummary(date)
+      const [year, month] = date.split('-').map(Number)
+      const dateMonth = new Date(year, month - 1, 1)
+      await loadMonthReviewStatus(dateMonth)
+      await loadMonthsWithAssignments()
+      finish()
+    } catch (error) {
+      console.error('Error bulk deleting (falling back to offline queue):', error)
+      try {
+        await Promise.all(
+          ids.map((highlightId) => {
+            const h = byId.get(highlightId)
+            return enqueueOfflineAction({
+              type: 'delete-highlight',
+              params: { highlightId, text: h?.text ?? null, htmlContent: h?.html_content ?? null },
+            })
+          })
+        )
+        finish()
+      } catch (queueError) {
+        console.error('Failed to queue offline bulk delete:', queueError)
+        alert('Failed to delete highlights. Please try again.')
+      }
+    } finally {
+      setBulkWorking(false)
+    }
+  }
+
   const handlePin = async (highlightId: string) => {
     const isPinned = pinnedHighlightIds.has(highlightId)
 
@@ -1860,7 +2113,8 @@ export default function DailyPage() {
 
           {summary ? (
             <div>
-              <div className="mb-4">
+              <div className="mb-4 flex flex-col sm:flex-row sm:items-end sm:justify-between gap-3">
+                <div>
                 <h2 className="text-2xl font-semibold text-gray-900 dark:text-white">
                   {(() => {
                     // Parse date string (YYYY-MM-DD) as local date to avoid timezone offset
@@ -1872,6 +2126,22 @@ export default function DailyPage() {
                 <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
                   {summary.highlights.length} {summary.highlights.length === 1 ? 'highlight' : 'highlights'}
                 </p>
+                </div>
+                {summary.highlights.length > 0 && (
+                  <button
+                    onClick={toggleSelectMode}
+                    className={`flex items-center gap-2 px-3.5 py-2 rounded-full transition-all text-sm font-medium self-start ${
+                      selectMode
+                        ? 'bg-blue-600 text-white shadow-sm'
+                        : 'bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300 border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700'
+                    }`}
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                    <span>{selectMode ? 'Done' : 'Select'}</span>
+                  </button>
+                )}
               </div>
               {summary.highlights.length === 0 ? (
                 <div className="bg-white dark:bg-gray-800 p-8 rounded-lg shadow-lg text-center text-gray-500 dark:text-gray-400">
@@ -1887,13 +2157,17 @@ export default function DailyPage() {
                       <div
                         key={summaryHighlight.id}
                         id={`highlight-${highlight.id}`}
+                        onClick={selectMode ? () => toggleSelected(highlight.id) : undefined}
                         className={`bg-white dark:bg-gray-800 p-6 rounded-lg shadow-lg transition-all duration-300 ease-in-out relative ${
                           (slidingOutIds.has(summaryHighlight.id) || summaryHighlight.rating !== null) ? 'rated-overlay' : ''
+                        } ${selectMode ? 'cursor-pointer select-none' : ''} ${
+                          selectMode && selectedIds.has(highlight.id) ? 'ring-2 ring-blue-500' : ''
                         }`}
                         style={{
                           animation: slidingOutIds.has(summaryHighlight.id) ? undefined : 'slideIn 0.3s ease-out',
                         }}
                       >
+                        {selectMode && <SelectCheck selected={selectedIds.has(highlight.id)} />}
                         {(slidingOutIds.has(summaryHighlight.id) || summaryHighlight.rating !== null) && (
                           <div className="absolute inset-0 bg-gray-500/30 dark:bg-gray-900/50 rounded-lg z-10 pointer-events-none transition-opacity duration-300" />
                         )}
@@ -2153,6 +2427,7 @@ export default function DailyPage() {
                             {highlight.source && <span>{highlight.source}</span>}
                           </p>
                         )}
+                        {!selectMode && (
                         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 pt-4 border-t border-gray-200 dark:border-gray-700">
                           <div className="flex flex-col sm:flex-row sm:items-center gap-2">
                             <span className="text-xs sm:text-sm font-medium text-gray-700 dark:text-gray-300 whitespace-nowrap">Rate:</span>
@@ -2266,6 +2541,7 @@ export default function DailyPage() {
                             )}
                           </div>
                         </div>
+                        )}
                       </div>
                     )
                   })}
@@ -2352,6 +2628,20 @@ export default function DailyPage() {
         }}
         onDismiss={() => setAutoArchivedId(null)}
       />
+      {selectMode && visibleDailyHighlights.length > 0 && (
+        <SelectModeBar
+          selectedCount={selectedIds.size}
+          allOnPageSelected={allOnPageSelected}
+          bulkWorking={bulkWorking}
+          onTogglePage={toggleSelectPage}
+          selectPageLabel="Select all"
+          deselectPageLabel="Deselect all"
+          onArchive={handleBulkArchive}
+          onUnarchive={handleBulkUnarchive}
+          onDelete={handleBulkDelete}
+          onCancel={toggleSelectMode}
+        />
+      )}
       <ActionToast toast={toast} />
     </main>
   )

@@ -16,6 +16,8 @@ import { parseIntoParagraphs, groupParagraphsByDividers, ParagraphBlock, splitHt
 import { renderHighlightHtml } from '@/lib/renderHighlightHtml'
 import { sanitizeForRender } from '@/lib/sanitizeForRender'
 import ActionToast, { useActionToast } from '@/components/ActionToast'
+import SelectModeBar, { SelectCheck, archiveActionError } from '@/components/SelectModeBar'
+import { removeFromFutureMonths } from '@/lib/removeFromFutureMonths'
 
 const MONTH_NAMES = [
   'January', 'February', 'March', 'April', 'May', 'June',
@@ -811,22 +813,34 @@ export default function HighlightsPage() {
     })
   }
 
-  const handleBulkArchive = async () => {
+  const handleBulkSetArchived = async (archive: boolean) => {
     const ids = Array.from(selectedIds)
     if (ids.length === 0 || bulkWorking) return
-    const verb = showArchived ? 'unarchive' : 'archive'
+    const selectedItems = ids.map(
+      (id) => highlights.find((h) => h.id === id) ?? { archived: showArchived }
+    )
+    const mismatch = archiveActionError(archive ? 'archive' : 'unarchive', selectedItems)
+    if (mismatch) {
+      alert(mismatch)
+      return
+    }
+    const verb = archive ? 'archive' : 'unarchive'
     if (!confirm(`Are you sure you want to ${verb} ${ids.length} highlight${ids.length === 1 ? '' : 's'}?`)) return
 
     setBulkWorking(true)
     try {
-      const patch = showArchived
-        ? { archived: false, unarchived_at: new Date().toISOString() }
-        : { archived: true }
+      const patch = archive
+        ? { archived: true }
+        : { archived: false, unarchived_at: new Date().toISOString() }
       const { error } = await (supabase
         .from('highlights') as any)
         .update(patch)
         .in('id', ids)
       if (error) throw error
+
+      if (archive) {
+        await Promise.all(ids.map((id) => removeFromFutureMonths(supabase, id).catch(() => {})))
+      }
 
       setSelectedIds(new Set())
       setSelectMode(false)
@@ -1541,21 +1555,7 @@ export default function HighlightsPage() {
                     selectMode && selectedIds.has(highlight.id) ? 'ring-2 ring-blue-500' : ''
                   }`}
                 >
-                  {selectMode && (
-                    <div
-                      className={`absolute top-3 right-3 w-6 h-6 rounded-full border-2 flex items-center justify-center transition ${
-                        selectedIds.has(highlight.id)
-                          ? 'bg-blue-600 border-blue-600 text-white'
-                          : 'bg-white dark:bg-gray-700 border-gray-300 dark:border-gray-500'
-                      }`}
-                    >
-                      {selectedIds.has(highlight.id) && (
-                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
-                        </svg>
-                      )}
-                    </div>
-                  )}
+                  {selectMode && <SelectCheck selected={selectedIds.has(highlight.id)} />}
                   {highlight.archived && (
                     <div className="mb-2 px-2 py-1 bg-orange-100 dark:bg-orange-900 text-orange-800 dark:text-orange-200 rounded text-xs font-semibold inline-block">
                       Archived (low two months in a row)
@@ -1904,43 +1904,16 @@ export default function HighlightsPage() {
         </div>
       </div>
       {selectMode && (
-        <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 flex flex-wrap items-center justify-center gap-2 sm:gap-3 px-4 py-3 rounded-2xl shadow-2xl bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 max-w-[calc(100vw-2rem)]">
-          <span className="text-sm font-medium text-gray-900 dark:text-white whitespace-nowrap">
-            {selectedIds.size} selected
-          </span>
-          <button
-            onClick={toggleSelectPage}
-            disabled={bulkWorking}
-            className="px-3 py-1.5 text-sm bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-600 transition disabled:opacity-50"
-          >
-            {allOnPageSelected ? 'Deselect page' : 'Select page'}
-          </button>
-          <button
-            onClick={handleBulkArchive}
-            disabled={bulkWorking || selectedIds.size === 0}
-            className={`px-3 py-1.5 text-sm rounded-lg transition disabled:opacity-50 disabled:cursor-not-allowed ${
-              showArchived
-                ? 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300 hover:bg-blue-200 dark:hover:bg-blue-800'
-                : 'bg-orange-100 dark:bg-orange-900 text-orange-700 dark:text-orange-300 hover:bg-orange-200 dark:hover:bg-orange-800'
-            }`}
-          >
-            {bulkWorking ? 'Working…' : showArchived ? 'Unarchive' : 'Archive'}
-          </button>
-          <button
-            onClick={handleBulkDelete}
-            disabled={bulkWorking || selectedIds.size === 0}
-            className="px-3 py-1.5 text-sm bg-red-100 dark:bg-red-900 text-red-700 dark:text-red-300 rounded-lg hover:bg-red-200 dark:hover:bg-red-800 transition disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {bulkWorking ? 'Working…' : 'Delete'}
-          </button>
-          <button
-            onClick={toggleSelectMode}
-            disabled={bulkWorking}
-            className="px-3 py-1.5 text-sm bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-600 transition disabled:opacity-50"
-          >
-            Cancel
-          </button>
-        </div>
+        <SelectModeBar
+          selectedCount={selectedIds.size}
+          allOnPageSelected={allOnPageSelected}
+          bulkWorking={bulkWorking}
+          onTogglePage={toggleSelectPage}
+          onArchive={() => handleBulkSetArchived(true)}
+          onUnarchive={() => handleBulkSetArchived(false)}
+          onDelete={handleBulkDelete}
+          onCancel={toggleSelectMode}
+        />
       )}
       <PinDialog
         isOpen={pinDialogOpen}
