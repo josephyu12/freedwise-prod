@@ -28,6 +28,7 @@ export default function HighlightsPage() {
   const [showCategoryInput, setShowCategoryInput] = useState(false)
   const [showArchived, setShowArchived] = useState(false)
   const [reviewFilter, setReviewFilter] = useState<'all' | 'reviewed' | 'not-reviewed'>('all')
+  const [sortBy, setSortBy] = useState<'newest' | 'oldest' | 'rating-high' | 'rating-low'>('newest')
   const [categoryFilterMode, setCategoryFilterMode] = useState<'or' | 'and'>('or')
   const [selectedFilterCategories, setSelectedFilterCategories] = useState<string[]>([])
   const [excludedCategories, setExcludedCategories] = useState<string[]>([])
@@ -141,13 +142,13 @@ export default function HighlightsPage() {
   }, [])
 
   useEffect(() => {
-    setCurrentPage(1) // Reset to first page when filter changes
-  }, [showArchived, reviewFilter, selectedFilterCategories, excludedCategories, categoryFilterMode])
+    setCurrentPage(1) // Reset to first page when filter or sort changes
+  }, [showArchived, reviewFilter, selectedFilterCategories, excludedCategories, categoryFilterMode, sortBy])
 
   useEffect(() => {
     loadHighlights()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [showArchived, reviewFilter, selectedFilterCategories, excludedCategories, categoryFilterMode, currentPage, itemsPerPage])
+  }, [showArchived, reviewFilter, selectedFilterCategories, excludedCategories, categoryFilterMode, sortBy, currentPage, itemsPerPage])
 
   const loadHighlights = async () => {
     try {
@@ -332,6 +333,19 @@ export default function HighlightsPage() {
           return !excludedCategories.some((catId) => highlightCategoryIds.includes(catId))
         })
       }
+
+      const createdAtMs = (h: any) => new Date(h.created_at).getTime()
+      const ratingValue = (h: any) => Number(h.average_rating) || 0
+      processedHighlights = [...processedHighlights].sort((a: any, b: any) => {
+        if (sortBy === 'oldest') return createdAtMs(a) - createdAtMs(b)
+        if (sortBy === 'rating-high' || sortBy === 'rating-low') {
+          const diff = sortBy === 'rating-high'
+            ? ratingValue(b) - ratingValue(a)
+            : ratingValue(a) - ratingValue(b)
+          if (diff !== 0) return diff
+        }
+        return createdAtMs(b) - createdAtMs(a)
+      })
 
       // Update total count based on filtered results
       setTotalHighlights(processedHighlights.length)
@@ -1308,27 +1322,46 @@ export default function HighlightsPage() {
               <h2 className="text-2xl font-semibold text-gray-900 dark:text-white">
                 All Highlights ({totalHighlights})
               </h2>
-              <div className="flex items-center gap-2">
-                <label className="text-sm text-gray-600 dark:text-gray-400">
-                  Show:
-                </label>
-                <select
-                  value={itemsPerPage}
-                  onChange={(e) => {
-                    setItemsPerPage(Number(e.target.value))
-                    setCurrentPage(1)
-                  }}
-                  className="px-3 py-1 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm"
-                >
-                  <option value={5}>5</option>
-                  <option value={10}>10</option>
-                  <option value={20}>20</option>
-                  <option value={50}>50</option>
-                  <option value={100}>100</option>
-                </select>
-                <span className="text-sm text-gray-600 dark:text-gray-400">
-                  per page
-                </span>
+              <div className="flex flex-wrap items-center gap-3">
+                <div className="flex items-center gap-2">
+                  <label htmlFor="highlight-sort" className="text-sm text-gray-600 dark:text-gray-400">
+                    Sort:
+                  </label>
+                  <select
+                    id="highlight-sort"
+                    value={sortBy}
+                    onChange={(e) => setSortBy(e.target.value as 'newest' | 'oldest' | 'rating-high' | 'rating-low')}
+                    className="px-3 py-1 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm"
+                  >
+                    <option value="newest">Newest</option>
+                    <option value="oldest">Oldest</option>
+                    <option value="rating-high">Highest rating</option>
+                    <option value="rating-low">Lowest rating</option>
+                  </select>
+                </div>
+                <div className="flex items-center gap-2">
+                  <label htmlFor="highlight-page-size" className="text-sm text-gray-600 dark:text-gray-400">
+                    Show:
+                  </label>
+                  <select
+                    id="highlight-page-size"
+                    value={itemsPerPage}
+                    onChange={(e) => {
+                      setItemsPerPage(Number(e.target.value))
+                      setCurrentPage(1)
+                    }}
+                    className="px-3 py-1 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm"
+                  >
+                    <option value={5}>5</option>
+                    <option value={10}>10</option>
+                    <option value={20}>20</option>
+                    <option value={50}>50</option>
+                    <option value={100}>100</option>
+                  </select>
+                  <span className="text-sm text-gray-600 dark:text-gray-400">
+                    per page
+                  </span>
+                </div>
               </div>
             </div>
             {highlights.length === 0 ? (
