@@ -50,6 +50,8 @@ describe('discardedChanges store', () => {
       .toBe('Rating (high)')
     expect(describeDiscardedAction({ type: 'delete-highlight', params: {} }))
       .toBe('Deleting a highlight')
+    expect(describeDiscardedAction({ type: 'update-highlight-stats', params: {} }))
+      .toBe('Updating a rating average')
     const long = describeDiscardedAction({
       type: 'edit-highlight',
       params: { text: 'x'.repeat(100) },

@@ -37,7 +37,7 @@ function ratingCount(highlight: { rating_count?: number | null }) {
 function formatAvgRating(highlight: { average_rating?: number | null; rating_count?: number | null }) {
   const avg = ratingValue(highlight)
   if (avg <= 0) return '—'
-  const count = Number(highlight.rating_count) || 0
+  const count = ratingCount(highlight)
   return count > 0 ? `${avg.toFixed(1)}/3 (${count})` : `${avg.toFixed(1)}/3`
 }
 

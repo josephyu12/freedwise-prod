@@ -26,7 +26,7 @@ import {
 } from '@/lib/aheadOrder'
 import { getUserReviewSettings, getCycleForDate, cycleKeyForDate } from '@/lib/cycle'
 import type { Cycle } from '@/lib/cycle'
-import { updateHighlightStatsAfterRating } from '@/lib/highlightStats'
+import { updateHighlightStatsOrQueue } from '@/lib/highlightStats'
 import AutoArchiveToast from '@/components/AutoArchiveToast'
 import ActionToast, { useActionToast } from '@/components/ActionToast'
 import {
@@ -797,15 +797,16 @@ function ReviewPageContent() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loading, highlights, searchParams])
 
-  // Background-only: recalculate average rating and auto-archive after a rating
-  // is saved (one shared rule for every rating path — see lib/highlightStats.ts).
-  // Called fire-and-forget so the UI doesn't wait for it.
+  // Background: recalculate average rating and auto-archive after a rating
+  // is saved. Does not block the UI. If the write dies on a flaky connection,
+  // it is queued for OfflineSync to retry — a stats failure must never look
+  // like the rating itself was lost.
   // The highlight_months_reviewed upsert is intentionally NOT here — it lives on the
   // critical path so it persists even if the user closes the app immediately after rating.
   // When the call newly archives the highlight, surface the undo toast — the
   // archive is otherwise invisible until the highlight fails to reappear.
   const updateHighlightStats = (highlightId: string, ratingDate: string) =>
-    updateHighlightStatsAfterRating(supabase, {
+    updateHighlightStatsOrQueue(supabase, {
       highlightId,
       ratingDate,
       freq: freqRef.current,

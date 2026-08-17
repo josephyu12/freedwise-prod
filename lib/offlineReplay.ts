@@ -18,6 +18,7 @@ import {
   getPendingActions,
   removeAction,
   incrementActionAttempts,
+  enqueueHighlightStatsRetry,
   type OfflineAction,
 } from './offlineStore'
 import { createClient } from './supabase/client'
@@ -35,6 +36,7 @@ import { fetchWithTimeout } from './fetchWithTimeout'
 const REPLAYABLE = new Set<string>([
   'rate-review',
   'rate-daily',
+  'update-highlight-stats',
   'edit-highlight',
   'split-highlight',
   'archive-highlight',
@@ -457,6 +459,25 @@ export async function replayPendingActions(
   return { processed, remaining, touchedHighlights, stalled, dropped }
 }
 
+// Rating + ledger already saved. Queue a dedicated stats retry instead of
+// skipping the average (old fire-and-forget) or throwing (which would
+// poison-drop the rating itself).
+async function persistStatsOrQueueRetry(
+  supabase: any,
+  params: { highlightId: string; ratingDate: string; freq: number }
+) {
+  try {
+    await updateHighlightStatsAfterRating(supabase, params)
+  } catch (err) {
+    reportError(err, { reason: 'post-rating stats queued for retry' })
+    try {
+      await enqueueHighlightStatsRetry(params.highlightId, params.ratingDate)
+    } catch (queueErr) {
+      reportError(queueErr, { reason: 'failed to queue post-rating stats retry' })
+    }
+  }
+}
+
 // Replay a single action. Returns true if it changed highlight content (so the
 // caller can refresh the Notion badge). Throws on any write/read failure.
 async function replayOne(supabase: any, action: any, userId: string, freq: number): Promise<boolean> {
@@ -495,19 +516,14 @@ async function replayOne(supabase: any, action: any, userId: string, freq: numbe
         if (reviewedError) throw reviewedError
       }
 
-      // Best-effort, like the online path (where stats run fire-and-forget in
-      // the background). The critical writes — the rating and the ledger row —
-      // are already persisted above; a stats/auto-archive failure here must not
-      // re-run them or, worse, burn the poison budget until the whole rating is
-      // discarded and falsely reported as lost. Averages self-heal on the next
-      // rating of the same highlight.
-      await updateHighlightStatsAfterRating(supabase, {
+      // Rating + ledger are already persisted. A stats/auto-archive failure must
+      // not re-run them or poison-drop the rating — queue a dedicated retry
+      // instead of skipping the average the way the old fire-and-forget path did.
+      await persistStatsOrQueueRetry(supabase, {
         highlightId,
         ratingDate: ledgerDate,
         freq,
-      }).catch((err) =>
-        reportError(err, { reason: 'post-rating stats failed during replay (skipped)' })
-      )
+      })
       return false
     }
 
@@ -543,13 +559,24 @@ async function replayOne(supabase: any, action: any, userId: string, freq: numbe
       // Best-effort, like the online path — see the rate-review branch above.
       const n = new Date()
       const fallbackToday = `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, '0')}-${String(n.getDate()).padStart(2, '0')}`
-      await updateHighlightStatsAfterRating(supabase, {
+      await persistStatsOrQueueRetry(supabase, {
         highlightId,
         ratingDate: summaryDate || fallbackToday,
         freq,
-      }).catch((err) =>
-        reportError(err, { reason: 'post-rating stats failed during replay (skipped)' })
-      )
+      })
+      return false
+    }
+
+    case 'update-highlight-stats': {
+      const { highlightId, ratingDate } = action.params
+      if (!highlightId || !ratingDate) return false
+      // Throws on failure so OfflineSync retries; unlike the bundled rating
+      // actions, a poison drop here cannot discard the rating itself.
+      await updateHighlightStatsAfterRating(supabase, {
+        highlightId,
+        ratingDate,
+        freq,
+      })
       return false
     }
 

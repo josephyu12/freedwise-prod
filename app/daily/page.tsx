@@ -17,7 +17,7 @@ import { renderHighlightHtml } from '@/lib/renderHighlightHtml'
 import { sanitizeForRender } from '@/lib/sanitizeForRender'
 import { computeMonthReviewStatus } from '@/lib/monthReviewStatus'
 import { getUserReviewSettings, getCycleForDate, nextCycle, cycleKeyForDate } from '@/lib/cycle'
-import { updateHighlightStatsAfterRating } from '@/lib/highlightStats'
+import { updateHighlightStatsOrQueue } from '@/lib/highlightStats'
 import { removeReviewedOnClear } from '@/lib/reviewedLedger'
 import { removeFromFutureMonths } from '@/lib/removeFromFutureMonths'
 import { useOfflineStatus } from '@/hooks/useOfflineStatus'
@@ -1061,7 +1061,7 @@ export default function DailyPage() {
       // this cycle and the previous one — see lib/highlightStats.ts). This page
       // used to archive on "2+ lows ever", so the same highlight archived or
       // survived depending on which page the rating came from.
-      const { archivedNow } = await updateHighlightStatsAfterRating(supabase, {
+      const { archivedNow } = await updateHighlightStatsOrQueue(supabase, {
         highlightId,
         ratingDate: summary?.date || date,
         freq: freqRef.current,
