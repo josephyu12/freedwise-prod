@@ -29,6 +29,11 @@ function ratingValue(highlight: { average_rating?: number | null }) {
   return Number.isFinite(avg) ? avg : 0
 }
 
+function ratingCount(highlight: { rating_count?: number | null }) {
+  const count = Number(highlight.rating_count)
+  return Number.isFinite(count) && count > 0 ? count : 0
+}
+
 function formatAvgRating(highlight: { average_rating?: number | null; rating_count?: number | null }) {
   const avg = ratingValue(highlight)
   if (avg <= 0) return '—'
@@ -372,6 +377,8 @@ export default function HighlightsPage() {
             ? ratingValue(b) - ratingValue(a)
             : ratingValue(a) - ratingValue(b)
           if (diff !== 0) return diff
+          const countDiff = ratingCount(b) - ratingCount(a)
+          if (countDiff !== 0) return countDiff
         }
         return createdAtMs(b) - createdAtMs(a)
       })
