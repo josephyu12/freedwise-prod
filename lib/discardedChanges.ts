@@ -89,8 +89,6 @@ export function describeDiscardedAction(action: { type: string; params?: any }):
     case 'rate-review':
     case 'rate-daily':
       return p.rating ? `Rating (${p.rating})` : 'A rating'
-    case 'update-highlight-stats':
-      return 'Updating a rating average'
     case 'archive-highlight':
       return 'Archiving a highlight'
     case 'unarchive-highlight':

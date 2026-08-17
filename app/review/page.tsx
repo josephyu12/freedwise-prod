@@ -26,7 +26,7 @@ import {
 } from '@/lib/aheadOrder'
 import { getUserReviewSettings, getCycleForDate, cycleKeyForDate } from '@/lib/cycle'
 import type { Cycle } from '@/lib/cycle'
-import { updateHighlightStatsOrQueue } from '@/lib/highlightStats'
+import { updateHighlightStatsAfterRating } from '@/lib/highlightStats'
 import AutoArchiveToast from '@/components/AutoArchiveToast'
 import ActionToast, { useActionToast } from '@/components/ActionToast'
 import {
@@ -797,23 +797,6 @@ function ReviewPageContent() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loading, highlights, searchParams])
 
-  // Background: recalculate average rating and auto-archive after a rating
-  // is saved. Does not block the UI. If the write dies on a flaky connection,
-  // it is queued for OfflineSync to retry — a stats failure must never look
-  // like the rating itself was lost.
-  // The highlight_months_reviewed upsert is intentionally NOT here — it lives on the
-  // critical path so it persists even if the user closes the app immediately after rating.
-  // When the call newly archives the highlight, surface the undo toast — the
-  // archive is otherwise invisible until the highlight fails to reappear.
-  const updateHighlightStats = (highlightId: string, ratingDate: string) =>
-    updateHighlightStatsOrQueue(supabase, {
-      highlightId,
-      ratingDate,
-      freq: freqRef.current,
-    }).then(({ archivedNow }) => {
-      if (archivedNow) setAutoArchivedId(highlightId)
-    })
-
   // Helper to rate a specific highlight by index (for auto-rate from widget URL params)
   const handleRateByIndex = async (index: number, rating: 'low' | 'med' | 'high') => {
     const target = highlights[index]
@@ -879,17 +862,17 @@ function ReviewPageContent() {
       const ratingDate = target.date || today
       const monthYear = cycleKeyForDate(ratingDate, freqRef.current)
 
-      // Critical path: save the rating AND mark this cycle as reviewed (source of truth).
-      // Both must persist before we release the UI lock — otherwise closing the app
-      // immediately after rating loses the highlight_months_reviewed row.
+      // Critical path: rating, reviewed-ledger, and average_rating are one
+      // write. A flaky stats step must fall into the same offline-queue item
+      // as the rating — not a second pending change.
       // supabase-js RESOLVES with { error } instead of rejecting (even on a dead
       // network), so both results must be checked or a failed write silently
       // reports success and the catch below never runs.
       // Deadline-bounded: with an expired token on a dead network the token
       // refresh alone holds this for ~30s (see lib/withDeadline.ts); past the
       // deadline we throw into the offline-queue fallback below instead.
-      const [rateRes, ledgerRes] = await withDeadline(
-        Promise.all([
+      const { rateRes, archivedNow } = await withDeadline((async () => {
+        const [rateRes, ledgerRes] = await Promise.all([
           applySummaryHighlightRating(supabase, {
             summaryHighlightId: target.id,
             rating,
@@ -901,10 +884,15 @@ function ReviewPageContent() {
               { highlight_id: target.highlight_id, month_year: monthYear },
               { onConflict: 'highlight_id,month_year' }
             ),
-        ]),
-        'rate-review write'
-      )
-      if (ledgerRes.error) throw ledgerRes.error
+        ])
+        if (ledgerRes.error) throw ledgerRes.error
+        const { archivedNow } = await updateHighlightStatsAfterRating(supabase, {
+          highlightId: target.highlight_id,
+          ratingDate,
+          freq: freqRef.current,
+        })
+        return { rateRes, archivedNow }
+      })(), 'rate-review write')
 
       const keptRating = rateRes.applied ? rating : rateRes.rating
       setHighlights((prev) => {
@@ -913,10 +901,8 @@ function ReviewPageContent() {
         if (nextUnrated >= 0) setCurrentIndex(nextUnrated)
         return updated
       })
+      if (archivedNow) setAutoArchivedId(target.highlight_id)
       setRatingInProgress(false)
-
-      // Background: stats/auto-archive (doesn't block UI)
-      updateHighlightStats(target.highlight_id, ratingDate).catch(console.error)
     } catch (error) {
       console.error('Error auto-rating highlight (falling back to offline queue):', error)
       // Network failed on weak signal — queue for replay instead of reverting;
@@ -1035,17 +1021,17 @@ function ReviewPageContent() {
       const ratingDate = current.date || today
       const monthYear = cycleKeyForDate(ratingDate, freqRef.current)
 
-      // Critical path: save the rating AND mark this cycle as reviewed (source of truth).
-      // Both must persist before we release the UI lock — otherwise closing the app
-      // immediately after rating loses the highlight_months_reviewed row.
+      // Critical path: rating, reviewed-ledger, and average_rating are one
+      // write. A flaky stats step must fall into the same offline-queue item
+      // as the rating — not a second pending change.
       // supabase-js RESOLVES with { error } instead of rejecting (even on a dead
       // network), so both results must be checked — an unchecked failure would
       // silently report success and skip the offline-queue fallback below.
       // Deadline-bounded: with an expired token on a dead network the token
       // refresh alone holds this for ~30s (see lib/withDeadline.ts); past the
       // deadline we throw into the offline-queue fallback below instead.
-      const [rateRes, ledgerRes] = await withDeadline(
-        Promise.all([
+      const { rateRes, archivedNow } = await withDeadline((async () => {
+        const [rateRes, ledgerRes] = await Promise.all([
           applySummaryHighlightRating(supabase, {
             summaryHighlightId: current.id,
             rating,
@@ -1057,10 +1043,15 @@ function ReviewPageContent() {
               { highlight_id: current.highlight_id, month_year: monthYear },
               { onConflict: 'highlight_id,month_year' }
             ),
-        ]),
-        'rate-review write'
-      )
-      if (ledgerRes.error) throw ledgerRes.error
+        ])
+        if (ledgerRes.error) throw ledgerRes.error
+        const { archivedNow } = await updateHighlightStatsAfterRating(supabase, {
+          highlightId: current.highlight_id,
+          ratingDate,
+          freq: freqRef.current,
+        })
+        return { rateRes, archivedNow }
+      })(), 'rate-review write')
 
       const keptRating = rateRes.applied ? rating : rateRes.rating
       setHighlights((prev) => {
@@ -1073,10 +1064,8 @@ function ReviewPageContent() {
         if (nextUnrated >= 0) setCurrentIndex(nextUnrated)
         return updated
       })
+      if (archivedNow) setAutoArchivedId(current.highlight_id)
       setRatingInProgress(false)
-
-      // Background: stats/auto-archive (doesn't block UI)
-      updateHighlightStats(current.highlight_id, ratingDate).catch(console.error)
     } catch (error) {
       console.error('Error rating highlight (falling back to offline queue):', error)
       // Network failed on weak signal — fall back to offline queueing

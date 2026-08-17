@@ -1,9 +1,8 @@
 /**
- * After a rating lands, average_rating / rating_count used to run fire-and-forget
- * (and replay skipped stats failures). On a flaky connection the Med tap saved
- * but /highlights still showed "Avg Rating: —". Stats now queues a dedicated
- * `update-highlight-stats` retry that OfflineSync drains — without poison-dropping
- * the rating itself.
+ * The average_rating write is part of the same rate-review / rate-daily action.
+ * If it fails on a flaky connection, that one queued rating stays pending and
+ * retries — we must not skip stats (old fire-and-forget) or enqueue a second
+ * "updating average" change.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 
@@ -20,16 +19,6 @@ const offlineMocks = vi.hoisted(() => ({
   }),
   incrementActionAttempts: vi.fn(async () => 1),
   rememberUserId: vi.fn(),
-  enqueueHighlightStatsRetry: vi.fn(async (highlightId: string, ratingDate: string) => {
-    const id = (state.queue.reduce((m, a) => Math.max(m, a.id || 0), 0) || 0) + 1
-    state.queue.push({
-      id,
-      type: 'update-highlight-stats',
-      params: { highlightId, ratingDate },
-      createdAt: Date.now(),
-    })
-    return id
-  }),
 }))
 
 vi.mock('@/lib/offlineStore', () => offlineMocks)
@@ -64,13 +53,12 @@ function makeSupabase() {
 beforeEach(() => {
   state.queue = []
   offlineMocks.removeAction.mockClear()
-  offlineMocks.enqueueHighlightStatsRetry.mockClear()
   statsMock.updateHighlightStatsAfterRating.mockReset()
   statsMock.updateHighlightStatsAfterRating.mockResolvedValue({ archivedNow: false })
 })
 
-describe('offline post-rating stats queue', () => {
-  it('queues update-highlight-stats when rate-review stats fail, and still drops the rating action', async () => {
+describe('offline rating includes average update', () => {
+  it('keeps the rate-review queued when stats fail, instead of skipping the average', async () => {
     statsMock.updateHighlightStatsAfterRating.mockRejectedValueOnce(new Error('network blip'))
     state.queue = [
       {
@@ -89,43 +77,31 @@ describe('offline post-rating stats queue', () => {
 
     const result = await replayPendingActions(makeSupabase())
 
-    expect(offlineMocks.removeAction).toHaveBeenCalledWith(1)
-    expect(offlineMocks.enqueueHighlightStatsRetry).toHaveBeenCalledWith('h1', '2026-08-12')
-    expect(state.queue.map((a) => a.type)).toEqual(['update-highlight-stats'])
-    expect(result.stalled).toBe(false)
-  })
-
-  it('retries update-highlight-stats on failure instead of skipping it', async () => {
-    statsMock.updateHighlightStatsAfterRating.mockRejectedValueOnce(new Error('network blip'))
-    state.queue = [
-      {
-        id: 7,
-        type: 'update-highlight-stats',
-        params: { highlightId: 'h1', ratingDate: '2026-08-12' },
-        createdAt: 1,
-      },
-    ]
-
-    const result = await replayPendingActions(makeSupabase())
-
     expect(offlineMocks.removeAction).not.toHaveBeenCalled()
     expect(state.queue).toHaveLength(1)
+    expect(state.queue[0].type).toBe('rate-review')
     expect(result.stalled).toBe(true)
   })
 
-  it('drops update-highlight-stats once the average write lands', async () => {
+  it('drops the rate-review only after rating, ledger, and average all land', async () => {
     state.queue = [
       {
-        id: 8,
-        type: 'update-highlight-stats',
-        params: { highlightId: 'h1', ratingDate: '2026-08-12' },
+        id: 2,
+        type: 'rate-review',
+        params: {
+          summaryHighlightId: 'sh1',
+          highlightId: 'h1',
+          rating: 'med',
+          today: '2026-08-12',
+          summaryDate: '2026-08-12',
+        },
         createdAt: 1,
       },
     ]
 
     const result = await replayPendingActions(makeSupabase())
 
-    expect(offlineMocks.removeAction).toHaveBeenCalledWith(8)
+    expect(offlineMocks.removeAction).toHaveBeenCalledWith(2)
     expect(result.stalled).toBe(false)
     expect(statsMock.updateHighlightStatsAfterRating).toHaveBeenCalledWith(
       expect.anything(),

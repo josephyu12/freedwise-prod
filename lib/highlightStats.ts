@@ -7,9 +7,6 @@
 // rule is the rule.
 
 import { getCycleForDate, prevCycle, cycleKeyForDate } from './cycle'
-import { withDeadline } from './withDeadline'
-import { enqueueHighlightStatsRetry } from './offlineStore'
-import { reportError } from './reportError'
 
 /**
  * Recompute a highlight's average_rating / rating_count and apply auto-archive
@@ -81,25 +78,4 @@ export async function updateHighlightStatsAfterRating(
   if (statsError) throw statsError
 
   return { archivedNow: shouldArchive && !highlightRow?.archived }
-}
-
-/**
- * Same bookkeeping as updateHighlightStatsAfterRating, but a flaky write is
- * queued for OfflineSync to retry instead of disappearing. Does not throw on
- * a failed stats write (the rating/ledger are already saved by the caller).
- */
-export async function updateHighlightStatsOrQueue(
-  supabase: any,
-  params: { highlightId: string; ratingDate: string; freq: number }
-): Promise<{ archivedNow: boolean }> {
-  try {
-    return await withDeadline(
-      updateHighlightStatsAfterRating(supabase, params),
-      'highlight-stats write'
-    )
-  } catch (err) {
-    reportError(err, { reason: 'post-rating stats queued for retry' })
-    await enqueueHighlightStatsRetry(params.highlightId, params.ratingDate)
-    return { archivedNow: false }
-  }
 }

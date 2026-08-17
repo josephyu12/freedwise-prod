@@ -169,11 +169,12 @@ describe('offline rating conflict — earlier tap wins', () => {
     expect(row.rated_at).toBe(toRatedAtIso(2_000))
   })
 
-  it('does not fail (or poison) a rating when only the stats bookkeeping errors', async () => {
+  it('keeps the rating queued when stats bookkeeping errors, so the average retries with it', async () => {
     const row = { rating: null as string | null, rated_at: null as string | null }
     // A coded error from the stats read (e.g. the highlight row vanished).
-    // The rating + ledger are the critical writes; stats are best-effort like
-    // the online path — the action must complete, never burn poison attempts.
+    // Average update is part of the same rating action — do not skip it or
+    // enqueue a second change. The rating write itself already landed and is
+    // idempotent on the next drain.
     const supabase = makeSupabase(row, {
       statsError: { code: 'PGRST116', message: 'JSON object requested, no rows returned' },
     })
@@ -182,9 +183,9 @@ describe('offline rating conflict — earlier tap wins', () => {
     const result = await replayPendingActions(supabase)
 
     expect(row.rating).toBe('high')
-    expect(result.processed).toBe(1)
-    expect(result.stalled).toBe(false)
-    expect(offlineMocks.removeAction).toHaveBeenCalledWith(1)
-    expect(offlineMocks.incrementActionAttempts).not.toHaveBeenCalled()
+    expect(result.processed).toBe(0)
+    expect(result.stalled).toBe(true)
+    expect(offlineMocks.removeAction).not.toHaveBeenCalled()
+    expect(offlineMocks.incrementActionAttempts).toHaveBeenCalledWith(1)
   })
 })

@@ -36,7 +36,6 @@ export interface CachedReviewData {
 export type OfflineActionType =
   | 'rate-review'
   | 'rate-daily'
-  | 'update-highlight-stats'
   | 'edit-highlight'
   | 'split-highlight'
   | 'archive-highlight'
@@ -355,17 +354,6 @@ export async function enqueueOfflineAction(action: Omit<OfflineAction, 'id' | 'c
     window.dispatchEvent(new Event('offline-action-enqueued'))
   }
   return id
-}
-
-/** Queue a retry of average_rating / rating_count / auto-archive bookkeeping.
- * Used when the rating itself already saved but the background stats write
- * died on a flaky connection — a dedicated action so a stats failure can
- * never poison-drop the rating. */
-export function enqueueHighlightStatsRetry(highlightId: string, ratingDate: string) {
-  return enqueueOfflineAction({
-    type: 'update-highlight-stats',
-    params: { highlightId, ratingDate },
-  })
 }
 
 /** Get all pending offline actions in order */
