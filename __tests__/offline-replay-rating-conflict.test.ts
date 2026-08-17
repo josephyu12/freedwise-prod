@@ -29,7 +29,10 @@ vi.mock('@/lib/cycle', async (importOriginal) => {
 
 import { replayPendingActions } from '@/lib/offlineReplay'
 
-function makeSupabase(row: { rating: string | null; rated_at: string | null }) {
+function makeSupabase(
+  row: { rating: string | null; rated_at: string | null },
+  opts: { statsError?: any } = {}
+) {
   const chainFor = (table: string): any => {
     let patch: any = null
     let filter: string | undefined
@@ -55,7 +58,10 @@ function makeSupabase(row: { rating: string | null; rated_at: string | null }) {
       },
       not: () => chain,
       maybeSingle: async () => ({ data: { rating: row.rating }, error: null }),
-      single: async () => ({ data: { unarchived_at: null, archived: false }, error: null }),
+      single: async () =>
+        opts.statsError
+          ? { data: null, error: opts.statsError }
+          : { data: { unarchived_at: null, archived: false }, error: null },
       then: (resolve: any) => {
         if (patch && table === 'daily_summary_highlights') return resolve(applyPatch())
         return resolve({ data: [], error: null })
@@ -87,7 +93,7 @@ beforeEach(() => {
   offlineMocks.removeAction.mockClear()
 })
 
-function rateAction(id: number, rating: string, createdAt: number) {
+function rateAction(id: number, rating: string, createdAt: number, overwrite?: boolean) {
   return {
     id,
     type: 'rate-review',
@@ -98,6 +104,7 @@ function rateAction(id: number, rating: string, createdAt: number) {
       today: '2026-08-13',
       summaryDate: '2026-08-13',
       ratedAt: createdAt,
+      ...(overwrite ? { overwrite } : {}),
     },
     createdAt,
   }
@@ -143,5 +150,41 @@ describe('offline rating conflict — earlier tap wins', () => {
     expect(row.rated_at).toBe(toRatedAtIso(1_500))
     expect(offlineMocks.removeAction).toHaveBeenCalledWith(1)
     expect(offlineMocks.removeAction).toHaveBeenCalledWith(2)
+  })
+
+  it('honors the overwrite flag: a queued re-rate lands over its own earlier tap', async () => {
+    const row = { rating: null as string | null, rated_at: null as string | null }
+    const supabase = makeSupabase(row)
+
+    // First tap synced yesterday.
+    state.queue = [rateAction(1, 'low', 1_000)]
+    await replayPendingActions(supabase)
+    expect(row.rating).toBe('low')
+
+    // The user CHANGES that visible rating while offline. Without the flag,
+    // earlier-tap-wins would silently keep 'low'.
+    state.queue = [rateAction(2, 'high', 2_000, true)]
+    await replayPendingActions(supabase)
+    expect(row.rating).toBe('high')
+    expect(row.rated_at).toBe(toRatedAtIso(2_000))
+  })
+
+  it('does not fail (or poison) a rating when only the stats bookkeeping errors', async () => {
+    const row = { rating: null as string | null, rated_at: null as string | null }
+    // A coded error from the stats read (e.g. the highlight row vanished).
+    // The rating + ledger are the critical writes; stats are best-effort like
+    // the online path — the action must complete, never burn poison attempts.
+    const supabase = makeSupabase(row, {
+      statsError: { code: 'PGRST116', message: 'JSON object requested, no rows returned' },
+    })
+
+    state.queue = [rateAction(1, 'high', 1_000)]
+    const result = await replayPendingActions(supabase)
+
+    expect(row.rating).toBe('high')
+    expect(result.processed).toBe(1)
+    expect(result.stalled).toBe(false)
+    expect(offlineMocks.removeAction).toHaveBeenCalledWith(1)
+    expect(offlineMocks.incrementActionAttempts).not.toHaveBeenCalled()
   })
 })

@@ -49,15 +49,37 @@ const REPLAYABLE = new Set<string>([
 // failed attempts so it stops blocking everything queued behind it forever.
 const MAX_ATTEMPTS = 5
 
+// Coded errors that are nonetheless TRANSIENT: the server refused this attempt,
+// but an identical retry can succeed without anything changing on our side.
+// These must never burn the poison-attempt budget — dropping an action over an
+// expired token or a deadlock would discard a perfectly good change.
+const TRANSIENT_ERROR_CODES = new Set<string>([
+  'PGRST301', // JWT expired / invalid — heals after the auth refresh lands
+  'PGRST302', // anonymous access blocked mid-refresh
+  'PGRST001', // couldn't connect to the database
+  'PGRST002', // schema cache load in progress
+  '08000', '08003', '08006', '08001', '08004', // connection failures
+  '40001', // serialization_failure
+  '40P01', // deadlock_detected
+  '53300', // too_many_connections
+  '55P03', // lock_not_available
+  '57014', // query_canceled (statement timeout)
+  '57P05', // idle session timeout
+])
+
 // Only a server-side rejection counts toward the poison threshold. A thrown
 // Supabase error carries a PostgREST/Postgres code; a transient network failure
 // (fetch threw, request aborted/timed out) does not. Counting only coded errors
 // keeps the long-standing data-safety guarantee intact: a flaky connection never
 // burns down a perfectly good action's attempt budget — only a write the server
 // actively refuses does. Unknown/codeless errors are treated as transient (the
-// safe default: retry, never drop).
+// safe default: retry, never drop), as are known-transient coded errors
+// (expired JWT, deadlock, …) — see TRANSIENT_ERROR_CODES.
 function isPermanentError(err: any): boolean {
-  return !!(err && typeof err === 'object' && typeof err.code === 'string' && err.code.length > 0)
+  if (!(err && typeof err === 'object' && typeof err.code === 'string' && err.code.length > 0)) {
+    return false
+  }
+  return !TRANSIENT_ERROR_CODES.has(err.code)
 }
 
 // The signed-in user's id from the LOCAL session (no network — works offline).
@@ -454,6 +476,9 @@ async function replayOne(supabase: any, action: any, userId: string, freq: numbe
         summaryHighlightId,
         rating,
         ratedAt: action.params.ratedAt ?? action.createdAt,
+        // An intentional re-rate of a rating the user could SEE always lands;
+        // only first taps on unrated rows use earlier-timestamp-wins.
+        overwrite: action.params.overwrite === true,
       })
 
       // Ledger + stats still run when we lost the conflict: the earlier tap
@@ -470,11 +495,19 @@ async function replayOne(supabase: any, action: any, userId: string, freq: numbe
         if (reviewedError) throw reviewedError
       }
 
+      // Best-effort, like the online path (where stats run fire-and-forget in
+      // the background). The critical writes — the rating and the ledger row —
+      // are already persisted above; a stats/auto-archive failure here must not
+      // re-run them or, worse, burn the poison budget until the whole rating is
+      // discarded and falsely reported as lost. Averages self-heal on the next
+      // rating of the same highlight.
       await updateHighlightStatsAfterRating(supabase, {
         highlightId,
         ratingDate: ledgerDate,
         freq,
-      })
+      }).catch((err) =>
+        reportError(err, { reason: 'post-rating stats failed during replay (skipped)' })
+      )
       return false
     }
 
@@ -485,6 +518,9 @@ async function replayOne(supabase: any, action: any, userId: string, freq: numbe
         summaryHighlightId,
         rating,
         ratedAt: action.params.ratedAt ?? action.createdAt,
+        // An intentional re-rate/clear of a rating the user could SEE always
+        // lands; only first taps on unrated rows use earlier-timestamp-wins.
+        overwrite: action.params.overwrite === true,
       })
 
       if (rating !== null && summaryDate) {
@@ -504,13 +540,16 @@ async function replayOne(supabase: any, action: any, userId: string, freq: numbe
 
       // Shared stats + auto-archive rule (see lib/highlightStats.ts). Legacy
       // actions queued without summaryDate fall back to the local today.
+      // Best-effort, like the online path — see the rate-review branch above.
       const n = new Date()
       const fallbackToday = `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, '0')}-${String(n.getDate()).padStart(2, '0')}`
       await updateHighlightStatsAfterRating(supabase, {
         highlightId,
         ratingDate: summaryDate || fallbackToday,
         freq,
-      })
+      }).catch((err) =>
+        reportError(err, { reason: 'post-rating stats failed during replay (skipped)' })
+      )
       return false
     }
 

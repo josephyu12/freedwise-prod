@@ -105,6 +105,24 @@ describe('offline replay — poison-action dropping', () => {
     expect(notices[0]).toMatchObject({ id: 1, type: 'archive-highlight', label: 'Archiving a highlight' })
   })
 
+  it('never counts coded-but-transient errors (expired JWT, deadlock) toward the poison budget', async () => {
+    state.queue = [{ id: 1, type: 'archive-highlight', params: { highlightId: 'h1' }, createdAt: 1 }]
+
+    for (const code of ['PGRST301', '40001', '40P01', '57014', '08006']) {
+      const supabase = makeSupabase({ error: { code, message: `transient: ${code}` } })
+      const r = await replayPendingActions(supabase)
+      expect(r.stalled).toBe(true)
+      expect(r.dropped).toBe(0)
+    }
+
+    // These heal on retry (token refresh, lock released) — a good action must
+    // never be discarded over them.
+    expect(offlineMocks.incrementActionAttempts).not.toHaveBeenCalled()
+    expect(offlineMocks.removeAction).not.toHaveBeenCalled()
+    expect(state.queue).toHaveLength(1)
+    expect(getDiscardedChanges()).toHaveLength(0)
+  })
+
   it('never drops a transient (codeless/network) failure — retries forever', async () => {
     state.queue = [{ id: 1, type: 'archive-highlight', params: { highlightId: 'h1' }, createdAt: 1 }]
     // A network failure: no `code`. Must be treated as transient.

@@ -32,9 +32,34 @@ function makeRatingTable(initial: { rating: string | null; rated_at: string | nu
           filter = f
           return chain
         },
-        select: () => {
+        select: (cols?: string) => {
           if (!patch) return chain
           return (async () => {
+            // Mirror real (Supabase) PostgREST: an UPDATE with
+            // `return=representation` resolves .or() filters against the
+            // RETURNED column set, so any filter column missing from the
+            // .select() list fails the WHOLE write with 42703. This shipped
+            // once — every rating write failed, fell into the offline queue,
+            // and was eventually poison-dropped as "discarded". Verified
+            // against production; keep this check so it can't ship again.
+            if (filter) {
+              const selected = (cols || '').split(',').map((c) => c.trim())
+              // Each or() condition is `column.operator.value`; the column is
+              // the token before the first dot.
+              const filterCols = Array.from(
+                new Set(filter.split(',').map((cond) => cond.trim().split('.')[0]))
+              )
+              const missing = filterCols.filter((c) => !selected.includes(c))
+              if (missing.length > 0) {
+                return {
+                  data: null,
+                  error: {
+                    code: '42703',
+                    message: `column daily_summary_highlights.${missing[0]} does not exist`,
+                  },
+                }
+              }
+            }
             writes.push({ ...patch, filter })
             const incomingIso = patch.rated_at as string
             const overwrite = !filter
@@ -45,7 +70,7 @@ function makeRatingTable(initial: { rating: string | null; rated_at: string | nu
             if (!wins) return { data: [], error: null }
             row.rating = patch.rating
             row.rated_at = patch.rated_at
-            return { data: [{ id, rating: row.rating }], error: null }
+            return { data: [{ id, rating: row.rating, rated_at: row.rated_at }], error: null }
           })()
         },
         maybeSingle: async () => ({ data: { rating: row.rating }, error: null }),
@@ -113,6 +138,20 @@ describe('applySummaryHighlightRating', () => {
     expect(result.applied).toBe(false)
     expect(result.rating).toBe('med')
     expect(row.rating).toBe('med')
+  })
+
+  it('does not throw the 42703 representation-filter error (rated_at stays in the select list)', async () => {
+    // The mock's select() rejects any or-filter column missing from the
+    // representation, exactly like production PostgREST. A plain first-tap
+    // write exercising the or-filter must therefore resolve, not throw.
+    const { supabase } = makeRatingTable({ rating: null, rated_at: null })
+    await expect(
+      applySummaryHighlightRating(supabase, {
+        summaryHighlightId: 'sh1',
+        rating: 'high',
+        ratedAt: 1_000,
+      })
+    ).resolves.toEqual({ applied: true, rating: 'high' })
   })
 
   it('overwrites when the user is changing a rating they can already see', async () => {

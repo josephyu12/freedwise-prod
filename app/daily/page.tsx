@@ -954,6 +954,11 @@ export default function DailyPage() {
           rating,
           summaryDate: summary?.date || date,
           ratedAt: Date.now(),
+          // Carried into the replay: an intentional re-rate/clear of a rating
+          // the user could SEE must land even though its rated_at is later than
+          // the stored one — without this, a queued re-rate silently lost the
+          // earlier-tap-wins conflict to the very rating it was changing.
+          overwrite,
         },
       })
 

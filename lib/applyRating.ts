@@ -56,7 +56,15 @@ export async function applySummaryHighlightRating(
     query = query.or(earlierRatingWinsFilter(ratedAtIso))
   }
 
-  const { data, error } = await query.select('id, rating')
+  // `rated_at` MUST stay in this select list. On Supabase's PostgREST, an
+  // UPDATE with `return=representation` (which .select() adds) resolves .or()
+  // filters against the RETURNED column set — a filter column missing from the
+  // select fails the whole write with 42703 "column … rated_at does not
+  // exist". That bug made EVERY rating write fail: each tap fell into the
+  // offline queue (sync banner flash), and the replay hit the same coded error
+  // until the rating was poison-dropped and reported as discarded.
+  // Verified against prod PostgREST; guarded by __tests__/apply-rating.test.ts.
+  const { data, error } = await query.select('id, rating, rated_at')
   if (error) throw error
   if (data && data.length > 0) {
     return { applied: true, rating: data[0].rating ?? rating }

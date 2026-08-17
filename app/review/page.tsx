@@ -819,6 +819,12 @@ function ReviewPageContent() {
     if (!target || ratingInProgress) return
     setRatingInProgress(true)
 
+    // First tap on an unrated row uses earlier-timestamp-wins (two offline
+    // devices racing). Changing a rating the user can already SEE must always
+    // land — matches /daily. Without this, an online re-rate silently loses the
+    // conflict to its own earlier tap and reverts.
+    const overwrite = target.rating !== null
+
     // Queue for replay — the offline branch AND the network-failure fallback
     // below share it, mirroring handleRate: a widget tap while offline (or on a
     // connection that dies mid-write) must queue the rating, not revert it.
@@ -834,6 +840,9 @@ function ReviewPageContent() {
           // not `today`, so ahead/catch-up ratings mark the right cycle.
           summaryDate: target.date,
           ratedAt: Date.now(),
+          // Carried into the replay so a queued re-rate doesn't lose the
+          // earlier-tap-wins conflict to the very rating it was changing.
+          overwrite,
         },
       })
     const advanceToNextUnrated = () =>
@@ -884,6 +893,7 @@ function ReviewPageContent() {
             summaryHighlightId: target.id,
             rating,
             ratedAt: Date.now(),
+            overwrite,
           }),
           (supabase.from('highlight_months_reviewed') as any)
             .upsert(
@@ -959,6 +969,12 @@ function ReviewPageContent() {
     if (!current || ratingInProgress) return
     setRatingInProgress(true)
 
+    // First tap on an unrated row uses earlier-timestamp-wins (two offline
+    // devices racing). Changing a rating the user can already SEE must always
+    // land — matches /daily. Without this, an online re-rate silently loses the
+    // conflict to its own earlier tap and reverts.
+    const overwrite = current.rating !== null
+
     // Optimistic UI + cache update (runs whether online or offline).
     // The cache write must happen on every path — including the online success
     // path — so a refresh while offline restores the ratings instead of
@@ -982,6 +998,9 @@ function ReviewPageContent() {
             // not `today`, so ahead/catch-up ratings mark the right cycle.
             summaryDate: current.date,
             ratedAt: Date.now(),
+            // Carried into the replay so a queued re-rate doesn't lose the
+            // earlier-tap-wins conflict to the very rating it was changing.
+            overwrite,
           },
         })
         // Move to next unrated
@@ -1030,6 +1049,7 @@ function ReviewPageContent() {
             summaryHighlightId: current.id,
             rating,
             ratedAt: Date.now(),
+            overwrite,
           }),
           (supabase.from('highlight_months_reviewed') as any)
             .upsert(
@@ -1072,6 +1092,9 @@ function ReviewPageContent() {
             // not `today`, so ahead/catch-up ratings mark the right cycle.
             summaryDate: current.date,
             ratedAt: Date.now(),
+            // Carried into the replay so a queued re-rate doesn't lose the
+            // earlier-tap-wins conflict to the very rating it was changing.
+            overwrite,
           },
         })
         // Advance to next unrated highlight
