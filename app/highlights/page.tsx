@@ -17,6 +17,36 @@ import { renderHighlightHtml } from '@/lib/renderHighlightHtml'
 import { sanitizeForRender } from '@/lib/sanitizeForRender'
 import ActionToast, { useActionToast } from '@/components/ActionToast'
 
+const MONTH_NAMES = [
+  'January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December',
+]
+
+type HighlightSort = 'newest' | 'oldest' | 'rating-high' | 'rating-low'
+
+function ratingValue(highlight: { average_rating?: number | null }) {
+  const avg = Number(highlight.average_rating)
+  return Number.isFinite(avg) ? avg : 0
+}
+
+function formatAvgRating(highlight: { average_rating?: number | null; rating_count?: number | null }) {
+  const avg = ratingValue(highlight)
+  if (avg <= 0) return '—'
+  const count = Number(highlight.rating_count) || 0
+  return count > 0 ? `${avg.toFixed(1)}/3 (${count})` : `${avg.toFixed(1)}/3`
+}
+
+function formatMonthsReviewed(monthsReviewed: { month_year: string }[] | undefined) {
+  if (!monthsReviewed || monthsReviewed.length === 0) return '—'
+  return monthsReviewed
+    .map((mr) => {
+      const [year, month] = mr.month_year.split('-')
+      const name = MONTH_NAMES[parseInt(month, 10) - 1]
+      return name ? `${name} ${year}` : mr.month_year
+    })
+    .join(', ')
+}
+
 export default function HighlightsPage() {
   const [highlights, setHighlights] = useState<Highlight[]>([])
   const [categories, setCategories] = useState<Category[]>([])
@@ -28,7 +58,7 @@ export default function HighlightsPage() {
   const [showCategoryInput, setShowCategoryInput] = useState(false)
   const [showArchived, setShowArchived] = useState(false)
   const [reviewFilter, setReviewFilter] = useState<'all' | 'reviewed' | 'not-reviewed'>('all')
-  const [sortBy, setSortBy] = useState<'newest' | 'oldest' | 'rating-high' | 'rating-low'>('newest')
+  const [sortBy, setSortBy] = useState<HighlightSort>('newest')
   const [categoryFilterMode, setCategoryFilterMode] = useState<'or' | 'and'>('or')
   const [selectedFilterCategories, setSelectedFilterCategories] = useState<string[]>([])
   const [excludedCategories, setExcludedCategories] = useState<string[]>([])
@@ -335,7 +365,6 @@ export default function HighlightsPage() {
       }
 
       const createdAtMs = (h: any) => new Date(h.created_at).getTime()
-      const ratingValue = (h: any) => Number(h.average_rating) || 0
       processedHighlights = [...processedHighlights].sort((a: any, b: any) => {
         if (sortBy === 'oldest') return createdAtMs(a) - createdAtMs(b)
         if (sortBy === 'rating-high' || sortBy === 'rating-low') {
@@ -1330,7 +1359,7 @@ export default function HighlightsPage() {
                   <select
                     id="highlight-sort"
                     value={sortBy}
-                    onChange={(e) => setSortBy(e.target.value as 'newest' | 'oldest' | 'rating-high' | 'rating-low')}
+                    onChange={(e) => setSortBy(e.target.value as HighlightSort)}
                     className="px-3 py-1 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm"
                   >
                     <option value="newest">Newest</option>
@@ -1582,7 +1611,7 @@ export default function HighlightsPage() {
                           )}
                         </button>
                       )}
-                      <div className="text-xs text-gray-400 dark:text-gray-500">
+                      <div className="text-xs text-gray-400 dark:text-gray-500 min-w-0">
                         <div>
                           {(highlight as any).assigned_date && (
                             <span className="text-gray-500 dark:text-gray-400">
@@ -1601,21 +1630,11 @@ export default function HighlightsPage() {
                           {highlight.last_resurfaced && (
                             <span> • Last: {new Date(highlight.last_resurfaced).toLocaleDateString()}</span>
                           )}
-                          {highlight.average_rating !== undefined && highlight.average_rating > 0 && (
-                            <span> • Avg Rating: {highlight.average_rating.toFixed(1)}/3</span>
-                          )}
+                          <span> • Avg Rating: {formatAvgRating(highlight)}</span>
                         </div>
-                        {highlight.months_reviewed && highlight.months_reviewed.length > 0 && (
-                          <div className="mt-1">
-                            Months reviewed: {highlight.months_reviewed
-                              .map((mr: any) => {
-                                const [year, month] = mr.month_year.split('-')
-                                const monthNames = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']
-                                return `${monthNames[parseInt(month) - 1]} ${year}`
-                              })
-                              .join(', ')}
-                          </div>
-                        )}
+                        <div className="mt-1">
+                          Months reviewed: {formatMonthsReviewed(highlight.months_reviewed)}
+                        </div>
                       </div>
                     </div>
                     <div className="flex flex-row flex-wrap gap-2">
