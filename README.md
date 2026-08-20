@@ -60,12 +60,7 @@ npm install
      - `supabase/migration_add_months_reviewed.sql` - Adds months reviewed tracking
      - `supabase/migration_add_archived.sql` - Adds archiving functionality
 
-5. Install dependencies (including PDF parsing library):
-```bash
-npm install
-```
-
-6. Run the development server:
+5. Run the development server:
 ```bash
 npm run dev
 ```
@@ -94,7 +89,7 @@ See `supabase/schema.sql` for the complete schema.
 4. Click "Add Highlight"
 
 ### Importing Highlights from Notion
-1. Go to the Import page (or click "Import PDF" from the Highlights page)
+1. Go to the Import page
 2. Get your Notion API key from [notion.so/my-integrations](https://www.notion.so/my-integrations) (create a new integration)
 3. Get your Notion Page ID from the page URL (the long string after the last dash)
 4. Enter your API key and Page ID
