@@ -2,12 +2,15 @@ import { type NextRequest, NextResponse } from 'next/server'
 import { updateSession } from '@/lib/supabase/middleware'
 
 export async function middleware(request: NextRequest) {
-  // Allow cron job endpoints to bypass authentication
   const pathname = request.nextUrl.pathname
-  if (pathname.startsWith('/api/daily/prepare-next-cycle') ||
-      pathname.startsWith('/api/review/widget')) {
-    // Always allow cron endpoints through - they handle their own authentication
-    // The route handlers will check for x-vercel-cron header or CRON_SECRET
+  // Static public files and cron/widget endpoints must not wait on
+  // supabase.auth.getUser(). /sw.js was matching the old matcher, so a hung
+  // Auth fetch 504'd the service worker as well as the document.
+  if (
+    pathname === '/sw.js' ||
+    pathname.startsWith('/api/daily/prepare-next-cycle') ||
+    pathname.startsWith('/api/review/widget')
+  ) {
     return NextResponse.next()
   }
   
@@ -22,9 +25,9 @@ export const config = {
      * - _next/static (static files)
      * - _next/image (image optimization files)
      * - favicon.ico (favicon file)
-     * Feel free to modify this pattern to include more paths.
+     * - sw.js / other public *.js (service worker, widget script)
      */
-    '/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)',
+    '/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp|js)$).*)',
   ],
 }
 
