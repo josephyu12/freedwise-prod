@@ -67,6 +67,20 @@ interface ReviewHighlight {
   } | null
 }
 
+// Next unrated slot after a rating lands: search FORWARD from `fromIndex` and
+// wrap to the start only when nothing ahead is left. A highlight the user
+// skipped past with Next is therefore deferred to the end of the pass instead
+// of being jumped back to after every rating; a refresh (loadHighlights →
+// first unrated) brings it back to the front.
+const nextUnratedAfter = (list: { rating: unknown }[], fromIndex: number) => {
+  const n = list.length
+  for (let step = 1; step <= n; step++) {
+    const i = (((fromIndex + step) % n) + n) % n
+    if (list[i].rating === null) return i
+  }
+  return -1
+}
+
 export default function ReviewPage() {
   return (
     <>
@@ -783,7 +797,7 @@ function ReviewPageContent() {
             }, 300)
           } else {
             // Already rated — navigate to next unreviewed instead
-            const nextUnrated = highlights.findIndex((h) => h.rating === null)
+            const nextUnrated = nextUnratedAfter(highlights, targetIndex)
             if (nextUnrated >= 0) setCurrentIndex(nextUnrated)
             router.replace('/review', { scroll: false })
           }
@@ -832,7 +846,7 @@ function ReviewPageContent() {
     const advanceToNextUnrated = () =>
       setHighlights((prev) => {
         const updated = prev.map((h) => (h.id === target.id ? { ...h, rating } : h))
-        const nextUnrated = updated.findIndex((h) => h.rating === null)
+        const nextUnrated = nextUnratedAfter(updated, index)
         if (nextUnrated >= 0) setCurrentIndex(nextUnrated)
         return updated
       })
@@ -897,7 +911,7 @@ function ReviewPageContent() {
       const keptRating = rateRes.applied ? rating : rateRes.rating
       setHighlights((prev) => {
         const updated = prev.map((h) => (h.id === target.id ? { ...h, rating: keptRating } : h))
-        const nextUnrated = updated.findIndex((h) => h.rating === null)
+        const nextUnrated = nextUnratedAfter(updated, index)
         if (nextUnrated >= 0) setCurrentIndex(nextUnrated)
         return updated
       })
@@ -995,9 +1009,7 @@ function ReviewPageContent() {
           const updated = prev.map((h) =>
             h.id === current.id ? { ...h, rating } : h
           )
-          const nextUnrated = updated.findIndex(
-            (h, i) => h.rating === null && i !== currentIndex
-          )
+          const nextUnrated = nextUnratedAfter(updated, currentIndex)
           if (nextUnrated >= 0) {
             setCurrentIndex(nextUnrated)
           }
@@ -1058,9 +1070,7 @@ function ReviewPageContent() {
         const updated = prev.map((h) =>
           h.id === current.id ? { ...h, rating: keptRating } : h
         )
-        const nextUnrated = updated.findIndex(
-          (h, i) => h.rating === null && i !== currentIndex
-        )
+        const nextUnrated = nextUnratedAfter(updated, currentIndex)
         if (nextUnrated >= 0) setCurrentIndex(nextUnrated)
         return updated
       })
@@ -1092,9 +1102,7 @@ function ReviewPageContent() {
           const updated = prev.map((h) =>
             h.id === current.id ? { ...h, rating } : h
           )
-          const nextUnrated = updated.findIndex(
-            (h, i) => h.rating === null && i !== currentIndex
-          )
+          const nextUnrated = nextUnratedAfter(updated, currentIndex)
           if (nextUnrated >= 0) {
             setCurrentIndex(nextUnrated)
           }

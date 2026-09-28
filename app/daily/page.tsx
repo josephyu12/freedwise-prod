@@ -778,9 +778,15 @@ export default function DailyPage() {
     setShowCompletionDialog(false)
   }, [date, loadDailySummary])
 
-  // Auto-scroll to the first unreviewed highlight when returning to a partial review
+  // Auto-scroll to the first unreviewed highlight when returning to a partial review.
+  // Fires once per loaded day — NOT on every `summary` change. Ratings patch
+  // `summary` too, and re-running this on each one snapped the page back to the
+  // first unrated card, i.e. the one the user had just scrolled past to skip.
+  const autoScrolledDateRef = useRef<string | null>(null)
   useEffect(() => {
     if (loading || !summary || summary.highlights.length === 0) return
+    if (autoScrolledDateRef.current === summary.date) return
+    autoScrolledDateRef.current = summary.date
 
     const firstUnreviewed = summary.highlights.find((sh) => sh.rating === null)
     if (!firstUnreviewed?.highlight?.id) return
@@ -933,7 +939,11 @@ export default function DailyPage() {
       if (summary && rating !== null) {
         setSlidingOutIds((prev) => new Set(prev).add(summaryHighlightId))
         const currentIndex = summary.highlights.findIndex((sh) => sh.id === summaryHighlightId)
-        const nextHighlight = summary.highlights[currentIndex + 1]
+        // Move ON: the next still-unrated card below this one. Never search
+        // upward — cards above that the user scrolled past are skipped for now.
+        const nextHighlight = summary.highlights.find(
+          (sh, i) => i > currentIndex && sh.rating === null
+        )
         if (nextHighlight?.highlight?.id) {
           setTimeout(() => {
             const nextElement = document.getElementById(`highlight-${nextHighlight.highlight!.id}`)
