@@ -149,7 +149,7 @@ These migrations can be applied individually to update existing databases:
      the same appearance converge on the earlier tap instead of last-sync-wins.
    - **Date:** 2026-08-13
 
-23. **`migration_notion_sync_coalesce.sql`** (Latest)
+23. **`migration_notion_sync_coalesce.sql`**
    - Replaces `enqueue_notion_sync()` so multiple edits to the same highlight
      collapse into ONE Notion push: edits fold into a fresh pending `add`
      (the add just carries the newest content) and resurrect a `failed` update
@@ -158,6 +158,16 @@ These migrations can be applied individually to update existing databases:
    - Pairs with a POST /api/notion/sync change that marks superseded sibling
      `update` rows completed after one successful push.
    - **Date:** 2026-08-16
+
+24. **`migration_hybrid_search.sql`** (Latest)
+   - Adds `search_highlights_hybrid(query_text, query_embedding, ...)`: fuses
+     pgvector nearest-neighbours with stemmed English full-text via reciprocal
+     rank fusion, so Semantic search finds a quote from remembered wording even
+     when the vector alone ranks it below the old 0.81 floor (or vice versa).
+   - `query_embedding` may be NULL (browser model unavailable) → lexical arm only.
+   - `/api/search` semantic mode calls this and degrades to `match_highlights`
+     until the migration is applied. Requires `migration_add_embeddings.sql`.
+   - **Date:** 2026-09-27
 
 ## Migration Order
 
@@ -188,6 +198,7 @@ If applying migrations incrementally, use this order:
 22. `migration_add_embeddings.sql`
 23. `migration_rating_rated_at.sql`
 24. `migration_notion_sync_coalesce.sql`
+25. `migration_hybrid_search.sql`
 
 ## Usage
 
@@ -223,6 +234,7 @@ If applying migrations incrementally, use this order:
 \i migration_add_embeddings.sql
 \i migration_rating_rated_at.sql
 \i migration_notion_sync_coalesce.sql
+\i migration_hybrid_search.sql
 ```
 
 ## Notes

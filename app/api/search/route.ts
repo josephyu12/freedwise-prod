@@ -4,12 +4,18 @@ import { getUserReviewSettings, getCycleForDate } from '@/lib/cycle'
 
 const EMBEDDING_DIM = 384
 
-// Cosine-similarity floor for query -> highlight matches (gte-small vectors).
-// Tuned empirically against the real library: the median query->highlight
-// similarity is ~0.78 (gte-small clusters high), clearly relevant matches
-// land 0.83+. Drop this if semantic recall ever feels thin.
-const SEMANTIC_MIN_SIMILARITY = 0.81
+// Semantic mode is hybrid: pgvector nearest-neighbours fused (reciprocal rank
+// fusion) with stemmed Postgres full-text, in one RPC. See
+// supabase/migration_hybrid_search.sql for the ranking rules.
+//
+// Cosine floor for the semantic arm. gte-small clusters tightly on this
+// library (median query->highlight similarity ~0.75, real matches 0.85+), and
+// the old hard 0.81 cut silently dropped paraphrases that landed at 0.78-0.80.
+// This is a noise guard only; ranking does the real work.
+const SEMANTIC_MIN_SIMILARITY = 0.75
 const SEMANTIC_MATCH_COUNT = 30
+// Per-arm candidate pool before fusion.
+const HYBRID_CANDIDATE_COUNT = 60
 
 // Normalize months_reviewed: union the highlight_months_reviewed rows with months
 // derived from rated daily_assignments. The latter handles "lost signal" cases where
@@ -91,6 +97,12 @@ function processHighlight(h: any, cycleStart: string, cycleEnd: string): any {
   }, cycleStart, cycleEnd)
 }
 
+// PostgREST reports an RPC that doesn't exist as PGRST202; Postgres itself as
+// 42883 (undefined_function).
+function isMissingFunction(error: any): boolean {
+  return error?.code === 'PGRST202' || error?.code === '42883'
+}
+
 async function keywordSearch(supabase: any, userId: string, query: string, cycleStart: string, cycleEnd: string) {
   // Full-text search via ILIKE pattern matching.
   //
@@ -151,31 +163,54 @@ export async function POST(request: NextRequest) {
     }
 
     // Semantic search: the browser embeds the query with gte-small and sends
-    // the vector; pgvector's HNSW index finds nearest highlights across the
-    // WHOLE library (the old TF-IDF version silently scanned at most 1,000).
+    // the vector. The RPC fuses pgvector nearest-neighbours with stemmed
+    // full-text so a remembered turn of phrase is found even when the vector
+    // alone ranks it low (and vice versa).
     const validEmbedding =
       Array.isArray(embedding) &&
       embedding.length === EMBEDDING_DIM &&
       embedding.every((v: unknown) => typeof v === 'number' && Number.isFinite(v))
+    const queryEmbedding = validEmbedding ? `[${embedding.join(',')}]` : null
 
-    if (!validEmbedding) {
-      // Model unavailable in the client (offline, download failed) —
-      // degrade to keyword search instead of erroring.
-      const results = await keywordSearch(supabase, user.id, query, cycle.startDate, cycle.endDate)
-      return NextResponse.json({ results, fallback: 'keyword' })
-    }
+    let ranked: { id: string; similarity: number | null }[] = []
+    let fallback: 'keyword' | undefined
 
     const { data: matches, error: matchError } = await (supabase as any)
-      .rpc('match_highlights', {
-        query_embedding: `[${embedding.join(',')}]`,
+      .rpc('search_highlights_hybrid', {
+        query_text: query,
+        query_embedding: queryEmbedding,
         match_count: SEMANTIC_MATCH_COUNT,
+        candidate_count: HYBRID_CANDIDATE_COUNT,
         min_similarity: SEMANTIC_MIN_SIMILARITY,
       })
-    if (matchError) throw matchError
 
-    const ranked: { id: string; similarity: number }[] = matches || []
+    if (!matchError) {
+      ranked = matches || []
+      // Model unavailable in the client (offline, download failed): the RPC
+      // ran its lexical arm alone. Still stemmed + ranked, but tell the UI.
+      if (!validEmbedding) fallback = 'keyword'
+    } else if (isMissingFunction(matchError)) {
+      // migration_hybrid_search.sql not applied yet — degrade to the
+      // vector-only RPC (or ILIKE without a vector) rather than failing.
+      console.warn('search_highlights_hybrid missing; falling back to match_highlights')
+      if (!validEmbedding) {
+        const results = await keywordSearch(supabase, user.id, query, cycle.startDate, cycle.endDate)
+        return NextResponse.json({ results, fallback: 'keyword' })
+      }
+      const { data: legacy, error: legacyError } = await (supabase as any)
+        .rpc('match_highlights', {
+          query_embedding: queryEmbedding,
+          match_count: SEMANTIC_MATCH_COUNT,
+          min_similarity: SEMANTIC_MIN_SIMILARITY,
+        })
+      if (legacyError) throw legacyError
+      ranked = legacy || []
+    } else {
+      throw matchError
+    }
+
     if (ranked.length === 0) {
-      return NextResponse.json({ results: [] })
+      return NextResponse.json({ results: [], ...(fallback ? { fallback } : {}) })
     }
 
     const { data: details, error: detailError } = await supabase
@@ -191,7 +226,7 @@ export async function POST(request: NextRequest) {
       .filter((m) => byId.has(m.id))
       .map((m) => processHighlight({ ...(byId.get(m.id) as any), similarity: m.similarity }, cycle.startDate, cycle.endDate))
 
-    return NextResponse.json({ results: ordered })
+    return NextResponse.json({ results: ordered, ...(fallback ? { fallback } : {}) })
   } catch (error: any) {
     console.error('Error performing search:', error)
     return NextResponse.json(

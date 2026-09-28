@@ -669,7 +669,7 @@ export default function SearchPage() {
                   <span>
                     Found {results.length} result{results.length !== 1 ? 's' : ''}
                     {usedKeywordFallback && searchType === 'semantic' && (
-                      <span> · semantic model unavailable, showed keyword matches</span>
+                      <span> · semantic model unavailable, showing word matches only</span>
                     )}
                   </span>
                 )}
