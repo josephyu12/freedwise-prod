@@ -181,9 +181,42 @@ export default function HighlightsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  // Deep link: /highlights?focus=<id> (from /search) or /highlights#highlight-<id>
+  // (from /highlights/recent). The list is paginated client-side, so the
+  // target may not be on page 1: loadHighlights locates it in the filtered +
+  // sorted list, jumps to its page, then the effect below scrolls to the card
+  // and flashes it. Stages: 'locate' -> 'scroll' -> done (null).
+  const focusRef = useRef<{ id: string; stage: 'locate' | 'scroll'; triedArchived: boolean } | null>(null)
+  const [flashId, setFlashId] = useState<string | null>(null)
   useEffect(() => {
+    const fromQuery = new URLSearchParams(window.location.search).get('focus')
+    const fromHash = window.location.hash.startsWith('#highlight-')
+      ? window.location.hash.slice('#highlight-'.length)
+      : null
+    const id = fromQuery || fromHash
+    if (id) focusRef.current = { id, stage: 'locate', triedArchived: false }
+  }, [])
+
+  useEffect(() => {
+    const focus = focusRef.current
+    if (!focus || focus.stage !== 'scroll' || loading) return
+    const el = document.getElementById(`highlight-${focus.id}`)
+    if (!el) return
+    focusRef.current = null
+    // Drop the deep-link params so a refresh / filter change doesn't re-jump.
+    window.history.replaceState(null, '', window.location.pathname)
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    setFlashId(focus.id)
+    const t = setTimeout(() => setFlashId(null), 2500)
+    return () => clearTimeout(t)
+  }, [highlights, loading])
+
+  useEffect(() => {
+    // A pending deep link owns the page; don't reset it underneath the jump.
+    if (focusRef.current?.stage === 'locate') return
     setCurrentPage(1) // Reset to first page when filter or sort changes
     setSelectedIds(new Set()) // Selection may no longer match what's visible
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showArchived, selectedFilterCategories, excludedCategories, categoryFilterMode, sortBy])
 
   useEffect(() => {
@@ -192,6 +225,10 @@ export default function HighlightsPage() {
   }, [showArchived, selectedFilterCategories, excludedCategories, categoryFilterMode, sortBy, currentPage, itemsPerPage])
 
   const loadHighlights = async () => {
+    // Set when a deep-link jump changes page/filter mid-load: the effect will
+    // call loadHighlights again immediately, so keep the spinner up instead of
+    // flashing an empty list in between.
+    let reloadPending = false
     try {
       setLoading(true)
       
@@ -365,16 +402,41 @@ export default function HighlightsPage() {
       // Update total count based on filtered results
       setTotalHighlights(processedHighlights.length)
 
+      // Deep link (?focus=<id>): find the target in the filtered + sorted list
+      // and jump to its page before rendering. A search hit is never archived,
+      // but a stale link might be: flip showArchived once and retry.
+      const focus = focusRef.current
+      if (focus?.stage === 'locate') {
+        const idx = processedHighlights.findIndex((h: any) => h.id === focus.id)
+        if (idx >= 0) {
+          focus.stage = 'scroll'
+          const page = Math.floor(idx / itemsPerPage) + 1
+          if (page !== currentPage) {
+            // The currentPage effect re-runs loadHighlights for the right page.
+            reloadPending = true
+            setCurrentPage(page)
+            return
+          }
+        } else if (!focus.triedArchived && !showArchived) {
+          focus.triedArchived = true
+          reloadPending = true
+          setShowArchived(true)
+          return
+        } else {
+          focusRef.current = null
+          window.history.replaceState(null, '', window.location.pathname)
+        }
+      }
+
       // Apply pagination after filtering
       const from = (currentPage - 1) * itemsPerPage
-      const to = from + itemsPerPage - 1
-      const paginatedHighlights = processedHighlights.slice(from, to)
+      const paginatedHighlights = processedHighlights.slice(from, from + itemsPerPage)
 
       setHighlights(paginatedHighlights)
     } catch (error) {
       console.error('Error loading highlights:', error)
     } finally {
-      setLoading(false)
+      if (!reloadPending) setLoading(false)
     }
   }
 
@@ -1512,11 +1574,11 @@ export default function HighlightsPage() {
                   key={highlight.id}
                   id={`highlight-${highlight.id}`}
                   onClick={selectMode ? () => toggleSelected(highlight.id) : undefined}
-                  className={`relative bg-white dark:bg-gray-800 p-6 rounded-lg shadow-lg ${
+                  className={`relative bg-white dark:bg-gray-800 p-6 rounded-lg shadow-lg transition-shadow duration-700 ${
                     highlight.archived ? 'opacity-60 border-2 border-orange-300 dark:border-orange-700' : ''
                   } ${selectMode ? 'cursor-pointer select-none' : ''} ${
                     selectMode && selectedIds.has(highlight.id) ? 'ring-2 ring-blue-500' : ''
-                  }`}
+                  } ${flashId === highlight.id ? 'ring-4 ring-blue-400 dark:ring-blue-500' : ''}`}
                 >
                   {selectMode && <SelectCheck selected={selectedIds.has(highlight.id)} />}
                   {highlight.archived && (

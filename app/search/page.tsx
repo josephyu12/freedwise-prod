@@ -4,11 +4,12 @@ import { useState, useEffect, useCallback } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { Highlight, Category } from '@/types/database'
 import Link from 'next/link'
+import { useRouter } from 'next/navigation'
 import { useDebounce } from '@/hooks/useDebounce'
 import RichTextEditor from '@/components/RichTextEditor'
 import PinDialog from '@/components/PinDialog'
 import { useUnsavedChanges } from '@/hooks/useUnsavedChanges'
-import { Pin, PinOff } from 'lucide-react'
+import { Pin, PinOff, ListOrdered } from 'lucide-react'
 import { addToNotionSyncQueue } from '@/lib/notionSyncQueue'
 import { renderHighlightHtml } from '@/lib/renderHighlightHtml'
 import { embedText, preloadEmbedder } from '@/lib/clientEmbeddings'
@@ -45,6 +46,11 @@ export default function SearchPage() {
   const [bulkWorking, setBulkWorking] = useState(false)
   const { toast, showToast } = useActionToast()
   const supabase = createClient()
+  const router = useRouter()
+
+  // Open /highlights jumped to this highlight's position in the list (the
+  // highlights page reads ?focus=, pages to it, scrolls and flashes the card).
+  const showInList = (id: string) => router.push(`/highlights?focus=${id}`)
 
   // Lazily (re-)embeds new or edited highlights in the browser so semantic
   // search and the /web graph stay in sync with the library.
@@ -903,7 +909,20 @@ export default function SearchPage() {
                     ) : (
                       <>
                         <div
-                          className="highlight-content text-base mb-3 prose dark:prose-invert max-w-none"
+                          className={`highlight-content text-base mb-3 prose dark:prose-invert max-w-none ${
+                            selectMode ? '' : 'cursor-pointer'
+                          }`}
+                          title={selectMode ? undefined : 'Show in Highlights list'}
+                          onClick={
+                            selectMode
+                              ? undefined
+                              : (e) => {
+                                  // Let a text selection (drag) through; only a plain click navigates.
+                                  if (window.getSelection()?.toString()) return
+                                  e.stopPropagation()
+                                  showInList(highlight.id)
+                                }
+                          }
                           dangerouslySetInnerHTML={{
                             __html: renderHighlightHtml(highlight.html_content, highlight.text),
                           }}
@@ -970,6 +989,16 @@ export default function SearchPage() {
                             className="px-3 py-1 text-sm bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300 rounded hover:bg-blue-200 dark:hover:bg-blue-800 transition"
                           >
                             Edit
+                          </button>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              showInList(highlight.id)
+                            }}
+                            className="px-3 py-1 text-sm bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded hover:bg-gray-200 dark:hover:bg-gray-600 transition flex items-center gap-1"
+                            title="Open the Highlights page scrolled to this highlight"
+                          >
+                            <ListOrdered className="w-3.5 h-3.5" /> Show in list
                           </button>
                           {highlight.archived ? (
                             <button
