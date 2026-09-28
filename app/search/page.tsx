@@ -19,7 +19,10 @@ import { removeFromFutureMonths } from '@/lib/removeFromFutureMonths'
 
 export default function SearchPage() {
   const [query, setQuery] = useState('')
-  const [searchType, setSearchType] = useState<'fulltext' | 'semantic'>('fulltext')
+  // Semantic (hybrid meaning + stemmed wording) is the default: it's the mode
+  // that finds a highlight from a half-remembered phrasing. 'fulltext' is the
+  // exact-substring mode ("Exact" in the UI) for when you know the literal text.
+  const [searchType, setSearchType] = useState<'fulltext' | 'semantic'>('semantic')
   const [results, setResults] = useState<Highlight[]>([])
   const [loading, setLoading] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
@@ -48,6 +51,10 @@ export default function SearchPage() {
   const embeddingSync = useEmbeddingSync()
 
   const debouncedQuery = useDebounce(query, 500)
+  // True from the first keystroke until the search for the CURRENT text has
+  // returned — covers the debounce window too, so the page doesn't flash
+  // "No results found" before a search has even started.
+  const searchPending = loading || query.trim() !== debouncedQuery.trim()
 
   // Warm the embedding model as soon as Semantic mode is selected, so the
   // first search doesn't eat the model download+init latency.
@@ -631,8 +638,9 @@ export default function SearchPage() {
                     color: searchType === 'fulltext' ? 'white' : 'var(--text-secondary)',
                     boxShadow: searchType === 'fulltext' ? 'var(--shadow-sm)' : 'none',
                   }}
+                  title="Match the exact text you type"
                 >
-                  Full Text
+                  Exact
                 </button>
                 <button
                   onClick={() => setSearchType('semantic')}
@@ -657,7 +665,7 @@ export default function SearchPage() {
             </div>
             {query && (
               <div className="mt-3 text-sm" style={{ color: 'var(--text-tertiary)' }}>
-                {loading ? (
+                {searchPending ? (
                   <span className="flex items-center gap-2">
                     <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
                       <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
@@ -696,13 +704,13 @@ export default function SearchPage() {
                 Start searching
               </h2>
               <p className="text-sm max-w-sm mx-auto" style={{ color: 'var(--text-tertiary)' }}>
-                Type a keyword to find highlights, or switch to <strong>Semantic</strong> search to find highlights by meaning.
+                Type what you remember — even a rough paraphrase. <strong>Semantic</strong> finds highlights by meaning and wording; switch to <strong>Exact</strong> to match the literal text.
               </p>
             </div>
           )}
 
           {/* No results */}
-          {query && !loading && results.length === 0 && (
+          {query && !searchPending && results.length === 0 && (
             <div className="glass-card p-10 sm:p-16 text-center">
               <div className="w-16 h-16 mx-auto mb-4 rounded-2xl flex items-center justify-center" style={{ background: 'var(--surface-hover)' }}>
                 <svg className="w-8 h-8" style={{ color: 'var(--text-tertiary)' }} fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -713,7 +721,9 @@ export default function SearchPage() {
                 No results found
               </h2>
               <p className="text-sm" style={{ color: 'var(--text-tertiary)' }}>
-                Try different keywords or switch to {searchType === 'fulltext' ? 'semantic' : 'full text'} search.
+                {searchType === 'fulltext'
+                  ? 'Exact mode matches the literal text only — switch to Semantic to search by meaning.'
+                  : 'Try different wording, or switch to Exact to match literal text.'}
               </p>
             </div>
           )}
