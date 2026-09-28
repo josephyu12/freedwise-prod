@@ -22,6 +22,7 @@ import { removeReviewedOnClear } from '@/lib/reviewedLedger'
 import { removeFromFutureMonths } from '@/lib/removeFromFutureMonths'
 import { useOfflineStatus } from '@/hooks/useOfflineStatus'
 import { isEffectivelyOffline } from '@/hooks/useManualOffline'
+import { normalizeLinks, LINKS_FROM_SELECT, LINKS_TO_SELECT } from '@/lib/highlightLinks'
 import AutoArchiveToast from '@/components/AutoArchiveToast'
 import ActionToast, { useActionToast } from '@/components/ActionToast'
 import SelectModeBar, { SelectCheck, archiveActionError } from '@/components/SelectModeBar'
@@ -551,17 +552,8 @@ export default function DailyPage() {
               highlight_categories (
                 category:categories (*)
               ),
-              highlight_links_from:highlight_links!from_highlight_id (
-                id,
-                to_highlight_id,
-                link_text,
-                to_highlight:highlights!to_highlight_id (
-                  id,
-                  text,
-                  source,
-                  author
-                )
-              )
+              ${LINKS_FROM_SELECT},
+              ${LINKS_TO_SELECT}
             )
           `)
           .eq('daily_summary_id', summaryData.id)
@@ -580,7 +572,11 @@ export default function DailyPage() {
             ? {
                 ...sh.highlight,
                 categories: sh.highlight.highlight_categories?.map((hc: any) => hc.category) || [],
-                linked_highlights: sh.highlight.highlight_links_from || [],
+                linked_highlights: normalizeLinks(
+                  sh.highlight.id,
+                  sh.highlight.highlight_links_from,
+                  sh.highlight.highlight_links_to
+                ),
               }
             : null,
         }))

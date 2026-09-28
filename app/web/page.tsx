@@ -10,8 +10,11 @@ import {
   forceY,
   Simulation,
 } from 'd3-force'
+import { Link2, Link2Off } from 'lucide-react'
 import { useEmbeddingSync } from '@/hooks/useEmbeddingSync'
 import { useDebounce } from '@/hooks/useDebounce'
+import { createClient } from '@/lib/supabase/client'
+import { linkHighlights, unlinkHighlights } from '@/lib/highlightLinks'
 
 interface GraphNode {
   id: string
@@ -46,8 +49,12 @@ interface GraphPayload {
   nodes: GraphNode[]
   edges: GraphEdge[]
   categories: GraphCategory[]
+  // Explicit highlight_links as node-index pairs (s < t)
+  links: { s: number; t: number }[]
   stats: { highlights: number; embedded: number; edges: number }
 }
+
+const linkKey = (a: number, b: number) => (a < b ? `${a}|${b}` : `${b}|${a}`)
 
 // Fallback palette when a category has no stored color.
 const PALETTE = [
@@ -66,7 +73,15 @@ export default function WebPage() {
   const [selectedIdx, setSelectedIdx] = useState<number | null>(null)
   const [hoverIdx, setHoverIdx] = useState<number | null>(null)
   const [filter, setFilter] = useState('')
+  // Saved links live outside `graph` so toggling one doesn't restart the
+  // force simulation (which depends on `graph`). The ref mirrors the state
+  // for the canvas draw loop.
+  const [links, setLinks] = useState<Set<string>>(new Set())
+  const linksRef = useRef<Set<string>>(new Set())
+  linksRef.current = links
+  const [linkBusy, setLinkBusy] = useState(false)
   const embeddingSync = useEmbeddingSync()
+  const supabase = useMemo(() => createClient(), [])
 
   // Mutable render state lives in refs: the animation loop reads them
   // without re-subscribing, React state only drives the UI chrome.
@@ -92,6 +107,7 @@ export default function WebPage() {
       }
       const payload: GraphPayload = await res.json()
       setGraph(payload)
+      setLinks(new Set((payload.links || []).map((l) => linkKey(l.s, l.t))))
       setSelectedIdx(null)
     } catch (e: any) {
       setError(e?.message || 'Failed to load the highlight web')
@@ -136,17 +152,64 @@ export default function WebPage() {
     return d
   }, [graph])
 
+  // Similarity neighbours plus explicitly linked highlights (which may have no
+  // similarity edge at all — w is null then). Linked first, then by weight.
   const neighborsOf = useCallback(
-    (idx: number): { idx: number; w: number }[] => {
+    (idx: number): { idx: number; w: number | null; linked: boolean }[] => {
       if (!graph) return []
-      const out: { idx: number; w: number }[] = []
+      const byIdx = new Map<number, { idx: number; w: number | null; linked: boolean }>()
       for (const e of graph.edges) {
-        if (e.s === idx) out.push({ idx: e.t, w: e.w })
-        else if (e.t === idx) out.push({ idx: e.s, w: e.w })
+        const other = e.s === idx ? e.t : e.t === idx ? e.s : null
+        if (other === null) continue
+        byIdx.set(other, { idx: other, w: e.w, linked: links.has(linkKey(idx, other)) })
       }
-      return out.sort((a, b) => b.w - a.w)
+      for (const key of links) {
+        const [a, b] = key.split('|').map(Number)
+        const other = a === idx ? b : b === idx ? a : null
+        if (other === null) continue
+        const existing = byIdx.get(other)
+        if (existing) existing.linked = true
+        else byIdx.set(other, { idx: other, w: null, linked: true })
+      }
+      return [...byIdx.values()].sort((a, b) => {
+        if (a.linked !== b.linked) return a.linked ? -1 : 1
+        return (b.w ?? 0) - (a.w ?? 0)
+      })
     },
-    [graph]
+    [graph, links]
+  )
+
+  const toggleLink = useCallback(
+    async (a: number, b: number) => {
+      if (!graph || linkBusy) return
+      const key = linkKey(a, b)
+      const wasLinked = links.has(key)
+      setLinkBusy(true)
+      // Optimistic; revert on failure.
+      setLinks((prev) => {
+        const next = new Set(prev)
+        if (wasLinked) next.delete(key)
+        else next.add(key)
+        return next
+      })
+      needsDrawRef.current = true
+      try {
+        if (wasLinked) await unlinkHighlights(supabase, graph.nodes[a].id, graph.nodes[b].id)
+        else await linkHighlights(supabase, graph.nodes[a].id, graph.nodes[b].id)
+      } catch (e) {
+        console.error('Failed to update highlight link:', e)
+        setLinks((prev) => {
+          const next = new Set(prev)
+          if (wasLinked) next.add(key)
+          else next.delete(key)
+          return next
+        })
+        needsDrawRef.current = true
+      } finally {
+        setLinkBusy(false)
+      }
+    },
+    [graph, links, linkBusy, supabase]
   )
 
   // Debounced so the auto-zoom below doesn't jump on every keystroke.
@@ -165,7 +228,7 @@ export default function WebPage() {
   filterRef.current = filter
   useEffect(() => {
     needsDrawRef.current = true
-  }, [filterMatches, selectedIdx, hoverIdx])
+  }, [filterMatches, selectedIdx, hoverIdx, links])
 
   // Filter changed: zoom to the matching nodes so the web visibly narrows.
   // Clearing the filter zooms back out to the whole graph.
@@ -222,6 +285,9 @@ export default function WebPage() {
       window.matchMedia('(prefers-color-scheme: dark)').matches
     const edgeColor = isDark ? 'rgba(148,163,184,0.18)' : 'rgba(100,116,139,0.16)'
     const edgeHiColor = isDark ? 'rgba(129,140,248,0.7)' : 'rgba(79,70,229,0.55)'
+    // Saved links: always visible, warm accent so they read as deliberate
+    // against the cool similarity web.
+    const linkColor = isDark ? 'rgba(251,191,36,0.85)' : 'rgba(217,119,6,0.8)'
     const labelColor = styles.getPropertyValue('--text-primary').trim() || (isDark ? '#e5e7eb' : '#1f2937')
     const matchRingColor = styles.getPropertyValue('--brand').trim() || '#6366f1'
 
@@ -276,27 +342,52 @@ export default function WebPage() {
       const sel = selectedRef.current
       const hov = hoverRef.current
       const matches = filterMatchesRef.current
+      const saved = linksRef.current
       const selNeighbors = new Set<number>()
       if (sel !== null) {
         for (const l of links) {
           if (l.s === sel) selNeighbors.add(l.t)
           if (l.t === sel) selNeighbors.add(l.s)
         }
+        for (const key of saved) {
+          const [a, b] = key.split('|').map(Number)
+          if (a === sel) selNeighbors.add(b)
+          if (b === sel) selNeighbors.add(a)
+        }
       }
 
-      // edges — when a filter is active, edges fade with their endpoints so
-      // the matching region visually pops out of the web
+      const fadeFor = (s: number, t: number) => {
+        if (!matches) return 1
+        const am = matches.has(s), bm = matches.has(t)
+        return am && bm ? 1 : am || bm ? 0.35 : 0.06
+      }
+
+      // similarity edges — when a filter is active, edges fade with their
+      // endpoints so the matching region visually pops out of the web.
+      // Pairs that are also saved links are drawn in the pass below instead.
       for (const l of links) {
+        if (saved.has(linkKey(l.s, l.t))) continue
         const a = nodes[l.s], b = nodes[l.t]
         const emphasized = sel !== null && (l.s === sel || l.t === sel)
-        let alpha = 1
-        if (matches) {
-          const am = matches.has(l.s), bm = matches.has(l.t)
-          alpha = am && bm ? 1 : am || bm ? 0.35 : 0.06
-        }
-        ctx.globalAlpha = alpha
+        ctx.globalAlpha = fadeFor(l.s, l.t)
         ctx.strokeStyle = emphasized ? edgeHiColor : edgeColor
         ctx.lineWidth = (emphasized ? 1.8 : 0.8 + l.w) / k
+        ctx.beginPath()
+        ctx.moveTo(a.x!, a.y!)
+        ctx.lineTo(b.x!, b.y!)
+        ctx.stroke()
+      }
+
+      // saved links — on top, thicker, accent colour; visible whether or not
+      // the pair is also similar enough to have a similarity edge.
+      for (const key of saved) {
+        const [s, t] = key.split('|').map(Number)
+        const a = nodes[s], b = nodes[t]
+        if (!a || !b) continue
+        const emphasized = sel !== null && (s === sel || t === sel)
+        ctx.globalAlpha = Math.max(fadeFor(s, t), 0.25)
+        ctx.strokeStyle = linkColor
+        ctx.lineWidth = (emphasized ? 2.6 : 1.8) / k
         ctx.beginPath()
         ctx.moveTo(a.x!, a.y!)
         ctx.lineTo(b.x!, b.y!)
@@ -488,12 +579,14 @@ export default function WebPage() {
                 Highlight Web
               </h1>
               <p className="text-sm mt-1" style={{ color: 'var(--text-tertiary)' }}>
-                Highlights connected by meaning and shared words — clusters are ideas you keep returning to
+                Highlights connected by meaning and shared words — clusters are ideas you keep returning to.
+                Amber lines are links you&apos;ve saved.
               </p>
             </div>
             {graph && (
               <p className="text-xs" style={{ color: 'var(--text-tertiary)' }}>
                 {graph.stats.highlights} highlights · {graph.stats.edges} connections
+                {links.size > 0 && ` · ${links.size} saved link${links.size !== 1 ? 's' : ''}`}
                 {graph.stats.embedded < graph.stats.highlights &&
                   ` · ${graph.stats.highlights - graph.stats.embedded} not yet indexed`}
               </p>
@@ -604,19 +697,39 @@ export default function WebPage() {
                     </p>
                   )}
                   <div className="space-y-2">
-                    {selectedNeighbors.map(({ idx, w }) => (
-                      <button
+                    {selectedNeighbors.map(({ idx, w, linked }) => (
+                      <div
                         key={graph!.nodes[idx].id}
-                        onClick={() => centerOn(idx)}
-                        className="block w-full text-left p-3 rounded-lg transition text-sm hover:opacity-80"
-                        style={{ background: 'var(--surface-hover)', color: 'var(--text-secondary)' }}
+                        className="flex items-start gap-2 p-3 rounded-lg text-sm"
+                        style={{
+                          background: 'var(--surface-hover)',
+                          color: 'var(--text-secondary)',
+                          boxShadow: linked ? 'inset 3px 0 0 rgba(217,119,6,0.8)' : undefined,
+                        }}
                       >
-                        <span className="block text-xs mb-1" style={{ color: 'var(--text-tertiary)' }}>
-                          {(w * 100).toFixed(0)}% connected
-                        </span>
-                        {graph!.nodes[idx].text.replace(/\s+/g, ' ').slice(0, 160)}
-                        {graph!.nodes[idx].text.length > 160 && '…'}
-                      </button>
+                        <button
+                          onClick={() => centerOn(idx)}
+                          className="flex-1 min-w-0 text-left transition hover:opacity-80"
+                        >
+                          <span className="block text-xs mb-1" style={{ color: 'var(--text-tertiary)' }}>
+                            {linked && 'Linked'}
+                            {linked && w !== null && ' · '}
+                            {w !== null && `${(w * 100).toFixed(0)}% connected`}
+                          </span>
+                          {graph!.nodes[idx].text.replace(/\s+/g, ' ').slice(0, 160)}
+                          {graph!.nodes[idx].text.length > 160 && '…'}
+                        </button>
+                        <button
+                          onClick={() => toggleLink(selectedIdx!, idx)}
+                          disabled={linkBusy}
+                          title={linked ? 'Remove saved link' : 'Save as a link'}
+                          aria-label={linked ? 'Unlink' : 'Link'}
+                          className="shrink-0 p-1.5 rounded-md transition hover:opacity-80 disabled:opacity-50"
+                          style={{ color: linked ? 'rgb(217,119,6)' : 'var(--text-tertiary)' }}
+                        >
+                          {linked ? <Link2Off className="w-4 h-4" /> : <Link2 className="w-4 h-4" />}
+                        </button>
+                      </div>
                     ))}
                   </div>
                 </div>

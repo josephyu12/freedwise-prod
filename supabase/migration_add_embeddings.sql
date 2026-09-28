@@ -4,8 +4,8 @@
 --
 -- Adds a 384-dim embedding column (gte-small, computed client-side in the
 -- browser and backfilled once via script) plus the RPCs that power:
---   * /api/search semantic mode        -> match_highlights
---   * /api/search/similar              -> similar_highlights
+--   * /api/search semantic mode        -> match_highlights (now search_highlights_hybrid)
+--   * /api/highlights/[id]/related     -> similar_highlights
 --   * embedding sync (find stale rows) -> embedding_pending
 --
 -- embedding_hash = md5(text) at the moment the row was embedded. When a

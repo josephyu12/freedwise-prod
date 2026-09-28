@@ -15,6 +15,33 @@ const cache = new Map<string, { at: number; payload: any }>()
 
 export const dynamic = 'force-dynamic'
 
+// Explicit highlight_links as node-index pairs (s < t). RLS scopes the read
+// to links whose both endpoints belong to the caller; pairs touching a node
+// that isn't in the graph (archived) are dropped.
+async function loadLinks(
+  supabase: any,
+  nodes: { id: string }[]
+): Promise<{ s: number; t: number }[]> {
+  const { data, error } = await supabase
+    .from('highlight_links')
+    .select('from_highlight_id, to_highlight_id')
+  if (error) throw error
+  const indexById = new Map(nodes.map((n, i) => [n.id, i]))
+  const seen = new Set<string>()
+  const out: { s: number; t: number }[] = []
+  for (const r of (data || []) as { from_highlight_id: string; to_highlight_id: string }[]) {
+    const a = indexById.get(r.from_highlight_id)
+    const b = indexById.get(r.to_highlight_id)
+    if (a === undefined || b === undefined || a === b) continue
+    const s = Math.min(a, b), t = Math.max(a, b)
+    const key = `${s}|${t}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push({ s, t })
+  }
+  return out
+}
+
 export async function GET(request: NextRequest) {
   try {
     const supabase = await createClient()
@@ -29,7 +56,10 @@ export async function GET(request: NextRequest) {
     const refresh = request.nextUrl.searchParams.get('refresh') === '1'
     const cached = cache.get(user.id)
     if (!refresh && cached && Date.now() - cached.at < CACHE_TTL_MS) {
-      return NextResponse.json(cached.payload)
+      // Explicit links are cheap and change on every Link/Unlink tap, so
+      // they're re-read on each request and overlaid on the cached web.
+      const links = await loadLinks(supabase, cached.payload.nodes)
+      return NextResponse.json({ ...cached.payload, links })
     }
 
     // Page through the WHOLE library — PostgREST caps single responses at
@@ -94,7 +124,8 @@ export async function GET(request: NextRequest) {
     }
 
     cache.set(user.id, { at: Date.now(), payload })
-    return NextResponse.json(payload)
+    const links = await loadLinks(supabase, nodes)
+    return NextResponse.json({ ...payload, links })
   } catch (error: any) {
     console.error('Error building highlight graph:', error)
     return NextResponse.json(

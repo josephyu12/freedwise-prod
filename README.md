@@ -100,10 +100,11 @@ See `supabase/schema.sql` for the complete schema.
 9. Click "Import" to add them to your database
 
 ### Linking Highlights
-1. Click "Link Highlights" button
-2. Select text in one highlight
-3. Click another highlight to create a link
-4. Linked highlights will show clickable references
+Links are suggested automatically from meaning (embedding similarity) and saved explicitly by you:
+1. On the Review page, each card shows a **Related highlights** panel — saved links first, then the nearest highlights by meaning
+2. Tap **Link** on a suggestion to save it (or **Unlink** to remove it)
+3. On the Highlight Web (`/web`), select a node and use the link icon next to any connected highlight; saved links draw as amber lines
+4. Saved links appear as "Linked to:" references on the Highlights and Daily pages
 
 ### Rating Highlights
 1. Go to the Daily Summary page

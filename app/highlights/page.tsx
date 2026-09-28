@@ -18,6 +18,7 @@ import { sanitizeForRender } from '@/lib/sanitizeForRender'
 import ActionToast, { useActionToast } from '@/components/ActionToast'
 import SelectModeBar, { SelectCheck, archiveActionError } from '@/components/SelectModeBar'
 import { removeFromFutureMonths } from '@/lib/removeFromFutureMonths'
+import { normalizeLinks, LINKS_FROM_SELECT, LINKS_TO_SELECT } from '@/lib/highlightLinks'
 
 const MONTH_NAMES = [
   'January', 'February', 'March', 'April', 'May', 'June',
@@ -219,15 +220,8 @@ export default function HighlightsPage() {
           highlight_categories (
             category:categories (*)
           ),
-          highlight_links_from:highlight_links!from_highlight_id (
-            id,
-            to_highlight_id,
-            link_text,
-            to_highlight:highlights!to_highlight_id (
-              id,
-              text
-            )
-          ),
+          ${LINKS_FROM_SELECT},
+          ${LINKS_TO_SELECT},
           months_reviewed:highlight_months_reviewed (
             id,
             month_year,
@@ -323,7 +317,7 @@ export default function HighlightsPage() {
         return {
           ...h,
           categories: h.highlight_categories?.map((hc: any) => hc.category) || [],
-          linked_highlights: h.highlight_links_from || [],
+          linked_highlights: normalizeLinks(h.id, h.highlight_links_from, h.highlight_links_to),
           months_reviewed: monthsReviewed,
           assigned_date: assignedDate,
         }

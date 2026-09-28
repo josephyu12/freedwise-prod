@@ -28,6 +28,7 @@ import { getUserReviewSettings, getCycleForDate, cycleKeyForDate } from '@/lib/c
 import type { Cycle } from '@/lib/cycle'
 import { updateHighlightStatsAfterRating } from '@/lib/highlightStats'
 import AutoArchiveToast from '@/components/AutoArchiveToast'
+import RelatedHighlights from '@/components/RelatedHighlights'
 import ActionToast, { useActionToast } from '@/components/ActionToast'
 import {
   listReplayable,
@@ -2126,6 +2127,14 @@ function ReviewPageContent() {
                     </p>
                   )}
 
+                  {/* Explicit links + nearest neighbours by meaning. Keyed on
+                      the highlight so the panel refetches per card. Hidden
+                      while offline (component renders nothing). */}
+                  <RelatedHighlights
+                    key={current.highlight_id}
+                    highlightId={current.highlight_id}
+                    className="mt-4"
+                  />
                 </>
               )}
             </div>
