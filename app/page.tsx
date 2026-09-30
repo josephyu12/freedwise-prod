@@ -8,6 +8,7 @@ import { addToNotionSyncQueue } from '@/lib/notionSyncQueue'
 import { callRedistribute } from '@/lib/redistribute'
 import { useUnsavedChanges } from '@/hooks/useUnsavedChanges'
 import { splitHtmlByBlankLines } from '@/lib/splitHighlightText'
+import SimilarDraftWarning from '@/components/SimilarDraftWarning'
 
 export default function Home() {
   const [text, setText] = useState('')
@@ -276,6 +277,19 @@ export default function Home() {
                 fullscreen={fullscreen}
                 onToggleFullscreen={() => setFullscreen((v) => !v)}
               />
+              <SimilarDraftWarning
+                text={text}
+                html={htmlContent}
+                className="mt-3"
+                onFolded={() => {
+                  setText('')
+                  setHtmlContent('')
+                  setSelectedCategories([])
+                  setFullscreen(false)
+                  setSaveSuccess(true)
+                  setTimeout(() => setSaveSuccess(false), 1500)
+                }}
+              />
 
               <div className={`flex flex-col sm:flex-row sm:items-center gap-3 ${fullscreen ? 'mt-4' : 'mt-6'}`}>
                 <div className="flex-1 flex flex-wrap gap-2">
@@ -464,6 +478,21 @@ export default function Home() {
               <div>
                 <h2 className="font-semibold text-gray-900 dark:text-white">Highlight Web</h2>
                 <p className="text-sm" style={{ color: 'var(--text-tertiary)' }}>Explore connections by meaning</p>
+              </div>
+            </Link>
+
+            <Link
+              href="/merge"
+              className="glass-card glass-card-interactive p-5 flex items-center gap-4 group"
+            >
+              <div className="flex-shrink-0 w-11 h-11 rounded-xl bg-fuchsia-50 dark:bg-fuchsia-500/10 flex items-center justify-center group-hover:bg-fuchsia-100 dark:group-hover:bg-fuchsia-500/20 transition-colors">
+                <svg className="w-5 h-5 text-fuchsia-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 6l4 4 4-4M12 10v10M6 20l6-6 6 6" />
+                </svg>
+              </div>
+              <div>
+                <h2 className="font-semibold text-gray-900 dark:text-white">Similar Highlights</h2>
+                <p className="text-sm" style={{ color: 'var(--text-tertiary)' }}>Merge highlights that say the same thing</p>
               </div>
             </Link>
 

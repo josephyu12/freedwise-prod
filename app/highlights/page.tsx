@@ -19,6 +19,7 @@ import ActionToast, { useActionToast } from '@/components/ActionToast'
 import SelectModeBar, { SelectCheck, archiveActionError } from '@/components/SelectModeBar'
 import { removeFromFutureMonths } from '@/lib/removeFromFutureMonths'
 import { normalizeLinks, LINKS_FROM_SELECT, LINKS_TO_SELECT } from '@/lib/highlightLinks'
+import SimilarDraftWarning from '@/components/SimilarDraftWarning'
 
 const MONTH_NAMES = [
   'January', 'February', 'March', 'April', 'May', 'June',
@@ -1399,6 +1400,25 @@ export default function HighlightsPage() {
                   placeholder="What do you want to remember?"
                   fullscreen={fullscreen}
                   onToggleFullscreen={() => setFullscreen((v) => !v)}
+                />
+                <SimilarDraftWarning
+                  text={text}
+                  html={htmlContent}
+                  className="mt-3"
+                  onFolded={(result) => {
+                    setText('')
+                    setHtmlContent('')
+                    setSelectedCategories([])
+                    setFullscreen(false)
+                    showToast('Added to an existing highlight')
+                    setHighlights((prev) =>
+                      prev.map((h) =>
+                        h.id === result.id
+                          ? { ...h, text: result.text, html_content: result.html }
+                          : h
+                      )
+                    )
+                  }}
                 />
               </div>
               <div className="flex flex-col sm:flex-row sm:items-center gap-3">

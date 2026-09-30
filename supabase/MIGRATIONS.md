@@ -159,7 +159,7 @@ These migrations can be applied individually to update existing databases:
      `update` rows completed after one successful push.
    - **Date:** 2026-08-16
 
-24. **`migration_hybrid_search.sql`** (Latest)
+24. **`migration_hybrid_search.sql`**
    - Adds `search_highlights_hybrid(query_text, query_embedding, ...)`: fuses
      pgvector nearest-neighbours with stemmed English full-text via reciprocal
      rank fusion, so Semantic search finds a quote from remembered wording even
@@ -168,6 +168,21 @@ These migrations can be applied individually to update existing databases:
    - `/api/search` semantic mode calls this and degrades to `match_highlights`
      until the migration is applied. Requires `migration_add_embeddings.sql`.
    - **Date:** 2026-09-27
+
+25. **`migration_merge_suggestions.sql`** (Latest)
+   - Adds `near_duplicate_pairs(min_similarity, per_highlight)`: every pair of
+     the caller's active highlights whose embeddings sit at/above the cosine
+     floor (one HNSW probe per highlight), minus dismissed pairs. Powers the
+     `/merge` page.
+   - Adds `highlight_merge_dismissals` ("keep both" decisions, canonical a<b,
+     RLS) so a consciously-kept pair stops being suggested.
+   - Adds `merge_highlights(p_keep, p_remove, p_text, p_html)`: one-transaction
+     merge — the kept row takes the combined text and inherits the removed
+     row's categories, links and pin; the removed row is deleted. The Notion
+     trigger sees a plain UPDATE + DELETE. Review history is not merged.
+   - Requires `migration_add_embeddings.sql`. **Required before the `/merge`
+     page works** (it shows a setup notice until then).
+   - **Date:** 2026-09-29
 
 ## Migration Order
 
@@ -199,6 +214,7 @@ If applying migrations incrementally, use this order:
 23. `migration_rating_rated_at.sql`
 24. `migration_notion_sync_coalesce.sql`
 25. `migration_hybrid_search.sql`
+26. `migration_merge_suggestions.sql`
 
 ## Usage
 
@@ -235,6 +251,7 @@ If applying migrations incrementally, use this order:
 \i migration_rating_rated_at.sql
 \i migration_notion_sync_coalesce.sql
 \i migration_hybrid_search.sql
+\i migration_merge_suggestions.sql
 ```
 
 ## Notes

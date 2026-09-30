@@ -86,7 +86,8 @@ See `supabase/schema.sql` for the complete schema.
 1. Go to the Highlights page
 2. Use the rich text editor to format your highlight (bold, italic, underline, lists)
 3. Optionally add source, author, and category tags
-4. Click "Add Highlight"
+4. If the draft is very similar to something already saved (~87%+ by meaning), a warning appears under the editor. You can fold the new text into that highlight or keep writing and save a new one
+5. Click "Add Highlight"
 
 ### Importing Highlights from Notion
 1. Go to the Import page
@@ -101,10 +102,16 @@ See `supabase/schema.sql` for the complete schema.
 
 ### Linking Highlights
 Links are suggested automatically from meaning (embedding similarity) and saved explicitly by you:
-1. On the Review page, each card shows a **Related highlights** panel — saved links first, then the nearest highlights by meaning
-2. Tap **Link** on a suggestion to save it (or **Unlink** to remove it)
-3. On the Highlight Web (`/web`), select a node and use the link icon next to any connected highlight; saved links draw as amber lines
-4. Saved links appear as "Linked to:" references on the Highlights and Daily pages
+1. On the Highlight Web (`/web`), select a node and use the link icon next to any connected highlight; saved links draw as amber lines
+2. Saved links appear as "Linked to:" references on the Highlights and Daily pages
+
+### Merging Similar Highlights
+Exact duplicates are rejected on save, but the same idea written twice in different words is not. The **Similar Highlights** page (`/merge`, linked from the home screen) finds those:
+1. Every pair of active highlights whose embeddings are at least 85% similar is listed, strongest first, with a "same meaning" and a "same words" score
+2. Pick a threshold — Near-identical (95%+), Very similar (90%+) or Similar (85%+)
+3. **Merge…** opens an editor pre-filled with both texts. Choose which highlight survives (the older one by default — it keeps its review history, ratings and pin), edit the two into one idea, and confirm. The other highlight is deleted; its categories and links move to the kept one
+4. **Keep both** records that the pair is intentionally separate so it is never suggested again
+5. Requires `supabase/migration_merge_suggestions.sql` (see `supabase/MIGRATIONS.md`)
 
 ### Rating Highlights
 1. Go to the Daily Summary page
