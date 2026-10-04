@@ -2,6 +2,7 @@
 
 import { useRef, useState, useEffect } from 'react'
 import { sanitizeHtml } from '@/lib/sanitizeHtml'
+import { changeListItemType, isCaretAtListItemStart, liftListItem } from '@/lib/liftListItem'
 
 interface RichTextEditorProps {
   value: string
@@ -71,6 +72,47 @@ export default function RichTextEditor({ value, htmlValue, onChange, placeholder
     }
   }
 
+  const readCaret = (scope: Node) => {
+    const sel = window.getSelection()
+    if (!sel || sel.rangeCount === 0) return null
+    const range = sel.getRangeAt(0)
+    if (!scope.contains(range.startContainer)) return null
+    return { node: range.startContainer, offset: range.startOffset }
+  }
+
+  const writeCaret = (caret: { node: Node; offset: number } | null, fallback: Node | null) => {
+    const sel = window.getSelection()
+    if (!sel) return
+    const range = document.createRange()
+    try {
+      if (caret?.node.isConnected) {
+        const max =
+          caret.node.nodeType === Node.TEXT_NODE
+            ? caret.node.textContent?.length ?? 0
+            : caret.node.childNodes.length
+        range.setStart(caret.node, Math.min(caret.offset, max))
+        range.collapse(true)
+      } else if (fallback) {
+        range.selectNodeContents(fallback)
+        range.collapse(true)
+      } else {
+        return
+      }
+      sel.removeAllRanges()
+      sel.addRange(range)
+      savedSelection.current = range.cloneRange()
+    } catch {
+      editorRef.current?.focus()
+    }
+  }
+
+  // Drop the bullet or number on this line and leave the caret in its text.
+  const removeListFormatting = (listItem: HTMLElement) => {
+    const caret = readCaret(listItem)
+    const block = liftListItem(listItem)
+    writeCaret(caret, block)
+  }
+
   const execCommand = (command: string, value?: string) => {
     if (!editorRef.current) return
     
@@ -111,32 +153,14 @@ export default function RichTextEditor({ value, htmlValue, onChange, placeholder
 
       if (currentLi && parentList && parentIsList && selection && range) {
         if (parentList.tagName === targetTag) {
-          // Already in a list of the requested type — create a nested sub-bullet
-          // at the cursor. Reuse an existing nested list of the same type if one
-          // exists at the end of this <li>, otherwise create one.
-          let nestedList = Array.from(currentLi.children).find(
-            (c) => c.tagName === targetTag
-          ) as HTMLElement | undefined
-          if (!nestedList) {
-            nestedList = document.createElement(targetTag.toLowerCase())
-            currentLi.appendChild(nestedList)
-          }
-          const newLi = document.createElement('li')
-          nestedList.appendChild(newLi)
-          const newRange = document.createRange()
-          newRange.setStart(newLi, 0)
-          newRange.collapse(true)
-          selection.removeAllRanges()
-          selection.addRange(newRange)
+          // Already this list type — toggle it off for this line only.
+          removeListFormatting(currentLi)
         } else {
-          // Different list type — convert the parent list in place. This only
-          // touches the immediate parent; sibling lists are untouched, so you
-          // can't accidentally flip a neighboring <ul> into <ol>.
-          const newList = document.createElement(targetTag.toLowerCase())
-          while (parentList.firstChild) {
-            newList.appendChild(parentList.firstChild)
-          }
-          parentList.replaceWith(newList)
+          // The other list type — switch this line only. Sibling lines stay put,
+          // so a bullet list can't be flipped into numbers (or the reverse).
+          const caret = readCaret(currentLi)
+          changeListItemType(currentLi, targetTag === 'UL' ? 'ul' : 'ol')
+          writeCaret(caret, currentLi)
         }
       } else {
         // Not in a list — let the browser create one at the cursor.
@@ -284,14 +308,56 @@ export default function RichTextEditor({ value, htmlValue, onChange, placeholder
             
             handleInput()
           }
-        } else if (list && (list.tagName === 'UL' || list.tagName === 'OL')) {
-          // Already at top level, can't outdent further
+        } else if (list.tagName === 'UL' || list.tagName === 'OL') {
+          // Top level: outdent removes the bullet and keeps the text.
+          removeListFormatting(listItem as HTMLElement)
+          handleInput()
         }
       }
     }
   }
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    // Backspace at the start of the first top-level bullet does nothing in
+    // Chrome when that list is the first block. Lift it out instead.
+    if (
+      e.key === 'Backspace' &&
+      !e.shiftKey &&
+      !e.metaKey &&
+      !e.ctrlKey &&
+      !e.altKey &&
+      editorRef.current
+    ) {
+      const selection = window.getSelection()
+      if (selection && selection.isCollapsed && selection.rangeCount > 0) {
+        const range = selection.getRangeAt(0)
+        const container = range.startContainer
+        const listItem = (
+          container.nodeType === Node.ELEMENT_NODE
+            ? (container as Element).closest('li')
+            : container.parentElement?.closest('li')
+        ) as HTMLElement | null
+        const list = listItem?.parentElement
+        const topLevel =
+          !!list &&
+          (list.tagName === 'UL' || list.tagName === 'OL') &&
+          list.parentElement?.tagName !== 'LI'
+        const isFirstItem = !!list && listItem === list.firstElementChild
+        if (
+          listItem &&
+          topLevel &&
+          isFirstItem &&
+          !list?.previousElementSibling &&
+          isCaretAtListItemStart(listItem, range)
+        ) {
+          e.preventDefault()
+          removeListFormatting(listItem)
+          handleInput()
+          return
+        }
+      }
+    }
+
     // Handle Tab key for indenting/outdenting lists
     if (e.key === 'Tab' && editorRef.current) {
       const selection = window.getSelection()
