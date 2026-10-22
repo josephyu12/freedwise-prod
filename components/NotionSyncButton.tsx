@@ -1,8 +1,9 @@
 'use client'
 
-import { useEffect, useRef, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback } from 'react'
 import { useUnsavedChanges } from '@/hooks/useUnsavedChanges'
 import { createClient } from '@/lib/supabase/client'
+import { setNotionManualDrainActive } from '@/lib/notionSyncQueue'
 
 type QueueStatus = {
   pending: number
@@ -14,20 +15,49 @@ type QueueStatus = {
 type SyncResult = {
   processed?: number
   failed?: number
+  rateLimited?: number
   total?: number
+  // Set when nothing is ready yet but items are sitting in a backoff /
+  // rate-limit cool-down. The drain loop waits for them rather than exiting.
+  waiting?: number
+  nextRetryAt?: string | null
   message?: string
   error?: string
 }
 
 // Each pass processes one queue item server-side so the progress bar can tick
 // per-item instead of jumping 0 → 100% after a bulk batch. The loop exits early
-// once `data.total === 0`, so this is just an upper safety bound.
-const MAX_DRAIN_PASSES = 500
+// once the queue is empty, so this is just an upper safety bound.
+const MAX_DRAIN_PASSES = 1000
+// Longest single pause while waiting for throttled items to become ready.
+const MAX_COOLDOWN_WAIT_MS = 30_000
+const MIN_COOLDOWN_WAIT_MS = 1_000
+// If the earliest retry is further out than this (deep exponential backoff on
+// a genuinely broken item), stop the drain and let the background processor
+// pick it up later rather than holding the modal open for minutes.
+const MAX_DEFER_WAIT_MS = 60_000
+
+const sleep = (ms: number) => new Promise<void>(resolve => window.setTimeout(resolve, ms))
+
+// Progress is derived from queue-state snapshots, NOT from per-pass tallies.
+// A pass that fails and is retried would otherwise be counted on every retry,
+// so "done" outgrew the queue and the bar sat at 100% while the total kept
+// climbing. Here: total = size of the work set (pending+processing) at start,
+// ratcheted up if items are enqueued mid-sync; done = items that left the work
+// set; failed = items that became permanently failed during this run.
+type SyncProgress = {
+  total: number
+  synced: number
+  failed: number
+  remaining: number
+}
 
 export default function NotionSyncButton() {
   const [status, setStatus] = useState<QueueStatus | null>(null)
   const [syncing, setSyncing] = useState(false)
-  const [progress, setProgress] = useState<{ processed: number; failed: number } | null>(null)
+  const [progress, setProgress] = useState<SyncProgress | null>(null)
+  // Non-null while the drain loop is paused for a Notion rate-limit cool-down.
+  const [cooldownUntil, setCooldownUntil] = useState<number | null>(null)
   const [message, setMessage] = useState<string | null>(null)
   // null = still checking, false = Notion sync off (render nothing), true = on.
   // When Notion sync isn't enabled there's nothing to sync, so the whole button
@@ -41,16 +71,20 @@ export default function NotionSyncButton() {
     'Notion sync is still running. Leave this page anyway?'
   )
 
-  const fetchStatus = useCallback(async () => {
+  const readStatus = useCallback(async (): Promise<QueueStatus | null> => {
     try {
       const res = await fetch('/api/notion/sync', { method: 'GET' })
-      if (!res.ok) return
-      const data = (await res.json()) as QueueStatus
-      setStatus(data)
+      if (!res.ok) return null
+      return (await res.json()) as QueueStatus
     } catch {
-      // best-effort
+      return null
     }
   }, [])
+
+  const fetchStatus = useCallback(async () => {
+    const data = await readStatus()
+    if (data) setStatus(data)
+  }, [readStatus])
 
   // Decide whether to show the button at all based on the user's Notion setting.
   useEffect(() => {
@@ -94,12 +128,35 @@ export default function NotionSyncButton() {
   const drainQueue = useCallback(async () => {
     if (syncing) return
     setSyncing(true)
+    setNotionManualDrainActive(true)
     setMessage(null)
-    setProgress({ processed: 0, failed: 0 })
+    setCooldownUntil(null)
 
-    let totalProcessed = 0
-    let totalFailed = 0
+    // Baseline snapshot. Work set = pending + processing. Rows already in
+    // permanent 'failed' are excluded: the route never picks them up.
+    const start = await readStatus()
+    const baseFailed = start?.failed ?? 0
+    let total = start ? start.pending + start.processing : 0
+    let current: SyncProgress = { total, synced: 0, failed: 0, remaining: total }
+    setProgress(current)
+
+    const refreshProgress = async () => {
+      const s = await readStatus()
+      if (!s) return
+      const work = s.pending + s.processing
+      // Items enqueued mid-sync enlarge the work set; ratchet the total so
+      // "done" never moves backwards.
+      const doneSoFar = current.synced + current.failed
+      total = Math.max(total, work + doneSoFar)
+      const done = Math.max(0, total - work)
+      const failed = Math.max(0, s.failed - baseFailed)
+      current = { total, synced: Math.max(0, done - failed), failed, remaining: work }
+      setProgress(current)
+      setStatus(s)
+    }
+
     let notionConfigured = true
+    let deferred = 0
 
     try {
       for (let i = 0; i < MAX_DRAIN_PASSES; i++) {
@@ -116,30 +173,61 @@ export default function NotionSyncButton() {
           break
         }
 
-        totalProcessed += data.processed || 0
-        totalFailed += data.failed || 0
-        setProgress({ processed: totalProcessed, failed: totalFailed })
+        await refreshProgress()
 
-        // Queue is drained when the API returns nothing new to work on
-        if (!data.total || data.total === 0) break
+        if (!data.total || data.total === 0) {
+          // Nothing ready. If items are only waiting out a backoff /
+          // rate-limit cool-down, pause until the earliest one is due and
+          // keep going; otherwise the queue is drained.
+          if (data.waiting && data.waiting > 0) {
+            const dueIn = data.nextRetryAt
+              ? new Date(data.nextRetryAt).getTime() - Date.now()
+              : MIN_COOLDOWN_WAIT_MS
+            if (dueIn > MAX_DEFER_WAIT_MS) {
+              deferred = data.waiting
+              break
+            }
+            const waitMs = Math.min(
+              Math.max(dueIn + 250, MIN_COOLDOWN_WAIT_MS),
+              MAX_COOLDOWN_WAIT_MS
+            )
+            setCooldownUntil(Date.now() + waitMs)
+            await sleep(waitMs)
+            setCooldownUntil(null)
+            continue
+          }
+          break
+        }
+
+        // A rate-limited pass did no work; brief pause before the next item
+        // so the loop itself doesn't contribute to the pressure.
+        if (!data.processed && !data.failed && data.rateLimited) {
+          await sleep(MIN_COOLDOWN_WAIT_MS)
+        }
       }
 
       if (!notionConfigured) {
         setMessage('Connect Notion in Settings first')
-      } else if (totalProcessed === 0 && totalFailed === 0) {
+      } else if (current.synced === 0 && current.failed === 0 && deferred === 0) {
         setMessage('Already in sync')
       } else {
         const parts: string[] = []
-        if (totalProcessed > 0) parts.push(`${totalProcessed} synced`)
-        if (totalFailed > 0) parts.push(`${totalFailed} failed`)
+        if (current.synced > 0) parts.push(`${current.synced} synced`)
+        if (current.failed > 0) parts.push(`${current.failed} failed`)
+        if (deferred > 0) parts.push(`${deferred} retrying later`)
         setMessage(parts.join(' · '))
       }
     } finally {
+      setNotionManualDrainActive(false)
       setSyncing(false)
+      setCooldownUntil(null)
       fetchStatus()
       window.setTimeout(() => setMessage(null), 4000)
     }
-  }, [syncing, fetchStatus])
+  }, [syncing, fetchStatus, readStatus])
+
+  // Make sure the background processor is released if this unmounts mid-drain.
+  useEffect(() => () => setNotionManualDrainActive(false), [])
 
   const pending = status?.pending ?? 0
   const processing = status?.processing ?? 0
@@ -150,7 +238,7 @@ export default function NotionSyncButton() {
   let label: string
   if (syncing) {
     label = progress
-      ? `Syncing… ${progress.processed}${progress.failed > 0 ? ` · ${progress.failed} failed` : ''}`
+      ? `Syncing… ${progress.synced}/${progress.total}${progress.failed > 0 ? ` · ${progress.failed} failed` : ''}`
       : 'Syncing…'
   } else if (message) {
     label = message
@@ -201,9 +289,8 @@ export default function NotionSyncButton() {
 
       {syncing && (
         <SyncModal
-          processed={progress?.processed ?? 0}
-          failed={progress?.failed ?? 0}
-          outstanding={outstanding}
+          progress={progress}
+          cooldownUntil={cooldownUntil}
         />
       )}
     </>
@@ -211,14 +298,25 @@ export default function NotionSyncButton() {
 }
 
 function SyncModal({
-  processed,
-  failed,
-  outstanding,
+  progress,
+  cooldownUntil,
 }: {
-  processed: number
-  failed: number
-  outstanding: number
+  progress: SyncProgress | null
+  cooldownUntil: number | null
 }) {
+  const synced = progress?.synced ?? 0
+  const failed = progress?.failed ?? 0
+  const remaining = progress?.remaining ?? 0
+  // Tick once a second while paused so the countdown stays live.
+  const [, forceTick] = useState(0)
+  useEffect(() => {
+    if (cooldownUntil === null) return
+    const id = window.setInterval(() => forceTick(n => n + 1), 1000)
+    return () => window.clearInterval(id)
+  }, [cooldownUntil])
+  const cooldownSeconds =
+    cooldownUntil !== null ? Math.max(0, Math.ceil((cooldownUntil - Date.now()) / 1000)) : null
+
   return (
     <div
       className="fixed inset-0 z-[200] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4"
@@ -254,17 +352,13 @@ function SyncModal({
           navigating away may interrupt items that haven&apos;t been written yet.
         </p>
 
-        <SyncProgressBar
-          processed={processed}
-          failed={failed}
-          outstanding={outstanding}
-        />
+        <SyncProgressBar progress={progress} />
 
         <div className="bg-gray-50 dark:bg-gray-900/40 rounded-lg p-4 mb-4 border border-gray-200 dark:border-gray-700">
           <div className="flex items-baseline justify-between text-sm">
             <span className="text-gray-500 dark:text-gray-400">Synced</span>
             <span className="font-semibold text-gray-900 dark:text-white tabular-nums">
-              {processed}
+              {synced}
             </span>
           </div>
           {failed > 0 && (
@@ -275,45 +369,31 @@ function SyncModal({
               </span>
             </div>
           )}
-          {outstanding > 0 && (
-            <div className="flex items-baseline justify-between text-sm mt-2">
-              <span className="text-gray-500 dark:text-gray-400">Remaining (approx)</span>
-              <span className="font-semibold text-gray-900 dark:text-white tabular-nums">
-                {Math.max(0, outstanding - processed - failed)}
-              </span>
-            </div>
-          )}
+          <div className="flex items-baseline justify-between text-sm mt-2">
+            <span className="text-gray-500 dark:text-gray-400">Remaining</span>
+            <span className="font-semibold text-gray-900 dark:text-white tabular-nums">
+              {remaining}
+            </span>
+          </div>
         </div>
 
         <p className="text-xs text-gray-500 dark:text-gray-400">
-          Each Notion write is rate-limited, so a large queue can take a minute or two.
+          {cooldownSeconds !== null
+            ? `Notion asked us to slow down — resuming in ${cooldownSeconds}s. Nothing has failed; items are just waiting their turn.`
+            : 'Notion allows about 3 requests per second, so a large queue can take several minutes.'}
         </p>
       </div>
     </div>
   )
 }
 
-function SyncProgressBar({
-  processed,
-  failed,
-  outstanding,
-}: {
-  processed: number
-  failed: number
-  outstanding: number
-}) {
-  const done = processed + failed
-  // Ratchet the denominator upward only. The queue can shrink mid-sync when a
-  // delete triggers the cancel-pending-add path (removes 1 row, skips enqueue),
-  // which would otherwise make the displayed total drop from "0 of 2" to "0 of 1".
-  // The modal unmounts between syncs, so the ref resets naturally per run.
-  const maxTotalRef = useRef(1)
-  const candidate = Math.max(outstanding, done, 1)
-  if (candidate > maxTotalRef.current) {
-    maxTotalRef.current = candidate
-  }
-  const total = maxTotalRef.current
-  const isIndeterminate = outstanding === 0 && done === 0 && maxTotalRef.current === 1
+function SyncProgressBar({ progress }: { progress: SyncProgress | null }) {
+  // The total is already ratcheted (upward only) by the drain loop, and
+  // "done" is derived from the queue shrinking rather than from pass counts,
+  // so it can never exceed the total.
+  const total = progress?.total ?? 0
+  const done = Math.min(total, (progress?.synced ?? 0) + (progress?.failed ?? 0))
+  const isIndeterminate = !progress || total === 0
   const pct = isIndeterminate ? 0 : Math.min(100, Math.round((done / total) * 100))
 
   return (

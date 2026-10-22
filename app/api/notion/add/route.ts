@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { Client } from '@notionhq/client'
+import { createNotionClient } from '@/lib/notionClient'
 import { createClient } from '@/lib/supabase/server'
 import { htmlToNotionBlocks } from '@/lib/notionBlocks'
 
@@ -55,9 +55,7 @@ export async function POST(request: NextRequest) {
     const notionPageId = notionSettings.notion_page_id
 
     // Initialize Notion client
-    const notion = new Client({
-      auth: notionApiKey,
-    })
+    const notion = createNotionClient(notionApiKey)
 
     // Convert HTML to Notion blocks
     const blocks = htmlToNotionBlocks(htmlContent || text)

@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { isEffectivelyOffline, MANUAL_OFFLINE_EVENT } from '@/hooks/useManualOffline'
-import { notionSyncReadyFilter } from '@/lib/notionSyncQueue'
+import { notionSyncReadyFilter, isNotionManualDrainActive } from '@/lib/notionSyncQueue'
 import { fetchWithTimeout } from '@/lib/fetchWithTimeout'
 
 export default function NotionSyncProcessor() {
@@ -14,6 +14,9 @@ export default function NotionSyncProcessor() {
   const processQueue = useCallback(async () => {
     // Manual offline is treated exactly like a real disconnect: no Notion push.
     if (isProcessingRef.current || isEffectivelyOffline()) return
+    // The sync button's drain loop owns the queue while it runs; a parallel
+    // loop here would only compete for Notion's rate limit.
+    if (isNotionManualDrainActive()) return
 
     isProcessingRef.current = true
 

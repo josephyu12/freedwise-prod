@@ -36,6 +36,18 @@ export async function addToNotionSyncQueue(_params: {
   }
 }
 
+// Set while NotionSyncButton is actively draining the queue so the background
+// NotionSyncProcessor (which reacts to every realtime queue event — including
+// the status flips the drain itself causes) doesn't start a second concurrent
+// drain in the same tab and double the request rate against Notion.
+let manualDrainActive = false
+export function setNotionManualDrainActive(active: boolean): void {
+  manualDrainActive = active
+}
+export function isNotionManualDrainActive(): boolean {
+  return manualDrainActive
+}
+
 // Attempt cap shared by the poller and the processing route. Must match the
 // max_retries default on notion_sync_queue rows.
 export const NOTION_SYNC_MAX_RETRIES = 5
@@ -51,8 +63,12 @@ export const NOTION_SYNC_MAX_RETRIES = 5
  */
 export function notionSyncReadyFilter(nowIso: string, staleCutoffIso: string): string {
   const M = NOTION_SYNC_MAX_RETRIES
+  // Fresh rows have next_retry_at NULL. A rate-limited attempt reschedules the
+  // row with retry_count still 0 but next_retry_at in the future (the 429 is
+  // not the item's fault, so it doesn't consume an attempt) — that cool-down
+  // must be respected here or the row is re-picked immediately.
   return [
-    'and(status.eq.pending,retry_count.eq.0)',
+    `and(status.eq.pending,retry_count.eq.0,or(next_retry_at.is.null,next_retry_at.lte.${nowIso}))`,
     `and(status.eq.pending,retry_count.gt.0,retry_count.lt.${M},or(next_retry_at.is.null,next_retry_at.lte.${nowIso}))`,
     `and(status.eq.failed,retry_count.lt.${M},or(next_retry_at.is.null,next_retry_at.lte.${nowIso}))`,
     `and(status.eq.processing,updated_at.lt.${staleCutoffIso})`,

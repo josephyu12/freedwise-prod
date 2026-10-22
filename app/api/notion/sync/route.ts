@@ -1,8 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
-import { Client } from '@notionhq/client'
+import { createNotionClient, isNotionRateLimitError } from '@/lib/notionClient'
 import { htmlToNotionBlocks, htmlToBlockText, normalizeForBlockCompare, getBlockText, findMatchingHighlightBlocks, buildNormalizedSearchStrings, flattenBlocksWithChildren, BLOCK_BOUNDARY, buildNormalizedBlockGroups, appendBlocksDeep } from '@/lib/notionBlocks'
-import { notionSyncReadyFilter } from '@/lib/notionSyncQueue'
+import { notionSyncReadyFilter, NOTION_SYNC_MAX_RETRIES } from '@/lib/notionSyncQueue'
+
+// A single item can involve many throttled Notion calls (page read with
+// nested children + several appends), each possibly waiting on Retry-After.
+export const maxDuration = 60
 
 type AddState =
   | { kind: 'absent' }
@@ -123,9 +127,13 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
     return { success: true }
   }
 
-  const notion = new Client({
-    auth: notionSettings.notion_api_key,
-  })
+  const notion = createNotionClient(notionSettings.notion_api_key)
+
+  // A prior attempt may have touched the Notion page. retry_count alone isn't
+  // enough: rate-limited attempts are rescheduled WITHOUT incrementing it (see
+  // the catch block), but they still may have partially committed, so
+  // last_retry_at is checked too.
+  const hadPriorAttempt = queueItem.retry_count > 0 || !!queueItem.last_retry_at
 
   // Sibling 'update' rows for the same highlight that this item's push fully
   // covers (see snapshot in the update branch). Marked completed alongside the
@@ -139,7 +147,7 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
       // Inspect the page first so we don't either (a) duplicate a fully-
       // committed highlight or (b) leave orphaned partial blocks alongside a
       // fresh full re-append.
-      if (queueItem.retry_count > 0) {
+      if (hadPriorAttempt) {
         const state = await checkAddState(notion, notionSettings.notion_page_id, queueItem)
         if (state.kind === 'exact') {
           await (supabase
@@ -273,8 +281,8 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
         // Fallback: if this is a retry, a prior attempt likely deleted the blocks but failed
         // to re-insert the new content. Re-add the highlight at the end of the page so
         // content is never permanently lost from Notion.
-        if (queueItem.retry_count > 0) {
-          console.warn('[notion/sync] update: Falling back to re-add since retry_count > 0 (prior attempt likely deleted blocks)')
+        if (hadPriorAttempt) {
+          console.warn('[notion/sync] update: Falling back to re-add since a prior attempt exists (it likely deleted blocks)')
           // Re-fetch latest content from DB
           let fallbackHtml = queueItem.html_content ?? null
           let fallbackText = queueItem.text ?? null
@@ -471,6 +479,28 @@ async function processQueueItem(supabase: any, queueItem: any, notionSettings: {
 
     return { success: true }
   } catch (error: any) {
+    // Rate limited even after the client's own Retry-After retries. This is
+    // not a fault of the item, so it must not consume one of its attempts —
+    // otherwise a big queue exhausts max_retries on 429s alone and ends up
+    // permanently 'failed'. Reschedule as pending with a short cool-down and
+    // skip the page-read verification below: reading the whole page right
+    // after being throttled only makes the throttling worse. last_retry_at is
+    // set so the next pass runs the partial-commit check (hadPriorAttempt).
+    if (isNotionRateLimitError(error)) {
+      const cooldownMs = 20_000
+      await (supabase
+        .from('notion_sync_queue') as any)
+        .update({
+          status: 'pending',
+          error_message: error.message || 'Notion rate limited',
+          last_retry_at: new Date().toISOString(),
+          next_retry_at: new Date(Date.now() + cooldownMs).toISOString(),
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', queueItem.id)
+      return { success: false, error: error.message, shouldRetry: true, rateLimited: true }
+    }
+
     // Notion may have committed the write even though our HTTP errored
     // (timeout, 5xx after commit, partial multi-call append). For `add`,
     // check the page before marking failed — if the full highlight is
@@ -578,27 +608,50 @@ export async function POST(request: NextRequest) {
     if (queueError) throw queueError
 
     if (!toProcess || toProcess.length === 0) {
+      // Nothing ready right now — but items may be sitting in a backoff /
+      // rate-limit cool-down. Tell the client so its drain loop can wait for
+      // them instead of declaring the sync finished with work still queued.
+      const { data: waitingRows } = await (supabase
+        .from('notion_sync_queue') as any)
+        .select('next_retry_at')
+        .eq('user_id', user.id)
+        .in('status', ['pending', 'failed'])
+        .lt('retry_count', NOTION_SYNC_MAX_RETRIES)
+        .gt('next_retry_at', now)
+        .order('next_retry_at', { ascending: true })
+        .limit(1)
+      const { count: waiting } = await (supabase
+        .from('notion_sync_queue') as any)
+        .select('id', { count: 'exact', head: true })
+        .eq('user_id', user.id)
+        .in('status', ['pending', 'failed'])
+        .lt('retry_count', NOTION_SYNC_MAX_RETRIES)
+        .gt('next_retry_at', now)
+
       return NextResponse.json({
         processed: 0,
+        total: 0,
+        waiting: waiting || 0,
+        nextRetryAt: waitingRows?.[0]?.next_retry_at ?? null,
         message: 'No pending items to process',
       })
     }
 
     let processed = 0
     let failed = 0
+    let rateLimited = 0
     for (const item of toProcess) {
-      // Delay between items to stay under Notion's rate limit (3 req/s)
-      if (processed > 0 || failed > 0) {
-        await new Promise(resolve => setTimeout(resolve, 1500))
-      }
+      // Per-request pacing lives in lib/notionClient.ts (throttled fetch).
       const result = await processQueueItem(supabase, item, notionSettings)
       if (result.success) processed++
+      else if (result.rateLimited) rateLimited++
       else failed++
     }
 
     return NextResponse.json({
       processed,
       failed,
+      rateLimited,
       total: toProcess.length,
     })
   } catch (error: any) {

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { Client } from '@notionhq/client'
+import { createNotionClient } from '@/lib/notionClient'
 import { createClient } from '@/lib/supabase/server'
 import { htmlToNotionBlocks, htmlToBlockText, normalizeForBlockCompare, getBlockText, findMatchingHighlightBlocks, buildNormalizedSearchStrings, flattenBlocksWithChildren, BLOCK_BOUNDARY, buildNormalizedBlockGroups, appendBlocksDeep } from '@/lib/notionBlocks'
 
@@ -47,9 +47,7 @@ export async function POST(request: NextRequest) {
     // by storing original_html_content separately. This route is currently unused from the client.
 
     // Initialize Notion client
-    const notion = new Client({
-      auth: notionApiKey,
-    })
+    const notion = createNotionClient(notionApiKey)
 
     // Fetch all blocks from the Notion page (top-level only first)
     let blocks: any[] = []

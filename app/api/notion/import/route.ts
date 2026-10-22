@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { Client } from '@notionhq/client'
+import type { Client } from '@notionhq/client'
+import { createNotionClient } from '@/lib/notionClient'
 
 // Retry wrapper for Notion API calls that handles 429 rate limiting
 async function notionRetry<T>(fn: () => Promise<T>, maxRetries = 5): Promise<T> {
@@ -233,9 +234,7 @@ export async function POST(request: NextRequest) {
     }
     
     // Initialize Notion client
-    const notion = new Client({
-      auth: notionApiKey,
-    })
+    const notion = createNotionClient(notionApiKey)
     
     // Fetch page content with all nested children
     const blocks = []
