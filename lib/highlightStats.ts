@@ -6,16 +6,20 @@
 // on which page the rating came from. Product decision (2026-07): the /review
 // rule is the rule.
 
-import { getCycleForDate, prevCycle, cycleKeyForDate } from './cycle'
+import { getCycleForDate, prevCycle, nextCycle, cycleKeyForDate } from './cycle'
 
 /**
  * Recompute a highlight's average_rating / rating_count and apply auto-archive
  * after a rating changes (set OR cleared).
  *
  * Archive rule: the highlight was rated 'low' in BOTH the cycle containing
- * `ratingDate` and the cycle before it — counting only lows dated after the
- * last manual unarchive. Archiving is one-way here: the flag is set when the
- * rule matches and never cleared automatically.
+ * `ratingDate` and an ADJACENT cycle (the one before OR the one after) —
+ * counting only lows dated after the last manual unarchive. Checking both
+ * neighbours makes the rule independent of the order the two lows were given
+ * in: rating the current cycle low and then catching up on the still-open
+ * previous cycle with a low archives exactly like the chronological order.
+ * Archiving is one-way here: the flag is set when the rule matches and never
+ * cleared automatically.
  *
  * Returns { archivedNow }: true only when THIS call flipped the highlight from
  * active to archived — the UI pages use it to show the "archived — undo" toast
@@ -64,8 +68,17 @@ export async function updateHighlightStatsAfterRating(
       .filter((r) => !unarchivedAt || r.daily_summary.date > unarchivedAt)
       .map((r) => cycleKeyForDate(r.daily_summary.date, freq))
   )
+  // "Low in two back-to-back cycles" is order-independent: the pair can be
+  // completed from EITHER side. Normally the rated cycle is the later one and
+  // the previous cycle holds the other low. But the earlier cycle's review
+  // can still be in progress when the next cycle starts (catch-up), and the
+  // user may rate the newer cycle low first and only then go back and rate the
+  // older one low. That second rating's date anchors us in the OLDER cycle, so
+  // we must also look forward one cycle or the rule silently never fires.
   const cycle = getCycleForDate(ratingDate, freq)
-  const shouldArchive = lowCycles.has(cycle.key) && lowCycles.has(prevCycle(cycle).key)
+  const shouldArchive =
+    lowCycles.has(cycle.key) &&
+    (lowCycles.has(prevCycle(cycle).key) || lowCycles.has(nextCycle(cycle).key))
 
   const { error: statsError } = await supabase
     .from('highlights')
