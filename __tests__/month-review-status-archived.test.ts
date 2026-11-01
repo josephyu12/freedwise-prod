@@ -44,14 +44,36 @@ describe('computeMonthReviewStatus', () => {
     expect(computeMonthReviewStatus(summaries, highlights).get('2026-06-02')).toBe('partial')
   })
 
-  it('marks a day with no active highlights as none', () => {
+  it('marks a day with only archived-unrated highlights as none', () => {
     const summaries = [{ id: 's1', date: '2026-06-03' }]
     const highlights = [
       { daily_summary_id: 's1', rating: null, archived: true },
-      { daily_summary_id: 's1', rating: 'low', archived: true },
+      { daily_summary_id: 's1', rating: null, archived: true },
     ]
 
     expect(computeMonthReviewStatus(summaries, highlights).get('2026-06-03')).toBe('none')
+  })
+
+  it('keeps a rated-then-archived highlight as history: the day stays completed', () => {
+    // Rated Low on this day, later archived (e.g. by the two-lows rule). The
+    // review happened, so the day is still a completed day on the calendar.
+    const summaries = [{ id: 's1', date: '2026-06-06' }]
+    const highlights = [
+      { daily_summary_id: 's1', rating: null, archived: true }, // never reviewed → ignored
+      { daily_summary_id: 's1', rating: 'low', archived: true }, // reviewed → counts
+    ]
+
+    expect(computeMonthReviewStatus(summaries, highlights).get('2026-06-06')).toBe('completed')
+  })
+
+  it('an archived-rated row can never drag a day below completed', () => {
+    const summaries = [{ id: 's1', date: '2026-06-07' }]
+    const highlights = [
+      { daily_summary_id: 's1', rating: 'high', archived: false },
+      { daily_summary_id: 's1', rating: 'med', archived: true },
+    ]
+
+    expect(computeMonthReviewStatus(summaries, highlights).get('2026-06-07')).toBe('completed')
   })
 
   it('marks a fully-rated active day completed', () => {

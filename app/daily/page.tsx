@@ -15,7 +15,7 @@ import { callRedistribute } from '@/lib/redistribute'
 import { parseIntoParagraphs, groupParagraphsByDividers, ParagraphBlock } from '@/lib/splitHighlightText'
 import { renderHighlightHtml } from '@/lib/renderHighlightHtml'
 import { sanitizeForRender } from '@/lib/sanitizeForRender'
-import { computeMonthReviewStatus } from '@/lib/monthReviewStatus'
+import { computeMonthReviewStatus, isVisibleAssignment } from '@/lib/monthReviewStatus'
 import { getUserReviewSettings, getCycleForDate, nextCycle, cycleKeyForDate } from '@/lib/cycle'
 import { updateHighlightStatsAfterRating } from '@/lib/highlightStats'
 import { removeReviewedOnClear } from '@/lib/reviewedLedger'
@@ -536,6 +536,9 @@ export default function DailyPage() {
         // Get highlights for this summary with their ratings.
         // Order: reviewed first (rating not null), then unreviewed; within each group by id for stable order
         // so returning to the page or new highlights added to the day doesn't scramble the list.
+        // Archived highlights are NOT filtered in the query: a rated row of an
+        // archived highlight is kept as history (badged Archived), only an
+        // unrated one is hidden — see isVisibleAssignment, applied below.
         const { data: summaryHighlights, error: highlightsError } = await supabase
           .from('daily_summary_highlights')
           .select(`
@@ -557,33 +560,37 @@ export default function DailyPage() {
             )
           `)
           .eq('daily_summary_id', summaryData.id)
-          .eq('highlight.archived', false)
           .order('rating', { ascending: false, nullsFirst: false })
           .order('id', { ascending: true })
 
         if (highlightsError) throw highlightsError
 
-        const serverHighlights = (summaryHighlights || []).map((sh: any) => ({
-          id: sh.id,
-          daily_summary_id: summaryData.id,
-          highlight_id: sh.highlight_id,
-          rating: sh.rating,
-          highlight: sh.highlight
-            ? {
-                ...sh.highlight,
-                categories: sh.highlight.highlight_categories?.map((hc: any) => hc.category) || [],
-                linked_highlights: normalizeLinks(
-                  sh.highlight.id,
-                  sh.highlight.highlight_links_from,
-                  sh.highlight.highlight_links_to
-                ),
-              }
-            : null,
-        }))
+        const serverHighlights = (summaryHighlights || [])
+          .filter((sh: any) =>
+            isVisibleAssignment({ rating: sh.rating, archived: sh.highlight?.archived })
+          )
+          .map((sh: any) => ({
+            id: sh.id,
+            daily_summary_id: summaryData.id,
+            highlight_id: sh.highlight_id,
+            rating: sh.rating,
+            highlight: sh.highlight
+              ? {
+                  ...sh.highlight,
+                  categories: sh.highlight.highlight_categories?.map((hc: any) => hc.category) || [],
+                  linked_highlights: normalizeLinks(
+                    sh.highlight.id,
+                    sh.highlight.highlight_links_from,
+                    sh.highlight.highlight_links_to
+                  ),
+                }
+              : null,
+          }))
 
         // Queued-but-undrained writes replayed over the read (see above), so
-        // ratings given offline stay rated and highlights archived or deleted
-        // offline don't reappear on the day.
+        // ratings given offline stay rated, highlights deleted offline don't
+        // reappear, and ones archived offline follow the same visibility rule
+        // (rated → kept and badged, unrated → gone).
         const processedHighlights = applyPendingActions(
           serverHighlights,
           pendingActions,
@@ -686,9 +693,10 @@ export default function DailyPage() {
         const summariesData = summaries as Array<{ id: string; date: string }>
         const summaryIds = summariesData.map((s) => s.id)
         const PAGE = 1000
-        // Pull the archived flag so the status count can exclude archived
-        // highlights — matching the day-detail modal and the review flow. An
-        // archived-but-unrated highlight must not paint the day yellow.
+        // Pull the archived flag so the status count can apply the same
+        // visibility rule as the day view (isVisibleAssignment): an
+        // archived-but-unrated highlight must not paint the day yellow, while
+        // an archived-but-rated one still counts as reviewed history.
         let highlights: Array<{ daily_summary_id: string; rating: string | null; archived: boolean }> = []
         let from = 0
         while (true) {
@@ -1083,9 +1091,22 @@ export default function DailyPage() {
         }),
         'rate-daily stats'
       )
-      // The reload below drops the archived highlight from the day's list —
-      // without the toast it just vanishes.
-      if (archivedNow) setAutoArchivedId(highlightId)
+      // The rated row stays on this day as history, now badged Archived (the
+      // rule also deleted its unrated future assignments). Flip the flag in
+      // place so the badge appears without a reload, and show the undo toast.
+      if (archivedNow) {
+        const applyAutoArchivePatch = (highlights: any[]) =>
+          highlights.map((sh) =>
+            sh.highlight?.id === highlightId
+              ? { ...sh, highlight: { ...sh.highlight, archived: true } }
+              : sh
+          )
+        setSummary((prev) => (prev ? { ...prev, highlights: applyAutoArchivePatch(prev.highlights) } : prev))
+        await updateDailyCache((c) => ({
+          summary: { ...c.summary, highlights: applyAutoArchivePatch(c.summary.highlights) },
+        }))
+        setAutoArchivedId(highlightId)
+      }
 
       updateOverlay()
 
@@ -1590,18 +1611,24 @@ export default function DailyPage() {
   const handleArchive = async (highlightId: string, archive: boolean) => {
     if (archive && !confirm('Are you sure you want to archive this highlight?')) return
 
-    // Optimistic local + cache update. Archiving removes the highlight from the
-    // day's list (the load query filters archived=false), matching a reload.
-    if (archive) {
-      const applyArchivePatch = (highlights: any[]) =>
-        highlights.filter((sh) => sh.highlight?.id !== highlightId)
-      if (summary) {
-        setSummary({ ...summary, highlights: applyArchivePatch(summary.highlights) })
-      }
-      await updateDailyCache((c) => ({
-        summary: { ...c.summary, highlights: applyArchivePatch(c.summary.highlights) },
-      }))
+    // Optimistic local + cache update, matching what a reload would show
+    // (isVisibleAssignment): an archived highlight's RATED row stays on the day
+    // as history with the Archived badge; an UNRATED one leaves the list.
+    // Unarchive just clears the flag on whatever is in hand.
+    const applyArchivePatch = (highlights: any[]) =>
+      highlights
+        .filter((sh) => sh.highlight?.id !== highlightId || !archive || sh.rating !== null)
+        .map((sh) =>
+          sh.highlight?.id === highlightId
+            ? { ...sh, highlight: { ...sh.highlight, archived: archive } }
+            : sh
+        )
+    if (summary) {
+      setSummary({ ...summary, highlights: applyArchivePatch(summary.highlights) })
     }
+    await updateDailyCache((c) => ({
+      summary: { ...c.summary, highlights: applyArchivePatch(c.summary.highlights) },
+    }))
 
     if (!isOnline) {
       await enqueueOfflineAction({
@@ -1626,9 +1653,9 @@ export default function DailyPage() {
 
       if (error) throw error
 
-      // Best-effort future-month cleanup, matching /review and the offline
-      // replay — without it, an archive from /daily left the highlight's
-      // future-day assignments in place.
+      // Drop the highlight's unrated assignments from today on (this cycle and
+      // any pre-built next one), matching /review and the offline replay. Rated
+      // rows are kept as history.
       if (archive) await removeFromFutureMonths(supabase, highlightId)
 
       // Reload summary to reflect changes
@@ -1708,8 +1735,16 @@ export default function DailyPage() {
     if (!confirm(`Are you sure you want to archive ${ids.length} highlight${ids.length === 1 ? '' : 's'}?`)) return
 
     setBulkWorking(true)
+    // Same visibility rule as the single Archive button: rated rows stay as
+    // history (badged), unrated rows leave the day.
     const applyArchivePatch = (highlights: any[]) =>
-      highlights.filter((sh) => !ids.includes(sh.highlight?.id))
+      highlights
+        .filter((sh) => !ids.includes(sh.highlight?.id) || sh.rating !== null)
+        .map((sh) =>
+          ids.includes(sh.highlight?.id)
+            ? { ...sh, highlight: { ...sh.highlight, archived: true } }
+            : sh
+        )
     if (summary) {
       setSummary({ ...summary, highlights: applyArchivePatch(summary.highlights) })
     }
@@ -2168,7 +2203,7 @@ export default function DailyPage() {
                           (slidingOutIds.has(summaryHighlight.id) || summaryHighlight.rating !== null) ? 'rated-overlay' : ''
                         } ${selectMode ? 'cursor-pointer select-none' : ''} ${
                           selectMode && selectedIds.has(highlight.id) ? 'ring-2 ring-blue-500' : ''
-                        }`}
+                        } ${highlight.archived ? 'border-2 border-orange-300 dark:border-orange-700' : ''}`}
                         style={{
                           animation: slidingOutIds.has(summaryHighlight.id) ? undefined : 'slideIn 0.3s ease-out',
                         }}
@@ -2387,12 +2422,21 @@ export default function DailyPage() {
                             </div>
                           </div>
                         ) : (
-                          <div
-                            className="highlight-content text-base mb-3 prose dark:prose-invert max-w-none"
-                            dangerouslySetInnerHTML={{
-                              __html: renderHighlightHtml(highlight.html_content, highlight.text),
-                            }}
-                          />
+                          <>
+                            {/* A rated row of an archived highlight is kept on its day as
+                                history; the badge says why it won't come up again. */}
+                            {highlight.archived && (
+                              <div className="relative z-20 mb-2 px-2 py-1 bg-orange-100 dark:bg-orange-900 text-orange-800 dark:text-orange-200 rounded text-xs font-semibold inline-block">
+                                Archived
+                              </div>
+                            )}
+                            <div
+                              className="highlight-content text-base mb-3 prose dark:prose-invert max-w-none"
+                              dangerouslySetInnerHTML={{
+                                __html: renderHighlightHtml(highlight.html_content, highlight.text),
+                              }}
+                            />
+                          </>
                         )}
                         {highlight.categories && highlight.categories.length > 0 && (
                           <div className="flex flex-wrap gap-2 mb-3">

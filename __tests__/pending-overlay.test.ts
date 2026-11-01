@@ -75,6 +75,37 @@ describe('applyPendingActions', () => {
       { type: 'unarchive-highlight', params: { highlightId: 'h1' } },
     ])
     expect(out.map((r) => r.highlight_id)).toEqual(['h1', 'h2', 'h3'])
+    expect(out[0]).toBe(ROWS[0]) // nothing to change → identity preserved
+  })
+
+  it('keeps a RATED row of an archived highlight as history, flagged archived', () => {
+    // Mirrors the drain: the replay deletes only unrated future assignments,
+    // and the read keeps rated rows (isVisibleAssignment). So the overlay must
+    // keep the row and only flip the flag, not drop it.
+    const rated = [{ ...ROWS[0], rating: 'low' as const }, ROWS[1]]
+    const out = applyPendingActions(rated, [{ type: 'archive-highlight', params: { highlightId: 'h1' } }])
+    expect(out.map((r) => r.highlight_id)).toEqual(['h1', 'h2'])
+    expect(out[0].rating).toBe('low')
+    expect(out[0].highlight?.archived).toBe(true)
+  })
+
+  it('a rating queued BEFORE the archive makes the row history too', () => {
+    const out = applyPendingActions(ROWS, [
+      { type: 'rate-daily', params: { summaryHighlightId: 'r1', highlightId: 'h1', rating: 'med' } },
+      { type: 'archive-highlight', params: { highlightId: 'h1' } },
+    ])
+    expect(out[0]).toMatchObject({ highlight_id: 'h1', rating: 'med' })
+    expect(out[0].highlight?.archived).toBe(true)
+  })
+
+  it('projects an unarchive onto a row that was read as archived', () => {
+    const archivedRow = {
+      ...ROWS[0],
+      rating: 'high' as const,
+      highlight: { ...ROWS[0].highlight!, archived: true },
+    }
+    const [out] = applyPendingActions([archivedRow], [{ type: 'unarchive-highlight', params: { highlightId: 'h1' } }])
+    expect(out.highlight?.archived).toBe(false)
   })
 
   it('applies an offline edit, mapping category ids to objects', () => {

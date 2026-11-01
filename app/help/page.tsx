@@ -84,12 +84,18 @@ export default function HelpPage() {
               </Rule>
               <Rule>
                 The two Lows must fall in <strong>back-to-back cycles</strong>. Two Lows within
-                the same cycle, or Lows separated by a cycle where you didn&apos;t rate it Low,
-                do not trigger archiving.
+                the same cycle, or Lows separated by a cycle where you didn&apos;t rate it Low
+                — including a cycle where you never got to it — do not trigger archiving. The
+                order you rate them in doesn&apos;t matter: if you later go back and rate the
+                in-between cycle Low, the pair completes then.
               </Rule>
               <Rule>
-                Auto-archiving is one-way: nothing is ever <em>un</em>archived automatically,
-                even if you later change or clear the ratings. To bring a highlight back, use{' '}
+                <strong>Once archived, a highlight stays archived until you unarchive it.</strong>{' '}
+                Nothing is ever <em>un</em>archived automatically. Changing one of the two Lows
+                to Med or High, or clearing it, updates that day&apos;s record but does not
+                bring the highlight back — the archive is a decision, not a live formula. To
+                bring one back, use the Undo on the notice, the Unarchive button on its card
+                on a past day, or{' '}
                 <Link href="/highlights" className="text-blue-600 dark:text-blue-400 underline">
                   Highlights
                 </Link>{' '}
@@ -104,13 +110,22 @@ export default function HelpPage() {
 
             <Section title="What archiving does">
               <Rule>
-                Archiving a highlight (manually or automatically) removes it from today&apos;s
-                and all future review days. Ratings you already gave it on past days are kept
-                as history.
+                Archiving a highlight (manually or automatically) removes it from every day it
+                has not been rated on yet — the rest of this cycle and any next cycle already
+                scheduled. Days where you did rate it keep it as history: it stays on that day
+                in the calendar, marked <em>Archived</em>, with the rating you gave.
               </Rule>
               <Rule>
                 If an archived highlight was sitting unrated on a past day, it no longer counts
                 against that day&apos;s completion — the day can still turn green without it.
+              </Rule>
+              <Rule>
+                Archived highlights are left out of{' '}
+                <Link href="/search" className="text-blue-600 dark:text-blue-400 underline">
+                  Search
+                </Link>{' '}
+                by default. Turn on <em>Include archived</em> to find them; you can unarchive
+                straight from the result.
               </Rule>
               <Rule>
                 Deleting a highlight removes it everywhere, including from past daily summaries.

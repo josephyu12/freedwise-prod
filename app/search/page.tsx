@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { Highlight, Category } from '@/types/database'
 import Link from 'next/link'
@@ -24,6 +24,10 @@ export default function SearchPage() {
   // that finds a highlight from a half-remembered phrasing. 'fulltext' is the
   // exact-substring mode ("Exact" in the UI) for when you know the literal text.
   const [searchType, setSearchType] = useState<'fulltext' | 'semantic'>('semantic')
+  // Archived highlights are left out by default; this lifts the filter so
+  // something that was archived (by hand or by two Lows) can still be found
+  // — and unarchived from its result card.
+  const [includeArchived, setIncludeArchived] = useState(false)
   const [results, setResults] = useState<Highlight[]>([])
   const [loading, setLoading] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
@@ -143,7 +147,16 @@ export default function SearchPage() {
     loadPinnedHighlights()
   }, [supabase])
 
-  const performSearch = useCallback(async (searchQuery: string, type: 'fulltext' | 'semantic') => {
+  // Re-searches after an edit/archive/pin read the toggle through a ref so
+  // they always use the current setting without being re-created on change.
+  const includeArchivedRef = useRef(includeArchived)
+  includeArchivedRef.current = includeArchived
+
+  const performSearch = useCallback(async (
+    searchQuery: string,
+    type: 'fulltext' | 'semantic',
+    withArchived: boolean = includeArchivedRef.current
+  ) => {
     if (!searchQuery.trim()) {
       setResults([])
       return
@@ -172,6 +185,7 @@ export default function SearchPage() {
           query: searchQuery.trim(),
           type,
           embedding,
+          includeArchived: withArchived,
         }),
       })
 
@@ -192,12 +206,12 @@ export default function SearchPage() {
 
   useEffect(() => {
     if (debouncedQuery) {
-      performSearch(debouncedQuery, searchType)
+      performSearch(debouncedQuery, searchType, includeArchived)
     } else {
       setResults([])
     }
     setSelectedIds(new Set())
-  }, [debouncedQuery, searchType, performSearch])
+  }, [debouncedQuery, searchType, includeArchived, performSearch])
 
   const handleStartEdit = (highlight: Highlight, e?: React.MouseEvent) => {
     if (e) {
@@ -669,6 +683,19 @@ export default function SearchPage() {
                 </Link>
               </div>
             </div>
+            <label
+              className="mt-3 inline-flex items-center gap-2 cursor-pointer select-none text-sm"
+              style={{ color: 'var(--text-secondary)' }}
+              title="Archived highlights are hidden from search unless this is on"
+            >
+              <input
+                type="checkbox"
+                checked={includeArchived}
+                onChange={(e) => setIncludeArchived(e.target.checked)}
+                className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-700"
+              />
+              Include archived
+            </label>
             {query && (
               <div className="mt-3 text-sm" style={{ color: 'var(--text-tertiary)' }}>
                 {searchPending ? (
@@ -908,6 +935,11 @@ export default function SearchPage() {
                       </div>
                     ) : (
                       <>
+                        {highlight.archived && (
+                          <div className="mb-2 px-2 py-1 bg-orange-100 dark:bg-orange-900 text-orange-800 dark:text-orange-200 rounded text-xs font-semibold inline-block">
+                            Archived
+                          </div>
+                        )}
                         <div
                           className={`highlight-content text-base mb-3 prose dark:prose-invert max-w-none ${
                             selectMode ? '' : 'cursor-pointer'

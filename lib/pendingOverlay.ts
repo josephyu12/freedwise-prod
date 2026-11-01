@@ -31,6 +31,7 @@ export interface PendingOverlayRow {
     html_content?: string | null
     source?: string | null
     author?: string | null
+    archived?: boolean | null
     categories?: PendingCategory[]
   } | null
 }
@@ -43,15 +44,18 @@ export interface PendingAction {
 type HighlightPatch = Partial<NonNullable<PendingOverlayRow['highlight']>>
 
 /**
- * Fold the queued actions down to three lookups: the rating each summary row
- * should show, which highlights are gone, and what content patch each surviving
- * highlight needs. Actions arrive oldest-first, so plain overwriting gives
- * last-write-wins — the same order the drain itself would apply them in.
+ * Fold the queued actions down to four lookups: the rating each summary row
+ * should show, which highlights are deleted, which were archived/unarchived,
+ * and what content patch each surviving highlight needs. Actions arrive
+ * oldest-first, so plain overwriting gives last-write-wins — the same order
+ * the drain itself would apply them in.
  */
 function foldActions(actions: PendingAction[], categories: PendingCategory[]) {
   const catById = new Map(categories.map((c) => [c.id, c]))
   const ratingByRowId = new Map<string, PendingOverlayRow['rating']>()
   const removedHighlightIds = new Set<string>()
+  // Last queued archive state per highlight: true = archived, false = unarchived.
+  const archivedByHighlightId = new Map<string, boolean>()
   const patchByHighlightId = new Map<string, HighlightPatch>()
 
   const mergePatch = (highlightId: string, patch: HighlightPatch) => {
@@ -69,16 +73,24 @@ function foldActions(actions: PendingAction[], categories: PendingCategory[]) {
         if (p.summaryHighlightId) ratingByRowId.set(p.summaryHighlightId, p.rating ?? null)
         break
 
-      case 'archive-highlight':
       case 'delete-highlight':
         if (p.highlightId) removedHighlightIds.add(p.highlightId)
         break
 
-      // An unarchive can't be projected: the read filters on `archived = false`,
-      // so the row simply isn't in hand to bring back. All we can do is cancel a
-      // queued archive of the same highlight; the post-drain reload does the rest.
+      // Archive mirrors the drain + the read's visibility rule (see
+      // lib/monthReviewStatus.ts isVisibleAssignment): the replay deletes the
+      // highlight's UNRATED assignments from today on, while RATED rows stay on
+      // their day as history, shown with the archived flag. Which case a row is
+      // in is decided at apply time, after any queued rating has been overlaid.
+      case 'archive-highlight':
+        if (p.highlightId) archivedByHighlightId.set(p.highlightId, true)
+        break
+
+      // An unarchive of a row that was read as archived can be projected (flag
+      // off); one whose row isn't in hand — hidden because it was archived and
+      // unrated — can't be brought back here, and the post-drain reload does it.
       case 'unarchive-highlight':
-        if (p.highlightId) removedHighlightIds.delete(p.highlightId)
+        if (p.highlightId) archivedByHighlightId.set(p.highlightId, false)
         break
 
       case 'edit-highlight': {
@@ -113,7 +125,7 @@ function foldActions(actions: PendingAction[], categories: PendingCategory[]) {
     }
   }
 
-  return { ratingByRowId, removedHighlightIds, patchByHighlightId }
+  return { ratingByRowId, removedHighlightIds, archivedByHighlightId, patchByHighlightId }
 }
 
 /**
@@ -126,10 +138,8 @@ export function applyPendingActions<T extends PendingOverlayRow>(
   categories: PendingCategory[] = []
 ): T[] {
   if (!actions || actions.length === 0) return rows
-  const { ratingByRowId, removedHighlightIds, patchByHighlightId } = foldActions(
-    actions,
-    categories
-  )
+  const { ratingByRowId, removedHighlightIds, archivedByHighlightId, patchByHighlightId } =
+    foldActions(actions, categories)
 
   const out: T[] = []
   for (const row of rows) {
@@ -138,6 +148,14 @@ export function applyPendingActions<T extends PendingOverlayRow>(
     let next = row
     if (ratingByRowId.has(row.id)) {
       next = { ...next, rating: ratingByRowId.get(row.id)! }
+    }
+    if (archivedByHighlightId.has(row.highlight_id)) {
+      const archived = archivedByHighlightId.get(row.highlight_id)!
+      // Archived + unrated → the replay deletes this assignment; drop it.
+      if (archived && next.rating === null) continue
+      if (next.highlight && (next.highlight.archived ?? false) !== archived) {
+        next = { ...next, highlight: { ...next.highlight, archived } }
+      }
     }
     const patch = patchByHighlightId.get(row.highlight_id)
     if (patch && next.highlight) {

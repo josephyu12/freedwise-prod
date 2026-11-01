@@ -103,7 +103,14 @@ function isMissingFunction(error: any): boolean {
   return error?.code === 'PGRST202' || error?.code === '42883'
 }
 
-async function keywordSearch(supabase: any, userId: string, query: string, cycleStart: string, cycleEnd: string) {
+async function keywordSearch(
+  supabase: any,
+  userId: string,
+  query: string,
+  cycleStart: string,
+  cycleEnd: string,
+  includeArchived: boolean
+) {
   // Full-text search via ILIKE pattern matching.
   //
   // The term is double-quoted inside the .or() expression (with \ and "
@@ -111,14 +118,15 @@ async function keywordSearch(supabase: any, userId: string, query: string, cycle
   // comma or parenthesis in the user's query would split the expression —
   // breaking the search with a 500, or injecting extra OR conditions.
   const term = `%${query.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}%`
-  const { data: highlights, error } = await supabase
+  let q = supabase
     .from('highlights')
     .select(detailSelect)
     .eq('user_id', userId)
     .or(`text.ilike."${term}",html_content.ilike."${term}"`)
-    .eq('archived', false)
-    .order('created_at', { ascending: false })
-    .limit(50)
+  // Archived highlights are excluded by default; the "Include archived" toggle
+  // on /search lifts the filter so something archived can still be found.
+  if (!includeArchived) q = q.eq('archived', false)
+  const { data: highlights, error } = await q.order('created_at', { ascending: false }).limit(50)
 
   if (error) throw error
   return (highlights || []).map((h: any) => processHighlight(h, cycleStart, cycleEnd))
@@ -135,7 +143,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
-    const { query, type, embedding } = await request.json()
+    const { query, type, embedding, includeArchived: includeArchivedRaw } = await request.json()
 
     if (!query || typeof query !== 'string') {
       return NextResponse.json(
@@ -145,6 +153,7 @@ export async function POST(request: NextRequest) {
     }
 
     const searchType = type || 'fulltext'
+    const includeArchived = includeArchivedRaw === true
 
     // Resolve the user's review cycle so "Review on" dates match the highlights page.
     const now = new Date()
@@ -158,7 +167,7 @@ export async function POST(request: NextRequest) {
     const cycle = getCycleForDate(todayIso, freq)
 
     if (searchType !== 'semantic') {
-      const results = await keywordSearch(supabase, user.id, query, cycle.startDate, cycle.endDate)
+      const results = await keywordSearch(supabase, user.id, query, cycle.startDate, cycle.endDate, includeArchived)
       return NextResponse.json({ results })
     }
 
@@ -194,7 +203,7 @@ export async function POST(request: NextRequest) {
       // vector-only RPC (or ILIKE without a vector) rather than failing.
       console.warn('search_highlights_hybrid missing; falling back to match_highlights')
       if (!validEmbedding) {
-        const results = await keywordSearch(supabase, user.id, query, cycle.startDate, cycle.endDate)
+        const results = await keywordSearch(supabase, user.id, query, cycle.startDate, cycle.endDate, includeArchived)
         return NextResponse.json({ results, fallback: 'keyword' })
       }
       const { data: legacy, error: legacyError } = await (supabase as any)
@@ -213,12 +222,15 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ results: [], ...(fallback ? { fallback } : {}) })
     }
 
-    const { data: details, error: detailError } = await supabase
+    // The RPCs rank across the whole library (archived included); the archived
+    // filter is applied here on the detail read, unless the user asked for them.
+    let detailQuery = supabase
       .from('highlights')
       .select(detailSelect)
       .in('id', ranked.map((m) => m.id))
       .eq('user_id', user.id)
-      .eq('archived', false)
+    if (!includeArchived) detailQuery = detailQuery.eq('archived', false)
+    const { data: details, error: detailError } = await detailQuery
     if (detailError) throw detailError
 
     const byId = new Map((details || []).map((h: any) => [h.id, h]))

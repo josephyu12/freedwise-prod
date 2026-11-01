@@ -7,6 +7,7 @@
 // rule is the rule.
 
 import { getCycleForDate, prevCycle, nextCycle, cycleKeyForDate } from './cycle'
+import { removeFromFutureMonths } from './removeFromFutureMonths'
 
 /**
  * Recompute a highlight's average_rating / rating_count and apply auto-archive
@@ -20,6 +21,12 @@ import { getCycleForDate, prevCycle, nextCycle, cycleKeyForDate } from './cycle'
  * previous cycle with a low archives exactly like the chronological order.
  * Archiving is one-way here: the flag is set when the rule matches and never
  * cleared automatically.
+ *
+ * When the rule fires, the highlight's still-UNRATED assignments from today
+ * onward — the rest of this cycle and any pre-built next cycle — are deleted
+ * (removeFromFutureMonths), exactly as the manual Archive button does, so an
+ * auto-archived highlight disappears from upcoming days even though it was
+ * already portioned out. Its RATED rows stay as history on their days.
  *
  * Returns { archivedNow }: true only when THIS call flipped the highlight from
  * active to archived — the UI pages use it to show the "archived — undo" toast
@@ -89,6 +96,11 @@ export async function updateHighlightStatsAfterRating(
     })
     .eq('id', highlightId)
   if (statsError) throw statsError
+
+  // Keyed on shouldArchive (not archivedNow) so a retry after a failed delete
+  // — the flag already flipped on the first attempt — still clears the rows.
+  // Idempotent: deleting already-absent rows is a no-op.
+  if (shouldArchive) await removeFromFutureMonths(supabase, highlightId)
 
   return { archivedNow: shouldArchive && !highlightRow?.archived }
 }

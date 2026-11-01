@@ -662,8 +662,9 @@ async function replayOne(supabase: any, action: any, userId: string, freq: numbe
         .update({ archived: true })
         .eq('id', highlightId)
       if (archiveError) throw archiveError
-      // Best-effort future-month cleanup; the archive flag above is the critical
-      // write and is already persisted.
+      // Drop the unrated assignments from today on (rated rows stay as
+      // history). Throws on failure so the action is retried — the archive flag
+      // update above is idempotent, so a retry is safe.
       await removeFromFutureMonths(supabase, highlightId)
       return true
     }

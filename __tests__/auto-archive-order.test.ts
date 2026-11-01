@@ -8,7 +8,13 @@
  * That second rating is dated in the OLDER cycle, so a rule that only looks at
  * "this cycle + the one before" never sees the pair and silently never fires.
  */
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
+
+// The archive step also deletes future assignments; that's covered in
+// archived-history-visibility.test.ts. Here the fake client only models the
+// three reads + one update of the rule itself.
+vi.mock('@/lib/removeFromFutureMonths', () => ({ removeFromFutureMonths: vi.fn(async () => {}) }))
+
 import { updateHighlightStatsAfterRating } from '@/lib/highlightStats'
 
 type Row = { rating: 'low' | 'med' | 'high'; date: string }
@@ -186,6 +192,57 @@ describe('auto-archive: two consecutive lows, either order', () => {
     )
     expect(res.archivedNow).toBe(false)
     expect(res.patch.archived).toBeUndefined()
+  })
+
+  describe('a skipped (unrated) cycle between two Lows', () => {
+    // Sep: Low. Oct: assigned but never rated. Nov: Low. The Lows are not in
+    // adjacent cycles, so the streak is broken — a cycle you didn't finish does
+    // not count as a Low, and the pair does not form.
+    const sepLow = { rating: 'low' as const, date: '2026-09-10' }
+    const novLow = { rating: 'low' as const, date: '2026-11-03' }
+
+    it('does not archive when the Nov Low lands', async () => {
+      const res = await run([sepLow, novLow], '2026-11-03')
+      expect(res.archivedNow).toBe(false)
+      expect(res.patch.archived).toBeUndefined()
+    })
+
+    it('retroactively rating the gap High keeps it unarchived', async () => {
+      const res = await run([sepLow, { rating: 'high', date: '2026-10-12' }, novLow], '2026-10-12')
+      expect(res.archivedNow).toBe(false)
+      expect(res.patch.archived).toBeUndefined()
+    })
+
+    it('retroactively rating the gap Low completes the pair (adjacent to both)', async () => {
+      const res = await run([sepLow, { rating: 'low', date: '2026-10-12' }, novLow], '2026-10-12')
+      expect(res.archivedNow).toBe(true)
+      expect(res.patch.archived).toBe(true)
+    })
+  })
+
+  describe('the archive is locked: ratings that break the pair never unarchive', () => {
+    // Archived from Oct+Nov Lows; the user then edits one of them. The rule
+    // no longer matches, but archived is a decision — the routine only ever
+    // writes archived: true, never archived: false. Unarchive is manual.
+    it('changing one Low to High leaves the highlight archived', async () => {
+      const res = await run(
+        [
+          { rating: 'high', date: '2026-10-12' }, // was low
+          { rating: 'low', date: '2026-11-03' },
+        ],
+        '2026-10-12',
+        1,
+        { archived: true }
+      )
+      expect(res.archivedNow).toBe(false)
+      expect(res.patch).not.toHaveProperty('archived') // no write either way
+    })
+
+    it('clearing one Low leaves the highlight archived', async () => {
+      const res = await run([{ rating: 'low', date: '2026-11-03' }], '2026-10-12', 1, { archived: true })
+      expect(res.archivedNow).toBe(false)
+      expect(res.patch).not.toHaveProperty('archived')
+    })
   })
 
   it('reports archivedNow=false when the rule matches but the highlight is already archived', async () => {
