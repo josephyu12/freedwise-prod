@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
-import { getUserReviewSettings, getCycleForDate } from '@/lib/cycle'
+import { getUserReviewSettings, getCycleForDate, cycleKeyForDate } from '@/lib/cycle'
+import { LINKS_FROM_SELECT, LINKS_TO_SELECT, normalizeLinks } from '@/lib/highlightLinks'
 
 const EMBEDDING_DIM = 384
 
@@ -20,7 +21,7 @@ const HYBRID_CANDIDATE_COUNT = 60
 // Normalize months_reviewed: union the highlight_months_reviewed rows with months
 // derived from rated daily_assignments. The latter handles "lost signal" cases where
 // a rating saved but the highlight_months_reviewed insert never landed.
-function normalizeMonthsReviewed(h: any): any[] {
+function normalizeMonthsReviewed(h: any, freq: number): any[] {
   const fromTable: { id: string; month_year: string; created_at: string | null }[] =
     Array.isArray(h.months_reviewed)
       ? h.months_reviewed.map((mr: any) => ({
@@ -35,7 +36,7 @@ function normalizeMonthsReviewed(h: any): any[] {
     for (const da of h.daily_assignments) {
       const d = da?.daily_summary?.date
       if (!d || da.rating == null) continue
-      const monthYear = String(d).split('T')[0].slice(0, 7)
+      const monthYear = cycleKeyForDate(String(d).split('T')[0], freq)
       fromRatings.push({ id: `derived-${monthYear}`, month_year: monthYear, created_at: null })
     }
   }
@@ -49,7 +50,7 @@ function normalizeMonthsReviewed(h: any): any[] {
 
 // Enrich highlight with the current cycle's assigned_date (for "Review on" tags).
 // Cycle-aware: uses the user's frequency to determine the review window.
-function enrichWithAssignedDate(h: any, cycleStart: string, cycleEnd: string): any {
+function enrichWithAssignedDate(h: any, cycleStart: string, cycleEnd: string, freq: number): any {
   let assigned_date: string | null = null
   if (h.daily_assignments && Array.isArray(h.daily_assignments) && h.daily_assignments.length > 0) {
     const cycleAssignment = h.daily_assignments.find((da: any) => {
@@ -61,7 +62,7 @@ function enrichWithAssignedDate(h: any, cycleStart: string, cycleEnd: string): a
       assigned_date = cycleAssignment.daily_summary.date
     }
   }
-  const months_reviewed = normalizeMonthsReviewed(h)
+  const months_reviewed = normalizeMonthsReviewed(h, freq)
   const { daily_assignments, embedding, embedding_hash, ...rest } = h
   return { ...rest, assigned_date, months_reviewed }
 }
@@ -74,27 +75,18 @@ const detailSelect = `
   highlight_categories (
     category:categories (*)
   ),
-  highlight_links_from:highlight_links!from_highlight_id (
-    id,
-    to_highlight_id,
-    link_text,
-    to_highlight:highlights!to_highlight_id (
-      id,
-      text,
-      source,
-      author
-    )
-  ),
+  ${LINKS_FROM_SELECT},
+  ${LINKS_TO_SELECT},
   ${dailyAssignmentsSelect},
   ${monthsReviewedSelect}
 `
 
-function processHighlight(h: any, cycleStart: string, cycleEnd: string): any {
+function processHighlight(h: any, cycleStart: string, cycleEnd: string, freq: number): any {
   return enrichWithAssignedDate({
     ...h,
     categories: h.highlight_categories?.map((hc: any) => hc.category) || [],
-    linked_highlights: h.highlight_links_from || [],
-  }, cycleStart, cycleEnd)
+    linked_highlights: normalizeLinks(h.id, h.highlight_links_from, h.highlight_links_to),
+  }, cycleStart, cycleEnd, freq)
 }
 
 // PostgREST reports an RPC that doesn't exist as PGRST202; Postgres itself as
@@ -109,7 +101,8 @@ async function keywordSearch(
   query: string,
   cycleStart: string,
   cycleEnd: string,
-  includeArchived: boolean
+  includeArchived: boolean,
+  freq: number
 ) {
   // Full-text search via ILIKE pattern matching.
   //
@@ -129,7 +122,7 @@ async function keywordSearch(
   const { data: highlights, error } = await q.order('created_at', { ascending: false }).limit(50)
 
   if (error) throw error
-  return (highlights || []).map((h: any) => processHighlight(h, cycleStart, cycleEnd))
+  return (highlights || []).map((h: any) => processHighlight(h, cycleStart, cycleEnd, freq))
 }
 
 export async function POST(request: NextRequest) {
@@ -167,7 +160,7 @@ export async function POST(request: NextRequest) {
     const cycle = getCycleForDate(todayIso, freq)
 
     if (searchType !== 'semantic') {
-      const results = await keywordSearch(supabase, user.id, query, cycle.startDate, cycle.endDate, includeArchived)
+      const results = await keywordSearch(supabase, user.id, query, cycle.startDate, cycle.endDate, includeArchived, freq)
       return NextResponse.json({ results })
     }
 
@@ -184,14 +177,25 @@ export async function POST(request: NextRequest) {
     let ranked: { id: string; similarity: number | null }[] = []
     let fallback: 'keyword' | undefined
 
-    const { data: matches, error: matchError } = await (supabase as any)
-      .rpc('search_highlights_hybrid', {
+    const hybridParams = {
         query_text: query,
         query_embedding: queryEmbedding,
         match_count: SEMANTIC_MATCH_COUNT,
         candidate_count: HYBRID_CANDIDATE_COUNT,
         min_similarity: SEMANTIC_MIN_SIMILARITY,
-      })
+    }
+    let { data: matches, error: matchError } = await (supabase as any)
+      .rpc('search_highlights_hybrid_v2', { ...hybridParams, include_archived: includeArchived })
+
+    if (isMissingFunction(matchError)) {
+      // Older SQL always excludes archived rows. Until the migration is applied,
+      // honor the checkbox using keyword search and tell the UI about fallback.
+      if (includeArchived) {
+        const results = await keywordSearch(supabase, user.id, query, cycle.startDate, cycle.endDate, true, freq)
+        return NextResponse.json({ results, fallback: 'keyword' })
+      }
+      ;({ data: matches, error: matchError } = await (supabase as any).rpc('search_highlights_hybrid', hybridParams))
+    }
 
     if (!matchError) {
       ranked = matches || []
@@ -203,7 +207,7 @@ export async function POST(request: NextRequest) {
       // vector-only RPC (or ILIKE without a vector) rather than failing.
       console.warn('search_highlights_hybrid missing; falling back to match_highlights')
       if (!validEmbedding) {
-        const results = await keywordSearch(supabase, user.id, query, cycle.startDate, cycle.endDate, includeArchived)
+        const results = await keywordSearch(supabase, user.id, query, cycle.startDate, cycle.endDate, includeArchived, freq)
         return NextResponse.json({ results, fallback: 'keyword' })
       }
       const { data: legacy, error: legacyError } = await (supabase as any)
@@ -222,8 +226,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ results: [], ...(fallback ? { fallback } : {}) })
     }
 
-    // The RPCs rank across the whole library (archived included); the archived
-    // filter is applied here on the detail read, unless the user asked for them.
+    // Archive scope is applied before ranking; repeat it here as defense in depth.
     let detailQuery = supabase
       .from('highlights')
       .select(detailSelect)
@@ -236,7 +239,7 @@ export async function POST(request: NextRequest) {
     const byId = new Map((details || []).map((h: any) => [h.id, h]))
     const ordered = ranked
       .filter((m) => byId.has(m.id))
-      .map((m) => processHighlight({ ...(byId.get(m.id) as any), similarity: m.similarity }, cycle.startDate, cycle.endDate))
+      .map((m) => processHighlight({ ...(byId.get(m.id) as any), similarity: m.similarity }, cycle.startDate, cycle.endDate, freq))
 
     return NextResponse.json({ results: ordered, ...(fallback ? { fallback } : {}) })
   } catch (error: any) {

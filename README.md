@@ -2,11 +2,14 @@
 
 A web application that resurfaces your highlights in daily summaries, built with Next.js, Tailwind CSS, and Supabase.
 
+Developer notes: [codebase map](docs/CODEBASE.md), [review/offline contracts](docs/REVIEW_AND_OFFLINE.md), and [known gaps](docs/OBSERVATIONS.md).
+
 ## Features
 
 - **Rich Text Highlights**: Add highlights with formatting support (bold, italic, underline, bullet points, numbered lists)
 - **Notion Import**: Import highlights from Notion pages - each empty line becomes a new highlight, with rich text formatting preserved
 - **Category Tags**: Organize highlights with custom category tags
+- **Filtered PDF Export**: Filter by text, average rating, number of ratings, categories, and archive status; print every match or save it as a PDF
 - **Highlight Linking**: Link highlights together with hyperlinked text references
 - **Rating System**: Rate highlights (high/med/low) in daily summaries
 - **Automatic Archiving**: Highlights rated "low" in two consecutive review cycles are automatically archived and excluded from daily reviews
@@ -55,10 +58,8 @@ npm install
    - For legacy keys: Copy the `anon` key from the **Legacy API Keys** tab
 
 4. Set up the database schema:
-   - Run the SQL script in `supabase/schema.sql` in your Supabase SQL editor
-   - If you already have the database set up, run these migration scripts in order:
-     - `supabase/migration_add_months_reviewed.sql` - Adds months reviewed tracking
-     - `supabase/migration_add_archived.sql` - Adds archiving functionality
+   - Follow [the migration guide](supabase/MIGRATIONS.md). `schema.sql` is intentionally disabled.
+   - `migration_complete.sql` is a base aggregate; later features require additional migrations. Review the guide and your deployed schema before applying SQL.
 
 5. Run the development server:
 ```bash
@@ -78,9 +79,18 @@ The application uses the following tables:
 - `daily_summaries`: Stores daily summary records
 - `daily_summary_highlights`: Junction table linking summaries to highlights with ratings
 
-See `supabase/schema.sql` for the complete schema.
+See [the codebase map](docs/CODEBASE.md) for the current data model and migration caveats.
 
 ## Usage
+
+### Printing filtered highlights as a PDF
+
+1. Open `/highlights` and choose active or archived highlights.
+2. Set text, minimum average rating (Low=1, Medium=2, High=3), minimum rating count, and/or category inclusion/exclusion filters. Choose a sort order.
+3. Click **Print / PDF**. A new tab loads every matching highlight, including results beyond the visible page.
+4. Click **Print / Save as PDF** in the preview and choose **Save as PDF** as the print destination. Disable browser headers/footers for a clean document.
+
+The preview includes rich text, source/author, ratings, categories, and the chosen criteria. A positive minimum rating excludes unrated highlights. Export requires a connection to load the latest saved library; unsaved editor changes and pending offline writes are not included.
 
 ### Adding Highlights
 1. Go to the Highlights page
@@ -119,6 +129,17 @@ Exact duplicates are rejected on save, but the same idea written twice in differ
 3. Click Low/Med/High to rate each highlight
 4. If a highlight is rated "low" in two consecutive review cycles, it will be automatically archived
 5. Archived highlights no longer appear in daily reviews but can be viewed and unarchived from the Highlights page
+
+Review reloads and the widget resume after the latest saved rating, returning to
+earlier skipped highlights at the end of the pass. The page also remembers
+Next/dot navigation on the same device. Plain `/review` stays in today's queue;
+Review Ahead remains opt-in. Offline ratings reach the widget after syncing.
+
+After a widget-script update, replace the script in Scriptable with
+[`public/freedwise-widget.js`](public/freedwise-widget.js). The updated script
+avoids stale HTTP responses and requests a refresh after five minutes; the
+actual redraw time is controlled by iOS, as described in
+[Scriptable's documentation](https://docs.scriptable.app/listwidget/#refreshafterdate).
 
 ### Viewing Archived Highlights
 1. Go to the Highlights page

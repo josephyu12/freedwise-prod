@@ -4,6 +4,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { format } from 'date-fns'
 import { Database } from '@/types/database'
 import { getUserReviewSettings } from '@/lib/cycle'
+import { loadReviewQueue } from '@/lib/reviewQueue'
 
 // GET: Get the next unrated highlight for today's daily summary
 // Supports cookie auth (browser) and Bearer token auth (widget)
@@ -57,85 +58,10 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ highlight: null, total: 0, reviewed: 0, enabled: false, allDone: true })
     }
 
-    // Get today's daily summary
-    const { data: summaryData, error: summaryError } = await supabase
-      .from('daily_summaries')
-      .select('id')
-      .eq('date', today)
-      .eq('user_id', user.id)
-      .maybeSingle()
-
-    if (summaryError) throw summaryError
-
-    if (!summaryData) {
-      return NextResponse.json({ highlight: null, total: 0, reviewed: 0 })
-    }
-
-    const summary = summaryData as { id: string }
-
-    // Count only reviewable highlights: non-archived and not orphaned
-    // (highlights!inner drops rows whose highlight was deleted). This MUST match
-    // the archived/inner filter on the "next highlight" query below. Counting
-    // raw daily_summary_highlights rows instead let an archived or deleted
-    // highlight inflate `total` (the denominator) while never being presentable
-    // for review — stranding the counter at e.g. 45/46 forever.
-    const { data: allHighlights, error: allError } = await supabase
-      .from('daily_summary_highlights')
-      .select('id, rating, highlight:highlights!inner(id, archived)')
-      .eq('daily_summary_id', summary.id)
-      .eq('highlight.archived', false)
-
-    if (allError) throw allError
-
-    const total = (allHighlights || []).length
-    const reviewed = (allHighlights || []).filter((h: any) => h.rating !== null).length
-
-    // Get all unrated highlights, then pick the shortest one
-    const { data: unratedHighlights, error: nextError } = await supabase
-      .from('daily_summary_highlights')
-      .select(`
-        id,
-        highlight_id,
-        highlight:highlights!inner (
-          id,
-          text,
-          html_content,
-          source,
-          author,
-          archived
-        )
-      `)
-      .eq('daily_summary_id', summary.id)
-      .eq('highlight.archived', false)
-      .is('rating', null)
-      .order('id', { ascending: true })
-
-    if (nextError) throw nextError
-
-    if (!unratedHighlights || unratedHighlights.length === 0) {
-      return NextResponse.json({ highlight: null, total, reviewed, allDone: true })
-    }
-
-    // Pick the shortest highlight by text length
-    const shortest = (unratedHighlights as any[]).reduce((shortest, current) => {
-      const shortestLen = shortest.highlight?.text?.length || Infinity
-      const currentLen = current.highlight?.text?.length || Infinity
-      return currentLen < shortestLen ? current : shortest
+    return NextResponse.json(await loadReviewQueue(supabase, user.id, today, today), {
+      headers: { 'Cache-Control': 'private, no-store, max-age=0' },
     })
 
-    return NextResponse.json({
-      highlight: {
-        summaryHighlightId: shortest.id,
-        highlightId: shortest.highlight_id,
-        text: shortest.highlight?.text || '',
-        htmlContent: shortest.highlight?.html_content || null,
-        source: shortest.highlight?.source || null,
-        author: shortest.highlight?.author || null,
-      },
-      total,
-      reviewed,
-      allDone: false,
-    })
   } catch (error: any) {
     console.error('Error fetching next highlight:', error)
     return NextResponse.json(

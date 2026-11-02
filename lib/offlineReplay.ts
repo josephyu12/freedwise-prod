@@ -11,8 +11,8 @@
 // Behavior is intentionally data-safe: every write checks the Supabase result
 // error and throws (Supabase RESOLVES rather than rejecting on a dead network,
 // so an unchecked write would silently no-op and then removeAction would drop
-// it). On any failure we stop and leave that action — and everything after it —
-// queued for the next retry. Nothing is ever dropped.
+// it). Transient failures leave work queued. Repeated permanent server
+// rejections are discarded only after persisting a user-visible notice.
 
 import {
   getPendingActions,
@@ -80,6 +80,21 @@ function isPermanentError(err: any): boolean {
     return false
   }
   return !TRANSIENT_ERROR_CODES.has(err.code)
+}
+
+async function checkPinResponse(response: Response): Promise<void> {
+  // Middleware may redirect an expired session to a login page that returns
+  // 200. That HTML response does not mean the pin was saved.
+  if (response.redirected) throw new Error('Pin request redirected; waiting for the session to recover')
+  if (response.ok) return
+  const data = await response.json().catch(() => ({}))
+  const error = new Error(data?.error || `Pin request failed (${response.status})`)
+  // An expired session, rate limit, or unavailable server can heal on retry.
+  // Codeless errors stall safely; only definitive 4xx rejections consume budget.
+  if (response.status >= 400 && response.status < 500 && ![401, 408, 425, 429].includes(response.status)) {
+    Object.assign(error, { code: `HTTP_${response.status}` })
+  }
+  throw error
 }
 
 // The signed-in user's id from the LOCAL session (no network — works offline).
@@ -697,8 +712,8 @@ async function replayOne(supabase: any, action: any, userId: string, freq: numbe
     // unbounded fetch hanging on a connected-but-dead network would wedge the
     // single-flight drain forever — no future drain can start this page load
     // and the "Syncing…" banner never clears. A timeout/network throw
-    // propagates as a transient stall (retried later); an HTTP rejection is
-    // dropped (see below).
+    // propagates as a transient stall. HTTP rejections follow the same retry /
+    // discarded-notice policy as the database writes above.
     case 'pin-highlight': {
       const { highlightId } = action.params
       const response = await fetchWithTimeout('/api/pins', {
@@ -706,12 +721,7 @@ async function replayOne(supabase: any, action: any, userId: string, freq: numbe
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ highlightId }),
       })
-      if (!response.ok) {
-        // Pin slot already full or highlight gone — drop (don't throw); the
-        // post-sync reload re-derives the truthful pin set.
-        const data = await response.json().catch(() => ({}))
-        console.warn('Pin replay rejected, dropping action:', data)
-      }
+      await checkPinResponse(response)
       return false
     }
 
@@ -720,12 +730,7 @@ async function replayOne(supabase: any, action: any, userId: string, freq: numbe
       const response = await fetchWithTimeout(`/api/pins?highlightId=${highlightId}`, {
         method: 'DELETE',
       })
-      if (!response.ok) {
-        // Mirror the pin path: a server rejection (row gone, auth expired) is
-        // dropped rather than blocking the queue; the post-sync reload
-        // re-derives the truthful pin set.
-        console.warn('Unpin replay rejected, dropping action:', response.status)
-      }
+      await checkPinResponse(response)
       return false
     }
 

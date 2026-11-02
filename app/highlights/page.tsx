@@ -20,23 +20,13 @@ import SelectModeBar, { SelectCheck, archiveActionError } from '@/components/Sel
 import { removeFromFutureMonths } from '@/lib/removeFromFutureMonths'
 import { normalizeLinks, LINKS_FROM_SELECT, LINKS_TO_SELECT } from '@/lib/highlightLinks'
 import SimilarDraftWarning from '@/components/SimilarDraftWarning'
+import HighlightPrintButton from '@/components/HighlightPrintButton'
+import { filterHighlights, ratingValue, ratingCount, type HighlightSort, type HighlightFilters } from '@/lib/highlightFilters'
 
 const MONTH_NAMES = [
   'January', 'February', 'March', 'April', 'May', 'June',
   'July', 'August', 'September', 'October', 'November', 'December',
 ]
-
-type HighlightSort = 'newest' | 'oldest' | 'rating-high' | 'rating-low'
-
-function ratingValue(highlight: { average_rating?: number | null }) {
-  const avg = Number(highlight.average_rating)
-  return Number.isFinite(avg) ? avg : 0
-}
-
-function ratingCount(highlight: { rating_count?: number | null }) {
-  const count = Number(highlight.rating_count)
-  return Number.isFinite(count) && count > 0 ? count : 0
-}
 
 function formatAvgRating(highlight: { average_rating?: number | null; rating_count?: number | null }) {
   const avg = ratingValue(highlight)
@@ -60,6 +50,7 @@ export default function HighlightsPage() {
   const [highlights, setHighlights] = useState<Highlight[]>([])
   const [categories, setCategories] = useState<Category[]>([])
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState<string | null>(null)
   const [text, setText] = useState('')
   const [htmlContent, setHtmlContent] = useState('')
   const [selectedCategories, setSelectedCategories] = useState<string[]>([])
@@ -67,6 +58,9 @@ export default function HighlightsPage() {
   const [showCategoryInput, setShowCategoryInput] = useState(false)
   const [showArchived, setShowArchived] = useState(false)
   const [sortBy, setSortBy] = useState<HighlightSort>('newest')
+  const [filterQuery, setFilterQuery] = useState('')
+  const [minRating, setMinRating] = useState(0)
+  const [minRatingCount, setMinRatingCount] = useState(0)
   const [categoryFilterMode, setCategoryFilterMode] = useState<'or' | 'and'>('or')
   const [selectedFilterCategories, setSelectedFilterCategories] = useState<string[]>([])
   const [excludedCategories, setExcludedCategories] = useState<string[]>([])
@@ -91,6 +85,12 @@ export default function HighlightsPage() {
   const [bulkWorking, setBulkWorking] = useState(false)
   const { toast, showToast } = useActionToast()
   const supabase = createClient()
+  const loadVersion = useRef(0)
+  const filters: HighlightFilters = {
+    archived: showArchived, query: filterQuery, minRating, minRatingCount,
+    includedCategories: selectedFilterCategories, excludedCategories,
+    categoryMode: categoryFilterMode, sort: sortBy,
+  }
 
   // Synchronous re-entry guard. The `saving` state below is only set
   // *after* `await supabase.auth.getUser()`, so it cannot block a second
@@ -218,26 +218,30 @@ export default function HighlightsPage() {
     setCurrentPage(1) // Reset to first page when filter or sort changes
     setSelectedIds(new Set()) // Selection may no longer match what's visible
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [showArchived, selectedFilterCategories, excludedCategories, categoryFilterMode, sortBy])
+  }, [showArchived, selectedFilterCategories, excludedCategories, categoryFilterMode, sortBy, filterQuery, minRating, minRatingCount])
 
   useEffect(() => {
-    loadHighlights()
+    setLoading(true)
+    const versions = loadVersion
+    const timer = setTimeout(() => loadHighlights(), 200)
+    return () => { clearTimeout(timer); versions.current++ }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [showArchived, selectedFilterCategories, excludedCategories, categoryFilterMode, sortBy, currentPage, itemsPerPage])
+  }, [showArchived, selectedFilterCategories, excludedCategories, categoryFilterMode, sortBy, currentPage, itemsPerPage, filterQuery, minRating, minRatingCount])
 
   const loadHighlights = async () => {
+    const version = ++loadVersion.current
     // Set when a deep-link jump changes page/filter mid-load: the effect will
     // call loadHighlights again immediately, so keep the spinner up instead of
     // flashing an empty list in between.
     let reloadPending = false
     try {
       setLoading(true)
+      setLoadError(null)
       
       // Get authenticated user for filtering
       const { data: { user }, error: userError } = await supabase.auth.getUser()
       if (userError || !user) {
-        setLoading(false)
-        return
+        throw userError || new Error('Please sign in to view your highlights.')
       }
       
       // Get all data first so category filters can run client-side.
@@ -287,9 +291,11 @@ export default function HighlightsPage() {
         
         const { data: pageData, error } = await query
           .order('created_at', { ascending: false })
+          .order('id', { ascending: true })
           .range(from, to)
 
         if (error) throw error
+        if (version !== loadVersion.current) return
 
         if (pageData && pageData.length > 0) {
           allHighlights = [...allHighlights, ...pageData]
@@ -321,12 +327,13 @@ export default function HighlightsPage() {
       // Replaces the heavy nested join from the previous version of loadHighlights.
       const currentAssignments = new Map<string, { date: string; rating: 'low' | 'med' | 'high' | null }>()
       try {
-        const { data: monthSummaries } = await (supabase
+        const { data: monthSummaries, error: assignmentsError } = await (supabase
           .from('daily_summaries') as any)
           .select('date, daily_summary_highlights(highlight_id, rating)')
           .eq('user_id', user.id)
           .gte('date', currentMonthStart)
           .lte('date', currentMonthEnd)
+        if (assignmentsError) throw assignmentsError
         for (const ds of (monthSummaries || []) as Array<{ date: string; daily_summary_highlights: Array<{ highlight_id: string; rating: 'low' | 'med' | 'high' | null }> }>) {
           for (const dsh of ds.daily_summary_highlights || []) {
             currentAssignments.set(dsh.highlight_id, { date: ds.date, rating: dsh.rating })
@@ -361,44 +368,9 @@ export default function HighlightsPage() {
         }
       })
 
-      // Filter by categories
-      if (selectedFilterCategories.length > 0) {
-        if (categoryFilterMode === 'and') {
-          // AND: highlight must have ALL selected categories
-          processedHighlights = processedHighlights.filter((h: any) => {
-            const highlightCategoryIds = h.categories?.map((cat: any) => cat.id) || []
-            return selectedFilterCategories.every((catId) => highlightCategoryIds.includes(catId))
-          })
-        } else {
-          // OR: highlight must have at least ONE selected category
-          processedHighlights = processedHighlights.filter((h: any) => {
-            const highlightCategoryIds = h.categories?.map((cat: any) => cat.id) || []
-            return selectedFilterCategories.some((catId) => highlightCategoryIds.includes(catId))
-          })
-        }
-      }
-
-      // Exclude categories
-      if (excludedCategories.length > 0) {
-        processedHighlights = processedHighlights.filter((h: any) => {
-          const highlightCategoryIds = h.categories?.map((cat: any) => cat.id) || []
-          return !excludedCategories.some((catId) => highlightCategoryIds.includes(catId))
-        })
-      }
-
-      const createdAtMs = (h: any) => new Date(h.created_at).getTime()
-      processedHighlights = [...processedHighlights].sort((a: any, b: any) => {
-        if (sortBy === 'oldest') return createdAtMs(a) - createdAtMs(b)
-        if (sortBy === 'rating-high' || sortBy === 'rating-low') {
-          const diff = sortBy === 'rating-high'
-            ? ratingValue(b) - ratingValue(a)
-            : ratingValue(a) - ratingValue(b)
-          if (diff !== 0) return diff
-          const countDiff = ratingCount(b) - ratingCount(a)
-          if (countDiff !== 0) return countDiff
-        }
-        return createdAtMs(b) - createdAtMs(a)
-      })
+      processedHighlights = filterHighlights(processedHighlights, filters)
+      // A slower response for old filters must not replace the latest results.
+      if (version !== loadVersion.current) return
 
       // Update total count based on filtered results
       setTotalHighlights(processedHighlights.length)
@@ -436,8 +408,9 @@ export default function HighlightsPage() {
       setHighlights(paginatedHighlights)
     } catch (error) {
       console.error('Error loading highlights:', error)
+      if (version === loadVersion.current) setLoadError('Could not load highlights. Please try again.')
     } finally {
-      if (!reloadPending) setLoading(false)
+      if (!reloadPending && version === loadVersion.current) setLoading(false)
     }
   }
 
@@ -1175,14 +1148,6 @@ export default function HighlightsPage() {
     }
   }
 
-  if (loading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="text-xl">Loading...</div>
-      </div>
-    )
-  }
-
   return (
     <main className="min-h-screen" style={{ background: 'var(--background)' }}>
       <div className="container mx-auto px-4 py-8 sm:py-10">
@@ -1224,7 +1189,8 @@ export default function HighlightsPage() {
                   </span>
                 )}
               </button>
-              <div className="flex items-center gap-2 sm:ml-auto">
+              <div className="flex flex-wrap items-center gap-2 sm:ml-auto">
+                <HighlightPrintButton filters={filters} categories={categories} disabled={saving || bulkWorking} />
                 <button
                   onClick={toggleSelectMode}
                   className={`flex items-center gap-2 px-3.5 py-2 rounded-full transition-all text-sm font-medium ${
@@ -1538,6 +1504,43 @@ export default function HighlightsPage() {
           )}
 
           <div className="space-y-4">
+            <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4">
+              <div className="grid gap-4 sm:grid-cols-3">
+                <label className="text-sm text-gray-700 dark:text-gray-300">
+                  Contains text, author, or source
+                  <input type="search" value={filterQuery} onChange={(e) => setFilterQuery(e.target.value)}
+                    placeholder="Search your highlights"
+                    className="mt-1 w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 p-2" />
+                </label>
+                <label className="text-sm text-gray-700 dark:text-gray-300">
+                  Minimum average rating
+                  <select value={minRating} onChange={(e) => setMinRating(Number(e.target.value))}
+                    className="mt-1 w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 p-2">
+                    <option value={0}>Any (including unrated)</option>
+                    <option value={1}>1 — Low or higher</option>
+                    <option value={1.5}>1.5 or higher</option>
+                    <option value={2}>2 — Medium or higher</option>
+                    <option value={2.5}>2.5 or higher</option>
+                    <option value={3}>3 — High</option>
+                  </select>
+                </label>
+                <label className="text-sm text-gray-700 dark:text-gray-300">
+                  Minimum number of ratings
+                  <input type="number" min={0} step={1} value={minRatingCount}
+                    onChange={(e) => setMinRatingCount(Math.max(0, Math.floor(Number(e.target.value) || 0)))}
+                    className="mt-1 w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 p-2" />
+                </label>
+              </div>
+              <p className="mt-3 text-sm text-gray-500 dark:text-gray-400">
+                Combine these with category and archive filters above. Print / PDF exports every match in the selected sort order.
+              </p>
+              {(filterQuery || minRating > 0 || minRatingCount > 0 || selectedFilterCategories.length > 0 || excludedCategories.length > 0) && (
+                <button type="button" className="mt-2 text-sm text-blue-600 dark:text-blue-400 underline" onClick={() => {
+                  setFilterQuery(''); setMinRating(0); setMinRatingCount(0)
+                  setSelectedFilterCategories([]); setExcludedCategories([])
+                }}>Clear filters</button>
+              )}
+            </div>
             <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
               <h2 className="text-2xl font-semibold text-gray-900 dark:text-white">
                 All Highlights ({totalHighlights})
@@ -1584,9 +1587,16 @@ export default function HighlightsPage() {
                 </div>
               </div>
             </div>
-            {highlights.length === 0 ? (
+            {loading ? (
+              <p role="status" className="py-8 text-center text-gray-500">Loading highlights…</p>
+            ) : loadError ? (
+              <div role="alert" className="py-8 text-center">
+                <p>{loadError}</p>
+                <button type="button" className="mt-2 text-blue-600 underline" onClick={() => loadHighlights()}>Retry</button>
+              </div>
+            ) : highlights.length === 0 ? (
               <div className="bg-white dark:bg-gray-800 p-8 rounded-lg shadow-lg text-center text-gray-500 dark:text-gray-400">
-                No highlights yet. Add your first highlight above!
+                No highlights match these filters. Try changing the filters or add a highlight above.
               </div>
             ) : (
               highlights.map((highlight) => (

@@ -11,7 +11,7 @@ import { packIntoDates, Scored } from '@/lib/binPack'
  * byte-identical to the pre-cycle implementation.
  *
  * Acts on the whole cycle by default (all days, past and future). Preserves
- * completed days (all highlights rated); recreates summaries for all other days.
+ * every rated row and summary; replaces only unrated assignments.
  *
  * Body { year, month, fromDate? }. Pass `fromDate` (today's YYYY-MM-DD) when
  * building the current cycle for the first time mid-cycle, so highlights are
@@ -113,7 +113,9 @@ export async function POST(request: NextRequest) {
     if (existingError) throw existingError
 
     const typedSummaries = (existingSummaries || []) as Array<{ id: string; date: string }>
-    const scoreById = new Map(highlightsWithScore.map((h) => [h.id, h.score]))
+    // Include ledger-reviewed highlights: their rated rows stay on their days
+    // and must still contribute load even though we won't assign them again.
+    const scoreById = new Map(allHighlightsData.map((h) => [h.id, h.score]))
 
     // CRITICAL INVARIANT: a rated daily_summary_highlights row and its
     // highlight_months_reviewed (ledger) row are the permanent record of a review
@@ -135,16 +137,18 @@ export async function POST(request: NextRequest) {
       while (true) {
         const { data: aPage, error: assignmentsError } = await supabase
           .from('daily_summary_highlights')
-          .select('highlight_id, daily_summary_id, rating')
+          .select('highlight_id, daily_summary_id, rating, highlight:highlights(score)')
           .in('daily_summary_id', summaryIds)
           .not('rating', 'is', null)
           .range(aFrom, aFrom + PAGE - 1)
         if (assignmentsError) throw assignmentsError
-        const page = (aPage || []) as Array<{ highlight_id: string; daily_summary_id: string }>
+        const page = (aPage || []) as Array<{ highlight_id: string; daily_summary_id: string; highlight?: { score: number } | null }>
         for (const a of page) {
           ratedHighlightIds.add(a.highlight_id)
           const d = dateById.get(a.daily_summary_id)
-          if (d) ratedScoreByDate.set(d, (ratedScoreByDate.get(d) ?? 0) + (scoreById.get(a.highlight_id) ?? 0))
+          // Archived rated rows are history too; their score comes from the
+          // relation because the active-library read above excludes them.
+          if (d) ratedScoreByDate.set(d, (ratedScoreByDate.get(d) ?? 0) + (a.highlight?.score ?? scoreById.get(a.highlight_id) ?? 0))
         }
         if (page.length < PAGE) break
         aFrom += PAGE

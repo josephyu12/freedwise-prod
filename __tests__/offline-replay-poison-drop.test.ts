@@ -67,6 +67,41 @@ beforeEach(() => {
 })
 
 describe('offline replay — poison-action dropping', () => {
+  it.each(['pin-highlight', 'unpin-highlight'])('retains %s after transient HTTP failures and retries successfully', async (type) => {
+    state.queue = [{ id: 1, type, params: { highlightId: 'h1' }, createdAt: 1 }]
+    const supabase = makeSupabase({ error: null })
+    for (const status of [401, 408, 425, 429, 500, 503]) {
+      global.fetch = vi.fn(async () => ({ ok: false, status, json: async () => ({ error: 'Try again' }) } as any)) as any
+      const result = await replayPendingActions(supabase)
+      expect(result.stalled).toBe(true)
+      expect(result.dropped).toBe(0)
+      expect(state.queue).toHaveLength(1)
+    }
+    expect(offlineMocks.incrementActionAttempts).not.toHaveBeenCalled()
+    expect(offlineMocks.removeAction).not.toHaveBeenCalled()
+    global.fetch = vi.fn(async () => ({ ok: true } as any)) as any
+    expect((await replayPendingActions(supabase)).processed).toBe(1)
+    expect(state.queue).toHaveLength(0)
+  })
+
+  it('records a notice before giving up on a permanently rejected pin', async () => {
+    state.queue = [{ id: 1, type: 'pin-highlight', params: { highlightId: 'h1' }, createdAt: 1 }]
+    global.fetch = vi.fn(async () => ({ ok: false, status: 400, json: async () => ({ error: 'Pin limit reached' }) } as any)) as any
+    for (let i = 0; i < 4; i++) await replayPendingActions(makeSupabase({ error: null }))
+    expect(state.queue).toHaveLength(1)
+    expect((await replayPendingActions(makeSupabase({ error: null }))).dropped).toBe(1)
+    expect(getDiscardedChanges()[0]).toMatchObject({ type: 'pin-highlight' })
+    expect(state.queue).toHaveLength(0)
+  })
+
+  it('keeps a pin queued when middleware redirects to a successful login page', async () => {
+    state.queue = [{ id: 1, type: 'pin-highlight', params: { highlightId: 'h1' }, createdAt: 1 }]
+    global.fetch = vi.fn(async () => ({ ok: true, status: 200, redirected: true } as any)) as any
+    expect((await replayPendingActions(makeSupabase({ error: null }))).stalled).toBe(true)
+    expect(offlineMocks.removeAction).not.toHaveBeenCalled()
+    expect(offlineMocks.incrementActionAttempts).not.toHaveBeenCalled()
+  })
+
   it('drops a server-rejected action after MAX_ATTEMPTS and lets the queue proceed', async () => {
     state.queue = [
       { id: 1, type: 'archive-highlight', params: { highlightId: 'h1' }, createdAt: 1 },

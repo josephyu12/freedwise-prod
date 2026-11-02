@@ -275,7 +275,7 @@ export function rememberUserId(userId: string | null): void {
 }
 
 /** The remembered owner id, synchronously. Undefined if nothing primed it. */
-function readRememberedUserId(): string | undefined {
+export function readRememberedUserId(): string | undefined {
   if (rememberedUserId) return rememberedUserId
   if (typeof window === 'undefined') return undefined
   try {

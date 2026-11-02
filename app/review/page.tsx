@@ -47,14 +47,17 @@ import {
   getCachedReviewAheadData,
   isReviewAheadCacheFresh,
   enqueueOfflineAction,
+  readRememberedUserId,
 } from '@/lib/offlineStore'
 import { preloadAheadHighlights } from '@/lib/preloadAhead'
+import { nextUnratedAfter, reviewResumeIndex, normalReviewRows, readReviewBookmark, writeReviewBookmark } from '@/lib/reviewResume'
 
 interface ReviewHighlight {
   id: string
   daily_summary_id: string
   highlight_id: string
   rating: 'low' | 'med' | 'high' | null
+  rated_at?: string | null
   date: string
   highlight: {
     id: string
@@ -65,20 +68,6 @@ interface ReviewHighlight {
     archived?: boolean | null
     categories?: { id: string; name: string }[]
   } | null
-}
-
-// Next unrated slot after a rating lands: search FORWARD from `fromIndex` and
-// wrap to the start only when nothing ahead is left. A highlight the user
-// skipped past with Next is therefore deferred to the end of the pass instead
-// of being jumped back to after every rating; a refresh (loadHighlights →
-// first unrated) brings it back to the front.
-const nextUnratedAfter = (list: { rating: unknown }[], fromIndex: number) => {
-  const n = list.length
-  for (let step = 1; step <= n; step++) {
-    const i = (((fromIndex + step) % n) + n) % n
-    if (list[i].rating === null) return i
-  }
-  return -1
 }
 
 export default function ReviewPage() {
@@ -98,6 +87,8 @@ export default function ReviewPage() {
 function ReviewPageContent() {
   const [highlights, setHighlights] = useState<ReviewHighlight[]>([])
   const [currentIndex, setCurrentIndex] = useState(0)
+  const reviewOwnerRef = useRef<string | undefined>()
+  const reviewHistoryRef = useRef<ReviewHighlight[]>([])
   const [loading, setLoading] = useState(true)
   const [ratingInProgress, setRatingInProgress] = useState(false)
   const autoRateProcessed = useRef(false)
@@ -193,12 +184,19 @@ function ReviewPageContent() {
     localStorage.setItem('review-show-dots', String(showDots))
   }, [showDots])
 
-  const today = format(new Date(), 'yyyy-MM-dd')
+  const [today, setToday] = useState(() => format(new Date(), 'yyyy-MM-dd'))
 
   // "Review ahead" mode (?ahead=1): in addition to today + overdue catch-up,
   // pull unrated highlights from the remaining days of the month, round-robin
   // across days, so the user can get ahead instead of stopping at today.
   const aheadMode = searchParams.get('ahead') === '1'
+
+  const restorePosition = useCallback((rows: ReviewHighlight[], history = rows) => {
+    reviewHistoryRef.current = history
+    const bookmark = readReviewBookmark(reviewOwnerRef.current || readRememberedUserId(), today, aheadMode)
+    const index = reviewResumeIndex(rows, today, bookmark, history)
+    setCurrentIndex(index >= 0 ? index : 0)
+  }, [today, aheadMode])
 
   const addToSyncQueue = async (
     highlightId: string,
@@ -303,12 +301,14 @@ function ReviewPageContent() {
           ? (await getCachedReviewAheadData()) ?? (await getCachedReviewData())
           : await getCachedReviewData()
         if (cached) {
-          setHighlights(cached.highlights)
+          // The normal cache may have last been written in explicit ahead
+          // mode. Opening plain /review must still stay in today's queue.
+          const rows = aheadMode ? cached.highlights : normalReviewRows(cached.highlights, today)
+          setHighlights(rows)
           setCategories(cached.categories || [])
           setPinnedHighlightIds(new Set(cached.pinnedHighlightIds || []))
           setUsingCachedData(true)
-          const firstUnrated = cached.highlights.findIndex((h: any) => h.rating === null)
-          setCurrentIndex(firstUnrated >= 0 ? firstUnrated : 0)
+          restorePosition(rows)
           // This return skips the `finally` below (it's outside the try), so the
           // in-flight flag has to be cleared by hand. Leaving it set stranded
           // the sync-complete listener: every later drain saw a load "in flight"
@@ -380,8 +380,7 @@ function ReviewPageContent() {
           setHighlights(highlights)
           setCategories(cats)
           setPinnedHighlightIds(new Set(pinIds))
-          const firstUnrated = highlights.findIndex((h: any) => h.rating === null)
-          setCurrentIndex(firstUnrated >= 0 ? firstUnrated : 0)
+          restorePosition(highlights)
           loadInFlightRef.current = false
           setLoading(false)
           return
@@ -435,6 +434,7 @@ function ReviewPageContent() {
         setLoading(false)
         return
       }
+      reviewOwnerRef.current = user.id
 
       // Resolve the user's review cadence + enabled state.
       const settings = await getUserReviewSettings(supabase, user.id)
@@ -490,6 +490,7 @@ function ReviewPageContent() {
             id,
             highlight_id,
             rating,
+            rated_at,
             daily_summaries!inner(id, date),
             highlight:highlights!inner (
               id,
@@ -506,7 +507,6 @@ function ReviewPageContent() {
           .gte('daily_summaries.date', cycle.startDate)
           .lte('daily_summaries.date', upperDate)
           .eq('daily_summaries.user_id', user.id)
-          .eq('highlight.archived', false)
           .order('rating', { ascending: false, nullsFirst: true })
           .order('id', { ascending: true })
           .range(from, from + PAGE - 1)
@@ -533,6 +533,7 @@ function ReviewPageContent() {
         daily_summary_id: sh.daily_summaries?.id || '',
         highlight_id: sh.highlight_id,
         rating: sh.rating,
+        rated_at: sh.rated_at,
         date: sh.daily_summaries?.date || '',
         highlight: sh.highlight
           ? {
@@ -548,24 +549,7 @@ function ReviewPageContent() {
       // and one archived offline doesn't re-enter the queue at all.
       const allRows = applyPendingActions(serverRows, pendingActions, catResult.data || [])
 
-      // Today's highlights: keep both rated + unrated, sort by text length
-      const todayRows = allRows
-        .filter((h) => h.date === today)
-        .sort((a, b) => {
-          const aLen = a.highlight?.text?.length || 0
-          const bLen = b.highlight?.text?.length || 0
-          return aLen - bLen
-        })
-
-      // Catch-up: only unrated from earlier days, oldest first then shortest
-      const catchUpRows = allRows
-        .filter((h) => h.date < today && h.rating === null)
-        .sort((a, b) => {
-          if (a.date !== b.date) return a.date < b.date ? -1 : 1
-          const aLen = a.highlight?.text?.length || 0
-          const bLen = b.highlight?.text?.length || 0
-          return aLen - bLen
-        })
+      const normalRows = normalReviewRows(allRows, today)
 
       // Ahead: highlights from the remaining days of the month, pulled
       // round-robin — one (shortest) per future day in date order, then loop —
@@ -578,11 +562,11 @@ function ReviewPageContent() {
       // the old behavior — let an auto-archive of a just-rated highlight re-pack
       // the dense round-robin and pull a later highlight ahead of the resume
       // point ("a couple of dots jumped earlier"). Freezing makes each row's
-      // position independent of what was removed, so firstUnrated below can
-      // never move backwards. See lib/aheadOrder.ts.
+      // position independent of what was removed, so restoring the saved
+      // position doesn't depend on a newly shuffled order. See lib/aheadOrder.ts.
       const aheadRows: ReviewHighlight[] = []
       if (aheadMode) {
-        const futureRows = allRows.filter((h) => h.date > today)
+        const futureRows = allRows.filter((h) => h.date > today && h.highlight && !h.highlight.archived)
         const cycleK = cycle.key
 
         // The frozen sequence is keyed by HIGHLIGHT id (survives re-tiling) and
@@ -621,7 +605,7 @@ function ReviewPageContent() {
         aheadRows.push(...ordered)
       }
 
-      const processed = [...todayRows, ...catchUpRows, ...aheadRows]
+      const processed = [...normalRows, ...aheadRows]
 
       setHighlights(processed)
       // This load read server truth, so the post-sync "don't trust the ahead
@@ -663,9 +647,7 @@ function ReviewPageContent() {
         ? { userId: user.id, cycle, allRows, categories: catResult.data || [], pinnedIds: pinIds }
         : null
 
-      // Start at the first unrated highlight
-      const firstUnrated = processed.findIndex((h) => h.rating === null)
-      setCurrentIndex(firstUnrated >= 0 ? firstUnrated : 0)
+      restorePosition(processed, allRows)
     } catch (error) {
       console.error('Error loading highlights:', error)
 
@@ -674,12 +656,12 @@ function ReviewPageContent() {
       try {
         const cached = await getCachedReviewData()
         if (cached) {
-          setHighlights(cached.highlights)
+          const rows = aheadMode ? cached.highlights : normalReviewRows(cached.highlights, today)
+          setHighlights(rows)
           setCategories(cached.categories || [])
           setPinnedHighlightIds(new Set(cached.pinnedHighlightIds || []))
           setUsingCachedData(true)
-          const firstUnrated = cached.highlights.findIndex((h: any) => h.rating === null)
-          setCurrentIndex(firstUnrated >= 0 ? firstUnrated : 0)
+          restorePosition(rows)
         }
       } catch (cacheError) {
         console.error('Failed to load cached data:', cacheError)
@@ -723,7 +705,7 @@ function ReviewPageContent() {
         })
       }
     }
-  }, [supabase, today, aheadMode])
+  }, [supabase, today, aheadMode, restorePosition])
 
   useEffect(() => {
     loadHighlightsRef.current = loadHighlights
@@ -732,6 +714,27 @@ function ReviewPageContent() {
   useEffect(() => {
     loadHighlights()
   }, [loadHighlights])
+
+  // A restored mobile tab can retain yesterday's queue or ratings made before
+  // another device advanced. Refresh on foreground, without interrupting edits
+  // or an in-flight rating, and keep the resume bookmark through that reload.
+  useEffect(() => {
+    const refreshOnReturn = () => {
+      if (document.visibilityState !== 'visible' || loadInFlightRef.current || ratingInProgress || editingId || splitMode) return
+      const localToday = format(new Date(), 'yyyy-MM-dd')
+      if (localToday !== today) { setToday(localToday); return }
+      if (isEffectivelyOffline()) return
+      forceNetworkRef.current = true
+      loadHighlightsRef.current()
+    }
+    const onPageShow = (event: PageTransitionEvent) => { if (event.persisted) refreshOnReturn() }
+    document.addEventListener('visibilitychange', refreshOnReturn)
+    window.addEventListener('pageshow', onPageShow)
+    return () => {
+      document.removeEventListener('visibilitychange', refreshOnReturn)
+      window.removeEventListener('pageshow', onPageShow)
+    }
+  }, [today, ratingInProgress, editingId, splitMode])
 
   // "Review ahead not fully loaded" detection. The ahead snapshot is filled by
   // a background pre-load that only runs after an ONLINE normal-mode load — so
@@ -772,6 +775,13 @@ function ReviewPageContent() {
       const targetIndex = highlights.findIndex((h) => h.id === idParam)
 
       if (targetIndex >= 0) {
+        // iOS can keep showing an older widget snapshot. Opening it must not
+        // move us back to a card that has already been reviewed elsewhere.
+        if (highlights[targetIndex].rating !== null && !actionParam) {
+          restorePosition(highlights, reviewHistoryRef.current)
+          router.replace(aheadMode ? '/review?ahead=1' : '/review', { scroll: false })
+          return
+        }
         setCurrentIndex(targetIndex)
 
         if (actionParam === 'archive') {
@@ -816,6 +826,8 @@ function ReviewPageContent() {
     const target = highlights[index]
     if (!target || ratingInProgress) return
     setRatingInProgress(true)
+    const ratedAt = Date.now()
+    const ratedAtIso = new Date(ratedAt).toISOString()
 
     // First tap on an unrated row uses earlier-timestamp-wins (two offline
     // devices racing). Changing a rating the user can already SEE must always
@@ -837,7 +849,7 @@ function ReviewPageContent() {
           // The rated highlight's own day — replay keys the ledger by its cycle,
           // not `today`, so ahead/catch-up ratings mark the right cycle.
           summaryDate: target.date,
-          ratedAt: Date.now(),
+          ratedAt,
           // Carried into the replay so a queued re-rate doesn't lose the
           // earlier-tap-wins conflict to the very rating it was changing.
           overwrite,
@@ -845,20 +857,20 @@ function ReviewPageContent() {
       })
     const advanceToNextUnrated = () =>
       setHighlights((prev) => {
-        const updated = prev.map((h) => (h.id === target.id ? { ...h, rating } : h))
+        const updated = prev.map((h) => (h.id === target.id ? { ...h, rating, rated_at: ratedAtIso } : h))
         const nextUnrated = nextUnratedAfter(updated, index)
         if (nextUnrated >= 0) setCurrentIndex(nextUnrated)
         return updated
       })
     const revertRating = () =>
       setHighlights((prev) =>
-        prev.map((h) => (h.id === target.id ? { ...h, rating: null } : h))
+        prev.map((h) => (h.id === target.id ? { ...h, rating: target.rating, rated_at: target.rated_at } : h))
       )
 
     try {
       // Optimistic UI + cache update so the rating survives an offline refresh.
       const applyRatingPatch = (h: ReviewHighlight) =>
-        h.id === target.id ? { ...h, rating } : h
+        h.id === target.id ? { ...h, rating, rated_at: ratedAtIso } : h
       setHighlights((prev) => prev.map(applyRatingPatch))
       await updateCache((c) => ({ highlights: c.highlights.map(applyRatingPatch) }))
 
@@ -890,7 +902,7 @@ function ReviewPageContent() {
           applySummaryHighlightRating(supabase, {
             summaryHighlightId: target.id,
             rating,
-            ratedAt: Date.now(),
+            ratedAt,
             overwrite,
           }),
           (supabase.from('highlight_months_reviewed') as any)
@@ -910,7 +922,7 @@ function ReviewPageContent() {
 
       const keptRating = rateRes.applied ? rating : rateRes.rating
       setHighlights((prev) => {
-        const updated = prev.map((h) => (h.id === target.id ? { ...h, rating: keptRating } : h))
+        const updated = prev.map((h) => (h.id === target.id ? { ...h, rating: keptRating, rated_at: rateRes.applied ? ratedAtIso : target.rated_at } : h))
         const nextUnrated = nextUnratedAfter(updated, index)
         if (nextUnrated >= 0) setCurrentIndex(nextUnrated)
         return updated
@@ -958,6 +970,13 @@ function ReviewPageContent() {
   const isCatchUp = current ? current.date < today : false
   const isAhead = current ? current.date > today : false
 
+  useEffect(() => {
+    if (loading || ratingInProgress || !current || current.rating !== null) return
+    writeReviewBookmark(reviewOwnerRef.current || readRememberedUserId(), aheadMode, {
+      id: current.id, highlightId: current.highlight_id, date: today, savedAt: Date.now(),
+    })
+  }, [loading, ratingInProgress, current, aheadMode, today])
+
   // Reset highlight content scroll to top whenever the displayed highlight changes,
   // so a long, scrolled-down highlight doesn't leave the next one mid-scroll.
   useEffect(() => {
@@ -969,6 +988,8 @@ function ReviewPageContent() {
   const handleRate = async (rating: 'low' | 'med' | 'high') => {
     if (!current || ratingInProgress) return
     setRatingInProgress(true)
+    const ratedAt = Date.now()
+    const ratedAtIso = new Date(ratedAt).toISOString()
 
     // First tap on an unrated row uses earlier-timestamp-wins (two offline
     // devices racing). Changing a rating the user can already SEE must always
@@ -981,7 +1002,7 @@ function ReviewPageContent() {
     // path — so a refresh while offline restores the ratings instead of
     // reverting to the all-unrated snapshot from the last loadHighlights().
     const applyRatingPatch = (h: ReviewHighlight) =>
-      h.id === current.id ? { ...h, rating } : h
+      h.id === current.id ? { ...h, rating, rated_at: ratedAtIso } : h
     setHighlights((prev) => prev.map(applyRatingPatch))
     await updateCache((c) => ({ highlights: c.highlights.map(applyRatingPatch) }))
 
@@ -998,7 +1019,7 @@ function ReviewPageContent() {
             // The rated highlight's own day — replay keys the ledger by its cycle,
             // not `today`, so ahead/catch-up ratings mark the right cycle.
             summaryDate: current.date,
-            ratedAt: Date.now(),
+            ratedAt,
             // Carried into the replay so a queued re-rate doesn't lose the
             // earlier-tap-wins conflict to the very rating it was changing.
             overwrite,
@@ -1007,7 +1028,7 @@ function ReviewPageContent() {
         // Move to next unrated
         setHighlights((prev) => {
           const updated = prev.map((h) =>
-            h.id === current.id ? { ...h, rating } : h
+            h.id === current.id ? { ...h, rating, rated_at: ratedAtIso } : h
           )
           const nextUnrated = nextUnratedAfter(updated, currentIndex)
           if (nextUnrated >= 0) {
@@ -1018,7 +1039,7 @@ function ReviewPageContent() {
       } catch (error) {
         console.error('Error queuing offline rating:', error)
         setHighlights((prev) =>
-          prev.map((h) => (h.id === current.id ? { ...h, rating: null } : h))
+          prev.map((h) => (h.id === current.id ? { ...h, rating: current.rating, rated_at: current.rated_at } : h))
         )
       } finally {
         setRatingInProgress(false)
@@ -1047,7 +1068,7 @@ function ReviewPageContent() {
           applySummaryHighlightRating(supabase, {
             summaryHighlightId: current.id,
             rating,
-            ratedAt: Date.now(),
+            ratedAt,
             overwrite,
           }),
           (supabase.from('highlight_months_reviewed') as any)
@@ -1068,7 +1089,7 @@ function ReviewPageContent() {
       const keptRating = rateRes.applied ? rating : rateRes.rating
       setHighlights((prev) => {
         const updated = prev.map((h) =>
-          h.id === current.id ? { ...h, rating: keptRating } : h
+          h.id === current.id ? { ...h, rating: keptRating, rated_at: rateRes.applied ? ratedAtIso : current.rated_at } : h
         )
         const nextUnrated = nextUnratedAfter(updated, currentIndex)
         if (nextUnrated >= 0) setCurrentIndex(nextUnrated)
@@ -1091,7 +1112,7 @@ function ReviewPageContent() {
             // The rated highlight's own day — replay keys the ledger by its cycle,
             // not `today`, so ahead/catch-up ratings mark the right cycle.
             summaryDate: current.date,
-            ratedAt: Date.now(),
+            ratedAt,
             // Carried into the replay so a queued re-rate doesn't lose the
             // earlier-tap-wins conflict to the very rating it was changing.
             overwrite,
@@ -1100,7 +1121,7 @@ function ReviewPageContent() {
         // Advance to next unrated highlight
         setHighlights((prev) => {
           const updated = prev.map((h) =>
-            h.id === current.id ? { ...h, rating } : h
+            h.id === current.id ? { ...h, rating, rated_at: ratedAtIso } : h
           )
           const nextUnrated = nextUnratedAfter(updated, currentIndex)
           if (nextUnrated >= 0) {
@@ -1112,7 +1133,7 @@ function ReviewPageContent() {
         // If even queueing fails (IndexedDB issue), revert as last resort
         console.error('Failed to queue offline action:', queueError)
         setHighlights((prev) =>
-          prev.map((h) => (h.id === current.id ? { ...h, rating: null } : h))
+          prev.map((h) => (h.id === current.id ? { ...h, rating: current.rating, rated_at: current.rated_at } : h))
         )
       }
     } finally {

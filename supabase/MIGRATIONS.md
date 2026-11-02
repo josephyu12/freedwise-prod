@@ -4,12 +4,37 @@ This directory contains SQL migration files for the Freedwise database.
 
 ## Migration Files
 
-### Complete Migration (Recommended for New Databases)
-- **`migration_complete.sql`** - Complete database schema from scratch
-  - Creates all tables, indexes, constraints, RLS policies, and triggers
-  - Includes all features: user isolation, archived highlights, full-text search, Notion sync queue
-  - **Use this for:** Setting up a new database or completely resetting an existing one
-  - **Idempotent:** Safe to run multiple times
+### Base aggregate and later migrations
+
+`schema.sql` intentionally throws; do not use it for setup.
+`migration_complete.sql` creates the base schema but does **not** include all
+current features. Later additions include `migration_updated_at.sql`,
+`migration_highlight_edit_logs.sql` (timestamps first),
+`migration_add_embeddings.sql`, `migration_hybrid_search.sql`,
+`migration_merge_suggestions.sql` (embeddings first), and
+`migration_notion_sync_coalesce.sql`. The retention follow-up is for databases
+that ran an earlier edit-log migration without its current retention function.
+
+Inspect deployed state before selecting migrations. Historical files can
+deduplicate/delete rows or backfill data; rerunning the aggregate can restore
+older function bodies, including the Notion enqueue trigger. It is not a reset
+procedure or a substitute for tracking applied migrations.
+
+### 2026-11-02 fixes
+
+Apply these after their prerequisites, separately from deploying the app:
+
+- **`migration_search_include_archived.sql`**: adds
+  `search_highlights_hybrid_v2` with archive scope applied before ranking.
+  Requires embeddings. Keeps older RPCs for existing clients. Until applied,
+  the app uses keyword fallback when archived semantic search is requested.
+- **`migration_review_stats_consistency.sql`**: handles ledger deletes and
+  rated-assignment deletes, and repairs stored review totals. Requires the
+  current text-rating schema and review ledger. It preserves assignments,
+  ratings, and archive state. Review the backfill before running on production.
+
+These files were prepared locally; their presence does not mean they have been
+applied to a deployed database.
 
 ### Incremental Migrations (For Existing Databases)
 

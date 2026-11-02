@@ -81,11 +81,13 @@ async function fetchWidgetData(token) {
   const day = String(now.getDate()).padStart(2, '0')
   const today = `${year}-${month}-${day}`
 
-  const url = `${APP_URL}/api/review/widget?token=${encodeURIComponent(token)}&date=${today}`
+  // Avoid reusing an older HTTP response after ratings changed in the app.
+  const url = `${APP_URL}/api/review/widget?token=${encodeURIComponent(token)}&date=${today}&_=${Date.now()}`
 
   try {
     const req = new Request(url)
-    req.headers = { 'Accept': 'application/json' }
+    req.headers = { 'Accept': 'application/json', 'Cache-Control': 'no-cache' }
+    req.timeoutInterval = 15
     const res = await req.loadJSON()
 
     if (res.tokenExpired) {
@@ -592,6 +594,8 @@ async function createWidget() {
 }
 
 const widget = await createWidget()
+// This is an earliest refresh request, not a timer; iOS chooses the actual time.
+widget.refreshAfterDate = new Date(Date.now() + 5 * 60 * 1000)
 
 if (config.runsInWidget) {
   Script.setWidget(widget)

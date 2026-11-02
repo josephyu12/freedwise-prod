@@ -21,6 +21,7 @@ import { applyPendingActions } from '@/lib/pendingOverlay'
 import { listReplayable } from '@/lib/offlineReplay'
 import { cacheReviewAheadData } from '@/lib/offlineStore'
 import type { Cycle } from '@/lib/cycle'
+import { normalReviewRows } from '@/lib/reviewResume'
 
 // ─── Single-flight guard ────────────────────────────────────────────────────
 //
@@ -74,6 +75,7 @@ async function doPreload({
           id,
           highlight_id,
           rating,
+          rated_at,
           daily_summaries!inner(id, date),
           highlight:highlights!inner (
             id,
@@ -121,6 +123,7 @@ async function doPreload({
       daily_summary_id: sh.daily_summaries?.id || '',
       highlight_id: sh.highlight_id,
       rating: sh.rating,
+      rated_at: sh.rated_at,
       date: sh.daily_summaries?.date || '',
       highlight: sh.highlight
         ? {
@@ -149,19 +152,7 @@ async function doPreload({
     // Same logic as loadHighlights in the review page — kept in sync manually.
     // These rows are already post-overlay from the normal load.
 
-    const todayRows = allRows
-      .filter((h: any) => h.date === today)
-      .sort(
-        (a: any, b: any) =>
-          (a.highlight?.text?.length || 0) - (b.highlight?.text?.length || 0)
-      )
-
-    const catchUpRows = allRows
-      .filter((h: any) => h.date < today && h.rating === null)
-      .sort((a: any, b: any) => {
-        if (a.date !== b.date) return a.date < b.date ? -1 : 1
-        return (a.highlight?.text?.length || 0) - (b.highlight?.text?.length || 0)
-      })
+    const normalRows = normalReviewRows(allRows, today)
 
     // ── Reconcile frozen ahead order ──
 
@@ -193,7 +184,7 @@ async function doPreload({
 
     // ── Cache the full ahead-mode set ──
 
-    const processed = [...todayRows, ...catchUpRows, ...aheadRows]
+    const processed = [...normalRows, ...aheadRows]
 
     await cacheReviewAheadData({
       highlights: processed,

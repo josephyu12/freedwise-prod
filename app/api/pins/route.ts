@@ -55,15 +55,18 @@ export async function POST(request: NextRequest) {
     }
 
     // Check if already pinned
-    const { data: existingPin } = await (supabase
+    const { data: existingPin, error: existingError } = await (supabase
       .from('pinned_highlights') as any)
       .select('id')
       .eq('user_id', user.id)
       .eq('highlight_id', highlightId)
-      .single()
+      .maybeSingle()
+
+    if (existingError) throw existingError
 
     if (existingPin) {
-      return NextResponse.json({ error: 'Highlight is already pinned' }, { status: 400 })
+      // Idempotent replay: a response can be lost after the insert committed.
+      return NextResponse.json({ pinnedHighlight: existingPin, alreadyPinned: true })
     }
 
     // Check current pin count

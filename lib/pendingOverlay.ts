@@ -25,6 +25,7 @@ export interface PendingOverlayRow {
   id: string // daily_summary_highlights row id
   highlight_id: string
   rating: 'low' | 'med' | 'high' | null
+  rated_at?: string | null
   highlight: {
     id: string
     text: string
@@ -53,6 +54,7 @@ type HighlightPatch = Partial<NonNullable<PendingOverlayRow['highlight']>>
 function foldActions(actions: PendingAction[], categories: PendingCategory[]) {
   const catById = new Map(categories.map((c) => [c.id, c]))
   const ratingByRowId = new Map<string, PendingOverlayRow['rating']>()
+  const ratedAtByRowId = new Map<string, string>()
   const removedHighlightIds = new Set<string>()
   // Last queued archive state per highlight: true = archived, false = unarchived.
   const archivedByHighlightId = new Map<string, boolean>()
@@ -70,7 +72,12 @@ function foldActions(actions: PendingAction[], categories: PendingCategory[]) {
       // null when the user CLEARED it — that's a value, not a missing field.
       case 'rate-review':
       case 'rate-daily':
-        if (p.summaryHighlightId) ratingByRowId.set(p.summaryHighlightId, p.rating ?? null)
+        if (p.summaryHighlightId) {
+          ratingByRowId.set(p.summaryHighlightId, p.rating ?? null)
+          const time = typeof p.ratedAt === 'number' ? p.ratedAt : Date.parse(p.ratedAt || '')
+          if (Number.isFinite(time)) ratedAtByRowId.set(p.summaryHighlightId, new Date(time).toISOString())
+          else ratedAtByRowId.delete(p.summaryHighlightId)
+        }
         break
 
       case 'delete-highlight':
@@ -125,7 +132,7 @@ function foldActions(actions: PendingAction[], categories: PendingCategory[]) {
     }
   }
 
-  return { ratingByRowId, removedHighlightIds, archivedByHighlightId, patchByHighlightId }
+  return { ratingByRowId, ratedAtByRowId, removedHighlightIds, archivedByHighlightId, patchByHighlightId }
 }
 
 /**
@@ -138,7 +145,7 @@ export function applyPendingActions<T extends PendingOverlayRow>(
   categories: PendingCategory[] = []
 ): T[] {
   if (!actions || actions.length === 0) return rows
-  const { ratingByRowId, removedHighlightIds, archivedByHighlightId, patchByHighlightId } =
+  const { ratingByRowId, ratedAtByRowId, removedHighlightIds, archivedByHighlightId, patchByHighlightId } =
     foldActions(actions, categories)
 
   const out: T[] = []
@@ -148,6 +155,7 @@ export function applyPendingActions<T extends PendingOverlayRow>(
     let next = row
     if (ratingByRowId.has(row.id)) {
       next = { ...next, rating: ratingByRowId.get(row.id)! }
+      if (ratedAtByRowId.has(row.id)) next = { ...next, rated_at: ratedAtByRowId.get(row.id)! }
     }
     if (archivedByHighlightId.has(row.highlight_id)) {
       const archived = archivedByHighlightId.get(row.highlight_id)!

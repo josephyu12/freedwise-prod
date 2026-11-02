@@ -7,6 +7,7 @@ import Link from 'next/link'
 import { clearAheadOrder } from '@/lib/aheadOrder'
 import { clearAllOfflineData } from '@/lib/offlineStore'
 import { countReplayable } from '@/lib/offlineReplay'
+import { clearReviewBookmarks } from '@/lib/reviewResume'
 
 type AuthButtonProps = {
   // 'down' for the desktop header (default); 'up' for the mobile drawer
@@ -102,6 +103,7 @@ export default function AuthButton({ dropdownDirection = 'down' }: AuthButtonPro
     // Drop the frozen review-ahead sequences so the next user on this device
     // doesn't inherit them (they're per-user keyed, but clearing is tidier).
     clearAheadOrder()
+    clearReviewBookmarks()
 
     router.push('/login')
     router.refresh()
