@@ -196,11 +196,25 @@ and cleaned HTML. `lib/liftListItem.ts` preserves neighboring list items when
 removing or changing a bullet/number; test its DOM behavior when editing this area.
 
 Adding on Home or Highlights splits blank lines via `splitHtmlByBlankLines`,
-generates UUIDs before the write, updates the UI optimistically, then upserts with
-`onConflict: 'user_id,text_hash', ignoreDuplicates: true`. Returned IDs identify
-which pieces actually saved. Categories and scheduling are follow-up operations.
-A synchronous ref prevents double submission during the initial auth lookup.
-An ambiguous insert failure rechecks the generated UUIDs before restoring the form.
+using shared `useHighlightComposer` and `saveHighlights`. Draft text, formatting,
+categories, and retry UUIDs are backed up synchronously in account/route-scoped
+localStorage records. Each mounted editor owns its own record so separate tabs
+can retain different drafts; other backups are recoverable from the form.
+The editor stays populated and locked while saving. Only a confirmed save clears
+it and shows success; there are no optimistic saved rows. Upsert still uses
+`onConflict: 'user_id,text_hash', ignoreDuplicates: true`. An ambiguous failure
+requires verification of every expected row's UUID and content, then finishes
+idempotent category writes. Failed/partial saves keep the draft and stable IDs
+for retry after reload. Genuine duplicates disclose that the existing row may
+be archived. Scheduling remains a follow-up operation; Notion enqueueing remains
+the database trigger's responsibility. Local drafts require Save to enter the
+library; they are not part of the offline replay queue and cannot survive browser
+storage eviction. Restored editor HTML passes through `sanitizeForRender`.
+
+The similar-draft “Add to it” path requires a returned updated row and matches
+the saved text/HTML it originally read, so stale suggestions cannot overwrite
+newer edits. The parent locks the composer during the fold, and ignores an old
+completion after the draft/account changes.
 
 Interactive splitting uses `parseIntoParagraphs` and `groupParagraphsByDividers`.
 The original highlight keeps the first group and its history; later groups become

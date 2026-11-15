@@ -38,6 +38,7 @@ const mocks = vi.hoisted(() => {
     const b: any = {
       select: vi.fn(() => b),
       eq: vi.fn(() => b),
+      in: vi.fn(() => b),
       neq: vi.fn(() => b),
       order: vi.fn(() => b),
       range: vi.fn(() => b),
@@ -73,7 +74,7 @@ const mocks = vi.hoisted(() => {
   }
 
   const supabase = {
-    auth: { getUser },
+    auth: { getUser, getSession: vi.fn(async () => ({ data: { session: { user: { id: 'user-1' } } } })) },
     from: vi.fn((table: string) => makeBuilder(table)),
   }
 
@@ -129,6 +130,7 @@ const submitButton = (container: HTMLElement) =>
 
 describe('Home — add-highlight double-submit guard', () => {
   beforeEach(() => {
+    localStorage.clear()
     mocks.upsertCalls.length = 0
     mocks.insertedHashes.clear()
     mocks.getUser.mockClear()
@@ -137,6 +139,7 @@ describe('Home — add-highlight double-submit guard', () => {
 
   it('inserts exactly once when Save is double-clicked, with no false duplicate notice', async () => {
     const { container } = render(<Home />)
+    await act(async () => { await Promise.resolve() })
 
     const editor = screen.getByTestId('editor')
     fireEvent.change(editor, {
@@ -161,6 +164,7 @@ describe('Home — add-highlight double-submit guard', () => {
 
   it('still flags a genuine duplicate on a separate, later submit', async () => {
     const { container } = render(<Home />)
+    await act(async () => { await Promise.resolve() })
     const editor = screen.getByTestId('editor')
 
     // First submit — runs to completion, ref guard released afterward.

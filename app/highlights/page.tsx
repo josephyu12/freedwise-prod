@@ -12,7 +12,7 @@ import { addToNotionSyncQueue } from '@/lib/notionSyncQueue'
 import NotionSyncButton from '@/components/NotionSyncButton'
 import { getUserReviewSettings, getCycleForDate } from '@/lib/cycle'
 import { callRedistribute } from '@/lib/redistribute'
-import { parseIntoParagraphs, groupParagraphsByDividers, ParagraphBlock, splitHtmlByBlankLines } from '@/lib/splitHighlightText'
+import { parseIntoParagraphs, groupParagraphsByDividers, ParagraphBlock } from '@/lib/splitHighlightText'
 import { renderHighlightHtml } from '@/lib/renderHighlightHtml'
 import { sanitizeForRender } from '@/lib/sanitizeForRender'
 import ActionToast, { useActionToast } from '@/components/ActionToast'
@@ -20,6 +20,8 @@ import SelectModeBar, { SelectCheck, archiveActionError } from '@/components/Sel
 import { removeFromFutureMonths } from '@/lib/removeFromFutureMonths'
 import { normalizeLinks, LINKS_FROM_SELECT, LINKS_TO_SELECT } from '@/lib/highlightLinks'
 import SimilarDraftWarning from '@/components/SimilarDraftWarning'
+import { useHighlightComposer } from '@/hooks/useHighlightComposer'
+import HighlightDraftStatus from '@/components/HighlightDraftStatus'
 import HighlightPrintButton from '@/components/HighlightPrintButton'
 import { filterHighlights, ratingValue, ratingCount, type HighlightSort, type HighlightFilters } from '@/lib/highlightFilters'
 
@@ -51,9 +53,11 @@ export default function HighlightsPage() {
   const [categories, setCategories] = useState<Category[]>([])
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
-  const [text, setText] = useState('')
-  const [htmlContent, setHtmlContent] = useState('')
-  const [selectedCategories, setSelectedCategories] = useState<string[]>([])
+  const composer = useHighlightComposer('highlights')
+  const { text, htmlContent, selectedCategories, setSelectedCategories, saving, saveSuccess } = composer
+  const [splitNotice, setDupeNotice] = useState<string | null>(null)
+  const dupeNotice = composer.notice || splitNotice
+  const [folding, setFolding] = useState(false)
   const [newCategoryName, setNewCategoryName] = useState('')
   const [showCategoryInput, setShowCategoryInput] = useState(false)
   const [showArchived, setShowArchived] = useState(false)
@@ -74,9 +78,6 @@ export default function HighlightsPage() {
   const [editCategories, setEditCategories] = useState<string[]>([])
   const [skipNotionSync, setSkipNotionSync] = useState(false)
   const [updatingNotion, setUpdatingNotion] = useState(false)
-  const [saving, setSaving] = useState(false)
-  const [saveSuccess, setSaveSuccess] = useState(false)
-  const [dupeNotice, setDupeNotice] = useState<string | null>(null)
   const [pinnedHighlightIds, setPinnedHighlightIds] = useState<Set<string>>(new Set())
   const [pinDialogOpen, setPinDialogOpen] = useState(false)
   const [pendingPinHighlightId, setPendingPinHighlightId] = useState<string | null>(null)
@@ -91,12 +92,6 @@ export default function HighlightsPage() {
     includedCategories: selectedFilterCategories, excludedCategories,
     categoryMode: categoryFilterMode, sort: sortBy,
   }
-
-  // Synchronous re-entry guard. The `saving` state below is only set
-  // *after* `await supabase.auth.getUser()`, so it cannot block a second
-  // submit fired during that auth round-trip (double-click / double-tap).
-  // A ref mutates synchronously, so it closes that window.
-  const submittingRef = useRef(false)
 
   // Split state
   const [splitMode, setSplitMode] = useState(false)
@@ -462,190 +457,12 @@ export default function HighlightsPage() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!text.trim() || saving || submittingRef.current) return
-    submittingRef.current = true
-
-    const highlightText = text.trim()
-    const highlightHtml = htmlContent || null
-    const selectedCats = [...selectedCategories]
-
-    // Get authenticated user up front — needed for user_id on rows.
-    // Wrap getUser() so a thrown auth/network error can't leave
-    // submittingRef stuck true (which would lock the form until reload).
-    // getUser() hits the auth server to verify the JWT — a transient network
-    // blip there returns null even when the session is fine. Fall back to
-    // getSession() (local storage, no network) so a brief auth hiccup doesn't
-    // false-positive "you must be logged in".
-    let user = null
-    try {
-      const { data, error: userError } = await supabase.auth.getUser()
-      if (!userError) user = data?.user ?? null
-    } catch {
-      // getUser() threw — fall through to session check
-    }
-    if (!user) {
-      try {
-        const { data } = await supabase.auth.getSession()
-        user = data?.session?.user ?? null
-      } catch {
-        // getSession() threw — treat as not authenticated
-      }
-    }
-    if (!user) {
-      submittingRef.current = false
-      alert('You must be logged in to add highlights')
-      return
-    }
-
-    // Split a single submission into multiple highlights on blank-line separators
-    const pieces = splitHtmlByBlankLines(highlightHtml, highlightText)
-    if (pieces.length === 0) {
-      submittingRef.current = false
-      return
-    }
-
-    // Build rows with client-side IDs so the optimistic UI and any background
-    // writes (categories, redistribute) can reference them before the insert
-    // round-trips. Dedup is intentionally NOT done against the DB here — that
-    // round-trip dominated the perceived save latency. Users can spot and
-    // delete accidental duplicates from this same view.
-    const nowIso = new Date().toISOString()
-    const rows = pieces.map((p) => ({
-      id: crypto.randomUUID(),
-      text: p.text,
-      html_content: p.html || null,
-      resurface_count: 0,
-      average_rating: 0,
-      rating_count: 0,
-      user_id: user.id,
-      archived: false as const,
-      created_at: nowIso,
-    }))
-
-    // Build the optimistic Highlight objects (categories looked up locally
-    // from already-loaded `categories` state).
-    const catLookup = new Map(categories.map((c) => [c.id, c]))
-    const selectedCategoryObjects = selectedCats
-      .map((id) => catLookup.get(id))
-      .filter((c): c is Category => !!c)
-
-    const optimisticHighlights = rows.map((r) => ({
-      ...r,
-      source: null,
-      author: null,
-      categories: selectedCategoryObjects,
-      linked_highlights: [],
-      months_reviewed: [],
-      assigned_date: null,
-    })) as unknown as Highlight[]
-
-    // Apply optimistic UI immediately: prepend new rows, bump count, clear the form.
-    setHighlights((prev) => [...optimisticHighlights, ...prev])
-    setTotalHighlights((prev) => prev + rows.length)
-    setText('')
-    setHtmlContent('')
-    setSelectedCategories([])
-    setSaveSuccess(true)
-    setTimeout(() => setSaveSuccess(false), 1500)
-
-    // Fire the real writes in the background. Keep `saving` true only as long
-    // as the form was being submitted — the user can keep typing the next one.
-    setSaving(true)
-
-    ;(async () => {
-      try {
-        // Postgres-side dedup: the unique constraint on (user_id, text_hash)
-        // makes this an `INSERT ... ON CONFLICT DO NOTHING RETURNING id`.
-        // Rows that collide with an existing highlight are silently dropped;
-        // we detect them by diffing the returned IDs against what we sent.
-        const { data: insertedRows, error: insertError } = await (supabase
-          .from('highlights') as any)
-          .upsert(rows, {
-            onConflict: 'user_id,text_hash',
-            ignoreDuplicates: true,
-          })
-          .select('id')
-        if (insertError) throw insertError
-
-        const insertedIds = new Set(
-          ((insertedRows || []) as Array<{ id: string }>).map((r) => r.id)
-        )
-        const droppedRows = rows.filter((r) => !insertedIds.has(r.id))
-
-        if (droppedRows.length > 0) {
-          // Roll the dropped optimistic rows back out of the list and warn softly.
-          const droppedIds = new Set(droppedRows.map((r) => r.id))
-          setHighlights((prev) => prev.filter((h) => !droppedIds.has(h.id)))
-          setTotalHighlights((prev) => Math.max(0, prev - droppedRows.length))
-          setDupeNotice(
-            droppedRows.length === rows.length
-              ? rows.length === 1
-                ? 'Already added — duplicate skipped.'
-                : `All ${rows.length} were duplicates — nothing new added.`
-              : `${droppedRows.length} duplicate${droppedRows.length === 1 ? '' : 's'} skipped.`
-          )
-          window.setTimeout(() => setDupeNotice(null), 4000)
-        }
-
-        const insertedSourceRows = rows.filter((r) => insertedIds.has(r.id))
-
-        // Categories — only for rows that actually inserted.
-        if (selectedCats.length > 0 && insertedSourceRows.length > 0) {
-          const categoryLinks = insertedSourceRows.flatMap((r) =>
-            selectedCats.map((catId) => ({ highlight_id: r.id, category_id: catId }))
-          )
-          ;(supabase.from('highlight_categories') as any)
-            .insert(categoryLinks)
-            .catch((err: any) => console.error('Error adding categories:', err))
-        }
-
-        // Notion queue + redistribute, again only for the rows that landed.
-        for (const r of insertedSourceRows) {
-          addToSyncQueue(r.id, 'add', r.text, r.html_content).catch((err: any) =>
-            console.error('Error adding to sync queue:', err)
-          )
-        }
-        if (insertedSourceRows.length > 0) {
-          callRedistribute(insertedSourceRows.map((r) => r.id)).catch(() => {})
-        }
-      } catch (error) {
-        console.error('Error adding highlight:', error)
-        // The upsert HTTP response failed but the row may have committed at the DB
-        // (timeout, transient network). Re-check by the UUIDs we generated — only
-        // our rows match — before alerting the user about a false positive.
-        let landed: Array<{ id: string }> = []
-        try {
-          const { data } = await supabase
-            .from('highlights')
-            .select('id')
-            .in('id', rows.map((r) => r.id))
-            .eq('user_id', user.id)
-          landed = (data || []) as Array<{ id: string }>
-        } catch {
-          // verification failed; treat as no landed rows
-        }
-        if (landed.length > 0) {
-          // The DB trigger already wrote the matching notion_sync_queue rows;
-          // nudge the sync badge to refresh its count. Optimistic UI already
-          // shows the rows, so leave it in place.
-          if (typeof window !== 'undefined') {
-            window.dispatchEvent(new Event('notion-sync-queue-updated'))
-          }
-        } else {
-          const failedIds = new Set(rows.map((r) => r.id))
-          setHighlights((prev) => prev.filter((h) => !failedIds.has(h.id)))
-          setTotalHighlights((prev) => Math.max(0, prev - rows.length))
-          // Restore form so the user can retry without losing what they typed
-          setText(highlightText)
-          setHtmlContent(highlightHtml || '')
-          setSelectedCategories(selectedCats)
-          alert('Failed to add highlight. Please check your Supabase configuration.')
-        }
-      } finally {
-        setSaving(false)
-        submittingRef.current = false
-      }
-    })()
+    if (folding) return
+    await composer.submit(() => {
+      // Reload persisted rows under the current filters instead of presenting
+      // unconfirmed optimistic rows as saved highlights.
+      void loadHighlights()
+    })
   }
 
   const handlePin = async (highlightId: string) => {
@@ -1359,22 +1176,20 @@ export default function HighlightsPage() {
                 <RichTextEditor
                   value={text}
                   htmlValue={htmlContent}
-                  onChange={(newText, newHtml) => {
-                    setText(newText)
-                    setHtmlContent(newHtml)
-                  }}
+                  onChange={composer.changeContent}
+                  readOnly={!composer.ready || saving || folding}
                   placeholder="What do you want to remember?"
                   fullscreen={fullscreen}
                   onToggleFullscreen={() => setFullscreen((v) => !v)}
                 />
                 <SimilarDraftWarning
+                  disabled={!composer.ready || saving}
+                  onBusyChange={setFolding}
                   text={text}
                   html={htmlContent}
                   className="mt-3"
                   onFolded={(result) => {
-                    setText('')
-                    setHtmlContent('')
-                    setSelectedCategories([])
+                    if (!composer.completeExternalSave()) return
                     setFullscreen(false)
                     showToast('Added to an existing highlight')
                     setHighlights((prev) =>
@@ -1388,7 +1203,7 @@ export default function HighlightsPage() {
                 />
               </div>
               <div className="flex flex-col sm:flex-row sm:items-center gap-3">
-                <div className="flex-1 flex flex-wrap gap-2">
+                <fieldset disabled={!composer.ready || saving || folding} className="flex-1 flex flex-wrap gap-2 min-w-0">
                   {categories.map((cat) => (
                     <button
                       key={cat.id}
@@ -1452,10 +1267,10 @@ export default function HighlightsPage() {
                       </button>
                     </div>
                   )}
-                </div>
+                </fieldset>
                 <button
                   type="submit"
-                  disabled={!text.trim() || saving}
+                  disabled={!composer.ready || !text.trim() || saving || folding}
                   className="btn-primary w-full sm:w-auto !px-6 !py-3"
                 >
                   {saving ? (
@@ -1479,6 +1294,7 @@ export default function HighlightsPage() {
                 </button>
               </div>
             </div>
+            <HighlightDraftStatus composer={composer} disabled={saving || folding} />
           </form>
 
           {dupeNotice && (

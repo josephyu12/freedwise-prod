@@ -2,6 +2,7 @@
 
 import { useRef, useState, useEffect } from 'react'
 import { sanitizeHtml } from '@/lib/sanitizeHtml'
+import { sanitizeForRender } from '@/lib/sanitizeForRender'
 import { changeListItemType, isCaretAtListItemStart, liftListItem } from '@/lib/liftListItem'
 
 interface RichTextEditorProps {
@@ -11,11 +12,12 @@ interface RichTextEditorProps {
   placeholder?: string
   fullscreen?: boolean
   onToggleFullscreen?: () => void
+  readOnly?: boolean
 }
 
-export default function RichTextEditor({ value, htmlValue, onChange, placeholder, fullscreen, onToggleFullscreen }: RichTextEditorProps) {
+export default function RichTextEditor({ value, htmlValue, onChange, placeholder, fullscreen, onToggleFullscreen, readOnly = false }: RichTextEditorProps) {
   const editorRef = useRef<HTMLDivElement>(null)
-  const isInternalUpdate = useRef(false)
+  const lastEmitted = useRef<{ text: string; html: string } | null>(null)
   const savedSelection = useRef<Range | null>(null)
   const [isFocused, setIsFocused] = useState(false)
 
@@ -38,8 +40,7 @@ export default function RichTextEditor({ value, htmlValue, onChange, placeholder
   }, [])
 
   useEffect(() => {
-    if (isInternalUpdate.current) {
-      isInternalUpdate.current = false
+    if (lastEmitted.current?.text === value && lastEmitted.current?.html === htmlValue) {
       return
     }
     if (editorRef.current) {
@@ -48,9 +49,11 @@ export default function RichTextEditor({ value, htmlValue, onChange, placeholder
       const currentText = editorRef.current.textContent || ''
       
       if (htmlValue !== undefined) {
-        const newHtml = htmlValue || value || ''
+        // Drafts restored from device storage pass through the rendering sanitizer.
+        const newHtml = htmlValue ? sanitizeForRender(htmlValue) : ''
         if (currentHtml !== newHtml) {
-          editorRef.current.innerHTML = newHtml
+          if (htmlValue) editorRef.current.innerHTML = newHtml
+          else editorRef.current.textContent = value || ''
         }
       } else if (!htmlValue && value !== undefined) {
         if (currentText !== value) {
@@ -64,10 +67,10 @@ export default function RichTextEditor({ value, htmlValue, onChange, placeholder
   }, [value, htmlValue]) // Update when value or htmlValue changes
 
   const handleInput = () => {
-    if (editorRef.current) {
-      isInternalUpdate.current = true
+    if (editorRef.current && !readOnly) {
       const html = sanitizeHtml(editorRef.current.innerHTML)
       const text = editorRef.current.textContent || ''
+      lastEmitted.current = { text, html }
       onChange(text, html)
     }
   }
@@ -114,7 +117,7 @@ export default function RichTextEditor({ value, htmlValue, onChange, placeholder
   }
 
   const execCommand = (command: string, value?: string) => {
-    if (!editorRef.current) return
+    if (!editorRef.current || readOnly) return
     
     editorRef.current.focus()
 
@@ -175,6 +178,7 @@ export default function RichTextEditor({ value, htmlValue, onChange, placeholder
 
   const handlePaste = (e: React.ClipboardEvent) => {
     e.preventDefault()
+    if (readOnly) return
     const html = e.clipboardData.getData('text/html')
     if (html) {
       // Paste with formatting preserved but browser noise stripped
@@ -187,7 +191,7 @@ export default function RichTextEditor({ value, htmlValue, onChange, placeholder
   }
 
   const indentList = () => {
-    if (!editorRef.current) return
+    if (!editorRef.current || readOnly) return
     
     const selection = window.getSelection()
     if (!selection || selection.rangeCount === 0) return
@@ -248,7 +252,7 @@ export default function RichTextEditor({ value, htmlValue, onChange, placeholder
   }
 
   const outdentList = () => {
-    if (!editorRef.current) return
+    if (!editorRef.current || readOnly) return
     
     const selection = window.getSelection()
     if (!selection || selection.rangeCount === 0) return
@@ -318,6 +322,7 @@ export default function RichTextEditor({ value, htmlValue, onChange, placeholder
   }
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (readOnly) return
     // Backspace at the start of the first top-level bullet does nothing in
     // Chrome when that list is the first block. Lift it out instead.
     if (
@@ -491,12 +496,14 @@ export default function RichTextEditor({ value, htmlValue, onChange, placeholder
   const editor = (
     <div
       ref={editorRef}
-      contentEditable
+      contentEditable={!readOnly}
+      aria-readonly={readOnly}
       onInput={handleInput}
+      onCompositionEnd={handleInput}
       onPaste={handlePaste}
       onKeyDown={handleKeyDown}
       onFocus={() => setIsFocused(true)}
-      onBlur={() => setIsFocused(false)}
+      onBlur={() => { handleInput(); setIsFocused(false) }}
       className={`${fullscreen ? 'flex-1 min-h-0 overflow-y-auto px-2 py-4 text-xl leading-relaxed' : 'min-h-[2.5rem] px-1 pt-1 pb-3 text-lg leading-relaxed'} text-gray-900 dark:text-gray-100 focus:outline-none rich-text-editor`}
       style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', overflowWrap: 'break-word', ...(fullscreen ? {} : { overflow: 'hidden' }) }}
       data-placeholder={placeholder || 'Type your answer here...'}

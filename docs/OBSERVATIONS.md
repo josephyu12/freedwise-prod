@@ -5,6 +5,28 @@ audit. Database migrations and external integrations were not executed.
 
 ## Fixes in this working tree
 
+- Mobile add audit: both forms previously cleared the editor and set success
+  state before their background upsert completed, with no durable draft. The
+  button prioritized its saving spinner, but navigation protection was removed
+  and the library displayed unconfirmed rows as highlights.
+  Mobile termination/navigation could therefore lose the only copy. The
+  ambiguous-response fallback also accepted any recovered row as success for
+  the entire batch, and the library ignored resolved category-write errors.
+  Shared save/draft helpers now retain the editor until confirmation, back up
+  drafts synchronously per account/route/editor, preserve retry IDs across
+  reloads, verify the whole batch and recovered content, and retry category
+  writes idempotently. Separate-tab drafts are independently recoverable.
+  The similar-draft fold requires an affected row, rejects stale saved content,
+  and locks the composer while updating. Editor blur/composition completion
+  emits the final content, and parent clears cannot be swallowed by an old
+  internal-update flag. These are source-confirmed loss paths; they do not
+  establish the cause of any historical missing save. Follow-up recovery
+  checks were account-scoped and read-only; no production data was changed.
+  The composer fixes require no new database migration.
+  Verification: 332 tests in 50 files passed, including 41 added regressions;
+  production build, standalone TypeScript, and lint passed. Interruption tests
+  use jsdom and mocked database responses, including both pages' real editors;
+  they do not establish on-device Safari or live database behavior.
 - Semantic search's “Include archived” option was applied only after ranking,
   while both SQL ranking functions excluded archived rows. Search history also
   derived calendar-month keys instead of configured cycle keys, and displayed

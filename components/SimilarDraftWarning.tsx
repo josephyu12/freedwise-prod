@@ -37,17 +37,22 @@ export default function SimilarDraftWarning({
   html,
   onFolded,
   className = '',
+  disabled = false,
+  onBusyChange,
 }: {
   text: string
   html: string
   onFolded: (result: FoldedResult) => void
   className?: string
+  disabled?: boolean
+  onBusyChange?: (busy: boolean) => void
 }) {
   const [matches, setMatches] = useState<SimilarSavedHighlight[]>([])
   const [dismissed, setDismissed] = useState<Set<string>>(new Set())
   const [foldingId, setFoldingId] = useState<string | null>(null)
   const [foldError, setFoldError] = useState<string | null>(null)
   const generation = useRef(0)
+  const folding = useRef(false)
   const supabase = createClient()
 
   const plain = embeddingInput(html || text)
@@ -90,15 +95,26 @@ export default function SimilarDraftWarning({
   if (visible.length === 0) return null
 
   const fold = async (m: SimilarSavedHighlight) => {
-    if (foldingId) return
+    if (folding.current || disabled) return
+    folding.current = true
     setFoldingId(m.id)
+    onBusyChange?.(true)
     setFoldError(null)
     const combined = combineHighlights(m, { text, html_content: html })
     try {
-      const { error } = await (supabase.from('highlights') as any)
+      let query = (supabase.from('highlights') as any)
         .update({ text: combined.text, html_content: combined.html })
         .eq('id', m.id)
+        .eq('text', m.text)
+      // Suggestions can go stale while typing or on another device. Do not
+      // overwrite a newer saved edit with the suggestion's older content.
+      query = m.html_content == null
+        ? query.is('html_content', null)
+        : query.eq('html_content', m.html_content)
+      const { data, error } = await query.select('id')
       if (error) throw error
+      // An RLS rejection or a deleted match may update zero rows without error.
+      if (!data?.some((row: { id: string }) => row.id === m.id)) throw new Error('Highlight was not updated')
       // Queue row was written by the DB trigger; refresh the sync badge.
       addToNotionSyncQueue({ highlightId: m.id, operationType: 'update' }).catch(() => {})
       generation.current++
@@ -109,10 +125,12 @@ export default function SimilarDraftWarning({
       setFoldError(
         e?.code === '23505'
           ? 'That would make it identical to another highlight — nothing was changed.'
-          : 'Couldn’t update that highlight. Please try again.'
+          : 'Couldn’t confirm the update. Your draft has been kept. Check the saved highlight before retrying.'
       )
     } finally {
+      folding.current = false
       setFoldingId(null)
+      onBusyChange?.(false)
     }
   }
 
@@ -161,7 +179,7 @@ export default function SimilarDraftWarning({
                 <button
                   type="button"
                   onClick={() => fold(m)}
-                  disabled={foldingId !== null}
+                  disabled={disabled || foldingId !== null}
                   title="Append this draft to that highlight instead of saving a new one"
                   className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-amber-900 dark:text-amber-100 bg-amber-100 dark:bg-amber-800/50 hover:bg-amber-200 dark:hover:bg-amber-700/60 disabled:opacity-50 transition"
                 >
@@ -171,7 +189,7 @@ export default function SimilarDraftWarning({
                 <button
                   type="button"
                   onClick={() => setDismissed((prev) => new Set(prev).add(m.id))}
-                  disabled={foldingId !== null}
+                  disabled={disabled || foldingId !== null}
                   title="Not the same idea — hide this match"
                   aria-label="Not the same idea"
                   className="rounded-md p-1 text-gray-500 dark:text-gray-400 hover:bg-amber-100 dark:hover:bg-amber-800/50 disabled:opacity-50 transition"

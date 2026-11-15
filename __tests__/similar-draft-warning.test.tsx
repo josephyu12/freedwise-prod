@@ -10,9 +10,12 @@ const mocks = vi.hoisted(() => {
   const embedText = vi.fn(async () => Array(384).fill(0.01))
   const preloadEmbedder = vi.fn(async () => true)
   const offline = { current: false }
-  const update = vi.fn(() => Promise.resolve({ error: null }))
-  const from = vi.fn(() => ({ update: () => ({ eq: () => update() }) }))
-  return { embedText, preloadEmbedder, offline, update, from }
+  const update = vi.fn(() => Promise.resolve({ data: [{ id: 'h-1' }], error: null }))
+  const query: any = { select: () => update() }
+  query.eq = vi.fn(() => query)
+  query.is = vi.fn(() => query)
+  const from = vi.fn(() => ({ update: () => query }))
+  return { embedText, preloadEmbedder, offline, update, from, query }
 })
 
 vi.mock('@/lib/clientEmbeddings', () => ({
@@ -121,11 +124,26 @@ describe('SimilarDraftWarning', () => {
       fireEvent.click(screen.getByRole('button', { name: /add to it/i }))
     })
     expect(mocks.update).toHaveBeenCalled()
+    expect(mocks.query.eq).toHaveBeenCalledWith('text', MATCH.text)
+    expect(mocks.query.eq).toHaveBeenCalledWith('html_content', MATCH.html_content)
     expect(onFolded).toHaveBeenCalledWith(
       expect.objectContaining({
         id: 'h-1',
         text: expect.stringContaining(LONG_DRAFT),
       })
     )
+  })
+
+  it('keeps the draft when an update succeeds with zero affected rows', async () => {
+    vi.useFakeTimers()
+    mocks.update.mockResolvedValueOnce({ data: [], error: null })
+    const onFolded = vi.fn()
+    const onBusyChange = vi.fn()
+    render(<SimilarDraftWarning text={LONG_DRAFT} html="" onFolded={onFolded} onBusyChange={onBusyChange} />)
+    await flush()
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /add to it/i })) })
+    expect(onFolded).not.toHaveBeenCalled()
+    expect(screen.getByText(/couldn’t confirm/i)).toBeInTheDocument()
+    expect(onBusyChange.mock.calls).toEqual([[true], [false]])
   })
 })
