@@ -80,6 +80,11 @@ for routes and setup, and [observations](OBSERVATIONS.md) for follow-up work.
 - `lib/reviewQueue.ts` serves both next-highlight APIs. It paginates today's
   rows and reads older cycle rows only for catch-up after today is complete.
   Archived rated rows can anchor resumption but are excluded from cards/counts.
+  The widget route explicitly uses `fetchCache = 'force-no-store'`: in Next 14,
+  `dynamic = 'force-dynamic'` and HTTP no-store headers alone still permit cached
+  service-role database reads. A regression using Next's production route runtime
+  reproduces stale 1/28 progress after nine ratings, and verifies fresh counts,
+  next-card selection, review settings, and token revocation after this fix.
 - A stale widget link to an already-rated card no longer moves the browser
   backward. Foreground/bfcache return reloads server truth unless an edit/rating
   is in progress; the local date is refreshed too. Plain-review cache reads

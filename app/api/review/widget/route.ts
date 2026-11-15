@@ -9,6 +9,10 @@ import { loadReviewQueue } from '@/lib/reviewQueue'
 // GET: Single endpoint for the Scriptable widget
 // Accepts a signed widget token, verifies it, fetches the next highlight
 export const dynamic = 'force-dynamic'
+// In Next 14, a dynamic GET route can still reuse cached upstream fetches.
+// This service-role client does not read cookies(), so explicitly bypass the
+// Data Cache for ratings, review settings, and token-revocation checks.
+export const fetchCache = 'force-no-store'
 
 // Scriptable/iOS may cache GET responses independently of Next's route cache.
 function widgetJson(body: unknown, init?: ResponseInit) {
