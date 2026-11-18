@@ -86,8 +86,11 @@ for routes and setup, and [observations](OBSERVATIONS.md) for follow-up work.
   reproduces stale 1/28 progress after nine ratings, and verifies fresh counts,
   next-card selection, review settings, and token revocation after this fix.
 - A stale widget link to an already-rated card no longer moves the browser
-  backward. Foreground/bfcache return reloads server truth unless an edit/rating
-  is in progress; the local date is refreshed too. Plain-review cache reads
+  backward. On a same-day foreground or back/forward cache return, Review
+  keeps the card mounted while checking server progress. An active edit, split,
+  rating, or pin dialog skips this check. A review action during the fetch
+  takes precedence over its response. Returning on a new local day loads the
+  new queue. Plain-review cache reads
   strip future rows even if an ahead session last wrote the normal cache.
 - History context: `be1767e` (2026-09-27) changed post-rating navigation to
   forward/wrap but explicitly kept refresh at first unrated. Reload/widget

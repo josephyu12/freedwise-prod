@@ -25,7 +25,6 @@ import {
   storeAheadOrder,
 } from '@/lib/aheadOrder'
 import { getUserReviewSettings, getCycleForDate, cycleKeyForDate } from '@/lib/cycle'
-import type { Cycle } from '@/lib/cycle'
 import { updateHighlightStatsAfterRating } from '@/lib/highlightStats'
 import AutoArchiveToast from '@/components/AutoArchiveToast'
 import ActionToast, { useActionToast } from '@/components/ActionToast'
@@ -89,18 +88,14 @@ function ReviewPageContent() {
   const [currentIndex, setCurrentIndex] = useState(0)
   const reviewOwnerRef = useRef<string | undefined>()
   const reviewHistoryRef = useRef<ReviewHighlight[]>([])
+  const viewedRatedCardRef = useRef<{ id: string; viewedAt: number } | null>(null)
   const [loading, setLoading] = useState(true)
   const [ratingInProgress, setRatingInProgress] = useState(false)
   const autoRateProcessed = useRef(false)
-  // True while loadHighlights is running. loadHighlights drains the offline
-  // queue itself before reading the server, so the `offline-sync-complete` that
-  // drain fires would otherwise bounce us straight back into a second,
-  // redundant load of data we're already fetching.
-  const loadInFlightRef = useRef(false)
-  // Set when a load found queued offline writes. The drain is kicked off in
-  // that load's `finally`, i.e. once the review UI is actually on screen —
-  // loading first and syncing second, rather than the other way round.
-  const drainAfterLoadRef = useRef(false)
+  // A day/mode change can start a new load while a foreground read is pending.
+  // Only the current load may finish the loading UI or run deferred sync work.
+  const loadInFlightRef = useRef<symbol | null>(null)
+  const foregroundRefreshRef = useRef<AbortController | null>(null)
   // A drain finished while a load was in flight, so its reload was deferred to
   // that load's `finally` rather than dropped (see the sync-complete listener).
   const pendingReloadRef = useRef(false)
@@ -113,15 +108,6 @@ function ReviewPageContent() {
   // replay's server-side effects, like auto-archives, aren't in any local
   // cache). Cleared once a network load succeeds.
   const forceNetworkRef = useRef(false)
-  // Context stashed by the try block for the `finally` block's background ahead
-  // pre-load. Null when in ahead mode or when the online load didn't succeed.
-  const preloadCtxRef = useRef<{
-    userId: string
-    cycle: Cycle
-    allRows: ReviewHighlight[]
-    categories: { id: string; name: string }[]
-    pinnedIds: string[]
-  } | null>(null)
   const highlightContentRef = useRef<HTMLDivElement | null>(null)
   const { toast, showToast } = useActionToast()
   const supabase = createClient()
@@ -274,11 +260,16 @@ function ReviewPageContent() {
     }
   }
 
-  const loadHighlights = useCallback(async () => {
-    loadInFlightRef.current = true
-    drainAfterLoadRef.current = false
-    setLoading(true)
-    setUsingCachedData(false)
+  const loadHighlights = useCallback(async (foreground?: AbortSignal) => {
+    const loadId = Symbol()
+    loadInFlightRef.current = loadId
+    const stale = () => loadInFlightRef.current !== loadId || foreground?.aborted
+    let drainAfterLoad = false
+    let preloadContext: Parameters<typeof preloadAheadHighlights>[0] | undefined
+    if (!foreground) {
+      setLoading(true)
+      setUsingCachedData(false)
+    }
 
     // Offline (manual switch OR a genuinely-cut connection): serve the IndexedDB
     // cache and skip the network entirely. Pressing the manual switch is treated
@@ -291,7 +282,7 @@ function ReviewPageContent() {
     //     before falling back to the same cache.
     // The cache is patched on every offline rating, so a pull-to-refresh while
     // offline preserves them either way.
-    if (isEffectivelyOffline()) {
+    if (!foreground && isEffectivelyOffline()) {
       try {
         // In ahead mode, prefer the pre-loaded ahead cache (populated in the
         // background during the last online normal-mode load) so the user gets
@@ -300,7 +291,9 @@ function ReviewPageContent() {
         const cached = aheadMode
           ? (await getCachedReviewAheadData()) ?? (await getCachedReviewData())
           : await getCachedReviewData()
+        if (stale()) return
         if (cached) {
+          reviewOwnerRef.current = readRememberedUserId()
           // The normal cache may have last been written in explicit ahead
           // mode. Opening plain /review must still stay in today's queue.
           const rows = aheadMode ? cached.highlights : normalReviewRows(cached.highlights, today)
@@ -313,7 +306,7 @@ function ReviewPageContent() {
           // in-flight flag has to be cleared by hand. Leaving it set stranded
           // the sync-complete listener: every later drain saw a load "in flight"
           // and never refreshed the page after reconnect.
-          loadInFlightRef.current = false
+          loadInFlightRef.current = null
           setLoading(false)
           return
         }
@@ -338,7 +331,7 @@ function ReviewPageContent() {
     // so we overlay it here: same frozen ahead order, but with up-to-date
     // ratings and removals, so already-reviewed highlights show as green and
     // archived/deleted ones are gone.
-    if (aheadMode && !isEffectivelyOffline() && !forceNetworkRef.current) {
+    if (!foreground && aheadMode && !isEffectivelyOffline() && !forceNetworkRef.current) {
       try {
         const cached = await getCachedReviewAheadData()
         if (cached && isReviewAheadCacheFresh(cached, today)) {
@@ -377,11 +370,13 @@ function ReviewPageContent() {
             // Non-fatal: worst case some today/catch-up rows show stale ratings
           }
 
+          if (stale()) return
+          reviewOwnerRef.current = readRememberedUserId()
           setHighlights(highlights)
           setCategories(cats)
           setPinnedHighlightIds(new Set(pinIds))
           restorePosition(highlights)
-          loadInFlightRef.current = false
+          loadInFlightRef.current = null
           setLoading(false)
           return
         }
@@ -425,19 +420,29 @@ function ReviewPageContent() {
       } catch (e) {
         console.warn('Failed to snapshot the offline queue; reading server anyway:', e)
       }
-      drainAfterLoadRef.current = pendingActions.length > 0
+      drainAfterLoad = pendingActions.length > 0
 
       // getSession reads from local cookie — no network call needed
       const { data: { session } } = await supabase.auth.getSession()
       const user = session?.user
+      if (loadInFlightRef.current !== loadId) return
       if (!user) {
+        reviewOwnerRef.current = undefined
+        setHighlights([])
         setLoading(false)
         return
       }
+      if (foreground && reviewOwnerRef.current !== user.id) {
+        // The tab may have switched accounts while hidden.
+        setHighlights([])
+        setLoading(true)
+      }
       reviewOwnerRef.current = user.id
+      if (stale()) return
 
       // Resolve the user's review cadence + enabled state.
       const settings = await getUserReviewSettings(supabase, user.id)
+      if (stale()) return
       freqRef.current = settings.freq
       setReviewDisabled(!settings.enabled)
       if (!settings.enabled) {
@@ -460,12 +465,12 @@ function ReviewPageContent() {
           .eq('user_id', user.id),
       ])
 
-      setCategories(catResult.data || [])
+      if (stale()) return
+      if (foreground && (catResult.error || pinResult.error)) return
       const pinIds = applyPendingPins(
         (pinResult.data || []).map((p: any) => p.highlight_id),
         pendingActions
       )
-      setPinnedHighlightIds(new Set(pinIds))
 
       // Paginate to avoid Supabase's 1000-row cap. Without this, a month with
       // more than 1000 daily_summary_highlights is silently truncated — and
@@ -515,6 +520,7 @@ function ReviewPageContent() {
       let from = 0
       while (true) {
         const { data: page, error: pageError } = await fetchHighlightsPage(from)
+        if (stale()) return
         if (pageError) throw pageError
         const list = page || []
         hlData = hlData.concat(list)
@@ -577,6 +583,7 @@ function ReviewPageContent() {
         const { ids: serverIds, ok: serverOk } = aheadOrderPromise
           ? await aheadOrderPromise
           : { ids: null, ok: false }
+        if (stale()) return
         let frozen = serverIds ?? readAheadOrder(user.id, cycleK)
         if (!frozen) {
           const legacy = readLegacyAheadOrder(user.id, cycleK)
@@ -607,7 +614,22 @@ function ReviewPageContent() {
 
       const processed = [...normalRows, ...aheadRows]
 
+      setCategories(catResult.data || [])
+      setPinnedHighlightIds(new Set(pinIds))
       setHighlights(processed)
+      // Bookmarks resume unrated work. A live tab may instead be rereading a
+      // rated card. Keep it in view unless newer review activity arrived.
+      const viewed = foreground && viewedRatedCardRef.current
+      const viewedIndex = viewed && !allRows.some(row => Date.parse(row.rated_at || '') > viewed.viewedAt)
+        ? processed.findIndex(row => row.id === viewed.id && row.rating !== null)
+        : -1
+      if (viewedIndex >= 0) {
+        reviewHistoryRef.current = allRows
+        setCurrentIndex(viewedIndex)
+      } else {
+        restorePosition(processed, allRows)
+      }
+      setUsingCachedData(false)
       // This load read server truth, so the post-sync "don't trust the ahead
       // snapshot" flag is satisfied.
       forceNetworkRef.current = false
@@ -627,7 +649,7 @@ function ReviewPageContent() {
       // An ahead-mode network load has the full ahead queue in hand — refresh
       // the pre-loaded snapshot too, so the next ?ahead=1 load (and offline use)
       // starts from this server truth instead of the older background pre-load.
-      if (aheadMode) {
+      if (aheadMode && !stale()) {
         try {
           await cacheReviewAheadData({
             highlights: processed,
@@ -643,18 +665,19 @@ function ReviewPageContent() {
 
       // Stash context for the background ahead pre-load kicked off in `finally`.
       // These locals are scoped to the try block and not accessible there.
-      preloadCtxRef.current = !aheadMode
-        ? { userId: user.id, cycle, allRows, categories: catResult.data || [], pinnedIds: pinIds }
-        : null
-
-      restorePosition(processed, allRows)
+      if (!aheadMode && !stale()) {
+        preloadContext = { supabase, userId: user.id, cycle, today, allRows, categories: catResult.data || [], pinnedIds: pinIds }
+      }
     } catch (error) {
+      // A failed foreground check can keep the live page, including local edits.
+      if (foreground || stale()) return
       console.error('Error loading highlights:', error)
 
       // Network failed — try to load from cache regardless of navigator.onLine
       // (handles weak signal where Wi-Fi is connected but internet is unreachable)
       try {
         const cached = await getCachedReviewData()
+        if (stale()) return
         if (cached) {
           const rows = aheadMode ? cached.highlights : normalReviewRows(cached.highlights, today)
           setHighlights(rows)
@@ -668,7 +691,8 @@ function ReviewPageContent() {
       }
     } finally {
       resumeDrain()
-      loadInFlightRef.current = false
+      if (loadInFlightRef.current !== loadId) return
+      loadInFlightRef.current = null
       setLoading(false)
       // Highlights are on screen — NOW start syncing. Fire-and-forget: it shares
       // the global single-flight guard (so it just joins whatever <OfflineSync>
@@ -676,8 +700,7 @@ function ReviewPageContent() {
       // `offline-sync-complete` listener below reloads once it lands, replacing
       // the overlay with real server truth. loadInFlightRef is already cleared
       // above so that listener won't skip the reload as a duplicate.
-      if (drainAfterLoadRef.current) {
-        drainAfterLoadRef.current = false
+      if (drainAfterLoad) {
         drainOfflineQueue(supabase).catch((e) =>
           console.warn('Background offline drain failed:', e)
         )
@@ -691,18 +714,8 @@ function ReviewPageContent() {
       // Background pre-load of ahead highlights so switching to ?ahead=1 while
       // offline is seamless. Only in normal mode (no point pre-loading what we
       // already have) and only when online (the fetch would fail offline).
-      const ctx = preloadCtxRef.current
-      if (ctx && !isEffectivelyOffline()) {
-        preloadCtxRef.current = null
-        void preloadAheadHighlights({
-          supabase,
-          userId: ctx.userId,
-          cycle: ctx.cycle,
-          today,
-          allRows: ctx.allRows,
-          categories: ctx.categories,
-          pinnedIds: ctx.pinnedIds,
-        })
+      if (preloadContext && !isEffectivelyOffline()) {
+        preloadAheadHighlights(preloadContext)
       }
     }
   }, [supabase, today, aheadMode, restorePosition])
@@ -713,6 +726,7 @@ function ReviewPageContent() {
 
   useEffect(() => {
     loadHighlights()
+    return () => { loadInFlightRef.current = null }
   }, [loadHighlights])
 
   // A restored mobile tab can retain yesterday's queue or ratings made before
@@ -720,21 +734,29 @@ function ReviewPageContent() {
   // or an in-flight rating, and keep the resume bookmark through that reload.
   useEffect(() => {
     const refreshOnReturn = () => {
-      if (document.visibilityState !== 'visible' || loadInFlightRef.current || ratingInProgress || editingId || splitMode) return
+      if (document.visibilityState !== 'visible' || ratingInProgress || editingId || splitMode || pinDialogOpen) return
       const localToday = format(new Date(), 'yyyy-MM-dd')
-      if (localToday !== today) { setToday(localToday); return }
-      if (isEffectivelyOffline()) return
-      forceNetworkRef.current = true
-      loadHighlightsRef.current()
+      if (localToday !== today) {
+        setLoading(true)
+        setToday(localToday)
+        return
+      }
+      if (loadInFlightRef.current || isEffectivelyOffline()) return
+      const refresh = new AbortController()
+      foregroundRefreshRef.current = refresh
+      void loadHighlights(refresh.signal).finally(() => {
+        if (foregroundRefreshRef.current === refresh) foregroundRefreshRef.current = null
+      })
     }
     const onPageShow = (event: PageTransitionEvent) => { if (event.persisted) refreshOnReturn() }
     document.addEventListener('visibilitychange', refreshOnReturn)
     window.addEventListener('pageshow', onPageShow)
     return () => {
+      foregroundRefreshRef.current?.abort()
       document.removeEventListener('visibilitychange', refreshOnReturn)
       window.removeEventListener('pageshow', onPageShow)
     }
-  }, [today, ratingInProgress, editingId, splitMode])
+  }, [today, ratingInProgress, editingId, splitMode, pinDialogOpen, loadHighlights])
 
   // "Review ahead not fully loaded" detection. The ahead snapshot is filled by
   // a background pre-load that only runs after an ONLINE normal-mode load — so
@@ -969,6 +991,11 @@ function ReviewPageContent() {
   const current = highlights[currentIndex] || null
   const isCatchUp = current ? current.date < today : false
   const isAhead = current ? current.date > today : false
+
+  const viewedRatedId = current?.rating ? current.id : null
+  useEffect(() => {
+    viewedRatedCardRef.current = viewedRatedId ? { id: viewedRatedId, viewedAt: Date.now() } : null
+  }, [viewedRatedId])
 
   useEffect(() => {
     if (loading || ratingInProgress || !current || current.rating !== null) return
@@ -1882,7 +1909,13 @@ function ReviewPageContent() {
   }
 
   return (
-    <div className="min-h-screen flex flex-col bg-gradient-to-br from-blue-50 to-indigo-100 dark:from-gray-900 dark:to-gray-800">
+    <div
+      className="min-h-screen flex flex-col bg-gradient-to-br from-blue-50 to-indigo-100 dark:from-gray-900 dark:to-gray-800"
+      // A response started before a local action must never undo that action.
+      onClickCapture={(event) => {
+        if ((event.target as Element).closest('button, a')) foregroundRefreshRef.current?.abort()
+      }}
+    >
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 safe-area-top">
         <div className="text-sm font-medium text-gray-700 dark:text-gray-300">

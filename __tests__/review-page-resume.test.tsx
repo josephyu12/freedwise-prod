@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { format } from 'date-fns'
 
 const state = vi.hoisted(() => ({
-  rows: [] as any[], cache: undefined as any, offline: false,
+  readRows: vi.fn(), rows: [] as any[], cache: undefined as any, offline: false,
   params: new URLSearchParams(), router: { replace: vi.fn() }, client: null as any,
 }))
 vi.mock('next/navigation', () => ({ useSearchParams: () => state.params, useRouter: () => state.router }))
@@ -40,10 +40,11 @@ beforeEach(() => {
     daily_summaries: { id: 'day', date: today },
     highlight: { id: `h${i}`, text, archived: false, highlight_categories: [] },
   }))
+  state.readRows.mockReset().mockImplementation(() => ({ data: structuredClone(state.rows), error: null }))
   state.client = {
     auth: { getSession: async () => ({ data: { session: { user: { id: 'user-1' } } } }) },
     from: (table: string) => {
-      const q: any = { then: (resolve: any) => resolve({ data: table === 'daily_summary_highlights' ? structuredClone(state.rows) : [], error: null }) }
+      const q: any = { then: (resolve: any) => resolve(table === 'daily_summary_highlights' ? state.readRows() : { data: [], error: null }) }
       for (const op of ['select', 'eq', 'gte', 'lte', 'order', 'range', 'upsert']) q[op] = () => q
       return q
     },
@@ -51,6 +52,68 @@ beforeEach(() => {
 })
 
 describe('real review page resume flow', () => {
+  function pauseForegroundRead() {
+    let finish!: (response: any) => void
+    state.readRows.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+    fireEvent(document, new Event('visibilitychange'))
+    return async (response: any) => {
+      await waitFor(() => expect(finish).toBeDefined())
+      await act(async () => finish(response))
+    }
+  }
+
+  it('keeps the same card mounted on return while fetching newer progress from another device', async () => {
+    render(<ReviewPage />)
+    const card = await screen.findByText('A')
+    const finish = pauseForegroundRead()
+    fireEvent(window, new PageTransitionEvent('pageshow', { persisted: true }))
+    await waitFor(() => expect(state.readRows).toHaveBeenCalledTimes(2))
+    expect(screen.getByText('A')).toBe(card)
+    expect(screen.queryByText('Loading...')).toBeNull()
+
+    state.rows[0].rating = 'high'
+    state.rows[0].rated_at = new Date().toISOString()
+    await finish({ data: state.rows, error: null })
+    await screen.findByText('BB')
+    expect(screen.getByText('1 / 3 reviewed')).toBeInTheDocument()
+  })
+
+  it('stays on an already-rated card the reader went back to when progress is unchanged', async () => {
+    state.rows[0].rating = 'high'
+    state.rows[0].rated_at = new Date(Date.now() - 60_000).toISOString()
+    render(<ReviewPage />)
+    await screen.findByText('BB')
+    fireEvent.click(screen.getByRole('button', { name: 'Prev' }))
+    const card = await screen.findByText('A')
+    const finish = pauseForegroundRead()
+    await finish({ data: state.rows, error: null })
+    expect(screen.getByText('A')).toBe(card)
+  })
+
+  it('keeps a rating made while a foreground read is pending, including in the offline cache', async () => {
+    render(<ReviewPage />)
+    await screen.findByText('A')
+    const oldRows = structuredClone(state.rows)
+    const finish = pauseForegroundRead()
+    await waitFor(() => expect(state.readRows).toHaveBeenCalledTimes(2))
+    fireEvent.click(screen.getByRole('button', { name: 'High', exact: true }))
+    await screen.findByText('BB')
+
+    await finish({ data: oldRows, error: null })
+    expect(screen.getByText('BB')).toBeInTheDocument()
+    expect(screen.getByText('1 / 3 reviewed')).toBeInTheDocument()
+    expect(state.cache.highlights[0].rating).toBe('high')
+  })
+
+  it('keeps the live page when a foreground read fails with a stale offline cache', async () => {
+    render(<ReviewPage />)
+    const card = await screen.findByText('A')
+    state.cache = { highlights: [], categories: [], pinnedHighlightIds: [] }
+    const finish = pauseForegroundRead()
+    await finish({ data: null, error: new Error('unreachable') })
+    expect(screen.getByText('A')).toBe(card)
+  })
+
   it('skip A → rate B → C survives sync reload and reopening on a fresh device', async () => {
     const page = render(<ReviewPage />)
     await screen.findByText('A')
