@@ -471,6 +471,10 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
+      seed_demo_workspace: {
+        Args: { p_today: string }
+        Returns: undefined
+      }
       // Write-phase scheduling RPCs (see supabase/migration_schedule_rpcs.sql).
       // Bucket shape: [{ date: 'YYYY-MM-DD', highlight_ids: string[] }];
       // ledger shape: [{ month_year: 'YYYY-MM', highlight_ids: string[] }].

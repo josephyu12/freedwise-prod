@@ -22,6 +22,7 @@ export default function SettingsPage() {
   const supabase = createClient()
   const router = useRouter()
   const [loading, setLoading] = useState(true)
+  const [isDemo, setIsDemo] = useState(false)
   const [saving, setSaving] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [settings, setSettings] = useState<NotionSettings>({
@@ -57,6 +58,9 @@ export default function SettingsPage() {
         router.push('/login')
         return
       }
+
+      setIsDemo(user.is_anonymous === true)
+      if (user.is_anonymous) return
 
       const { data: settingsData, error } = await supabase
         .from('user_notion_settings')
@@ -395,7 +399,12 @@ export default function SettingsPage() {
           )}
 
           {/* Notion Integration */}
-          <div className="glass-card p-6 sm:p-8 mb-6">
+          {isDemo && (
+            <p className="glass-card p-6 mb-6 text-sm" style={{ color: 'var(--text-secondary)' }}>
+              Notion import and sync are available in personal accounts.
+            </p>
+          )}
+          <div hidden={isDemo} className="glass-card p-6 sm:p-8 mb-6">
             <div className="flex items-center gap-3 mb-1">
               <div className="w-9 h-9 rounded-lg bg-gray-100 dark:bg-gray-700 flex items-center justify-center">
                 <svg className="w-5 h-5" style={{ color: 'var(--text-secondary)' }} fill="none" stroke="currentColor" viewBox="0 0 24 24">

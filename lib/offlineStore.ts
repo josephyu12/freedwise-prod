@@ -404,6 +404,21 @@ export async function hasPendingActions(): Promise<boolean> {
   return actions.length > 0
 }
 
+/** Drop cached highlights when switching into or out of the demo. */
+export async function clearOfflinePageData(): Promise<void> {
+  if (typeof indexedDB === 'undefined') return
+  await idbClearStore(CACHE_STORE)
+}
+
+export async function clearDemoOfflineData(userId: string): Promise<void> {
+  if (typeof indexedDB === 'undefined') return
+  await clearOfflinePageData()
+  const actions = await getPendingActions()
+  await Promise.all(actions.map(async (action) => {
+    if (action.userId === userId && action.id != null) await removeAction(action.id)
+  }))
+}
+
 /**
  * Clear ALL offline data on this device: the page-data cache and the pending
  * action queue. Call on sign-out — neither store is keyed by user, so without
@@ -414,5 +429,5 @@ export async function hasPendingActions(): Promise<boolean> {
  */
 export async function clearAllOfflineData(): Promise<void> {
   rememberUserId(null)
-  await Promise.all([idbClearStore(CACHE_STORE), idbClearStore(QUEUE_STORE)])
+  await Promise.all([clearOfflinePageData(), clearOfflineQueue()])
 }

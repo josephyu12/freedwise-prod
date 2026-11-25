@@ -32,7 +32,7 @@ vi.mock('@/lib/cycle', async (importOriginal) => {
 
 import { replayPendingActions } from '@/lib/offlineReplay'
 
-function makeSupabase() {
+function makeSupabase(isAnonymous = false) {
   const chain = (result: any): any => ({
     select: () => chain(result),
     update: () => chain(result),
@@ -45,7 +45,7 @@ function makeSupabase() {
     then: (resolve: any) => resolve(result),
   })
   return {
-    auth: { getUser: vi.fn(async () => ({ data: { user: { id: 'u1' } } })) },
+    auth: { getUser: vi.fn(async () => ({ data: { user: { id: 'u1', is_anonymous: isAnonymous } } })) },
     from: () => chain({ data: [{ id: 'sh1', rating: 'med', rated_at: '2026-08-12T00:00:00.000Z' }], error: null }),
   } as any
 }
@@ -107,5 +107,28 @@ describe('offline rating includes average update', () => {
       expect.anything(),
       { highlightId: 'h1', ratingDate: '2026-08-12', freq: 1 }
     )
+  })
+
+  it('keeps other accounts’ actions out of the demo, including legacy unstamped actions', async () => {
+    const action = {
+      type: 'rate-review',
+      params: {
+        summaryHighlightId: 'sh1',
+        highlightId: 'h1',
+        rating: 'med',
+        today: '2026-08-12',
+        summaryDate: '2026-08-12',
+      },
+    }
+    state.queue = [
+      { ...action, id: 1, createdAt: 1 },
+      { ...action, id: 2, createdAt: 2, userId: 'personal-user' },
+      { ...action, id: 3, createdAt: 3, userId: 'u1' },
+    ]
+
+    const result = await replayPendingActions(makeSupabase(true))
+
+    expect(result.processed).toBe(1)
+    expect(state.queue.map((entry) => entry.id)).toEqual([1, 2])
   })
 })

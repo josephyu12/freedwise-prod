@@ -6,6 +6,12 @@ import { htmlToNotionBlocks, htmlToBlockText, normalizeForBlockCompare, getBlock
 export async function POST(request: NextRequest) {
   try {
     const supabase = await createClient()
+    const { data: { user }, error } = await supabase.auth.getUser()
+    if (error || !user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    if (user.is_anonymous) {
+      return NextResponse.json({ error: 'Notion sync requires a personal account.' }, { status: 403 })
+    }
+
     const { highlightId, text, htmlContent } = await request.json()
 
     if (!highlightId || !text) {

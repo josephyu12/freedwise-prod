@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import type { Client } from '@notionhq/client'
 import { createNotionClient } from '@/lib/notionClient'
+import { createClient } from '@/lib/supabase/server'
 
 // Retry wrapper for Notion API calls that handles 429 rate limiting
 async function notionRetry<T>(fn: () => Promise<T>, maxRetries = 5): Promise<T> {
@@ -224,6 +225,13 @@ function htmlToPlainText(html: string): string {
 
 export async function POST(request: NextRequest) {
   try {
+    const supabase = await createClient()
+    const { data: { user }, error } = await supabase.auth.getUser()
+    if (error || !user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    if (user.is_anonymous) {
+      return NextResponse.json({ error: 'Notion import requires a personal account.' }, { status: 403 })
+    }
+
     const { pageId, notionApiKey } = await request.json()
     
     if (!pageId || !notionApiKey) {

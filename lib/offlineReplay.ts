@@ -31,6 +31,7 @@ import { applySummaryHighlightRating } from './applyRating'
 import { recordDiscardedChange, describeDiscardedAction } from './discardedChanges'
 import { reportError } from './reportError'
 import { fetchWithTimeout } from './fetchWithTimeout'
+import type { User } from '@supabase/supabase-js'
 
 const REPLAYABLE = new Set<string>([
   'rate-review',
@@ -97,21 +98,20 @@ async function checkPinResponse(response: Response): Promise<void> {
   throw error
 }
 
-// The signed-in user's id from the LOCAL session (no network — works offline).
+// The signed-in user from the LOCAL session (no network — works offline).
 // undefined when signed out or when the client can't be constructed (tests).
-async function currentUserIdLocal(): Promise<string | undefined> {
+async function currentUserLocal(): Promise<User | undefined> {
   try {
     const { data } = await createClient().auth.getSession()
-    return data?.session?.user?.id ?? undefined
+    return data?.session?.user
   } catch {
     return undefined
   }
 }
 
-// Whether a queued action belongs to `userId`. Unstamped actions (queued before
-// owner-stamping existed) are treated as the current user's.
-function ownedBy(action: { userId?: string }, userId: string | undefined): boolean {
-  return !action.userId || (!!userId && action.userId === userId)
+// Only permanent accounts inherit legacy actions without an owner stamp.
+function ownedBy(action: { userId?: string }, user?: Pick<User, 'id' | 'is_anonymous'>): boolean {
+  return action.userId ? action.userId === user?.id : !user?.is_anonymous
 }
 
 export interface ReplayResult {
@@ -133,8 +133,8 @@ export interface ReplayResult {
 export async function listReplayable(): Promise<OfflineAction[]> {
   try {
     const all = await getPendingActions()
-    const userId = await currentUserIdLocal()
-    return all.filter((a) => REPLAYABLE.has(a.type) && ownedBy(a, userId))
+    const user = await currentUserLocal()
+    return all.filter((a) => REPLAYABLE.has(a.type) && ownedBy(a, user))
   } catch {
     return []
   }
@@ -346,14 +346,15 @@ export async function replayPendingActions(
   if (isEffectivelyOffline()) return idle()
 
   // RLS needs an authenticated user; if signed out, leave the queue untouched.
-  let userId: string | undefined
+  let user: User | undefined
   try {
     const { data } = await supabase.auth.getUser()
-    userId = data?.user?.id
+    user = data?.user ?? undefined
   } catch {
     /* treated as no user */
   }
-  if (!userId) return idle()
+  if (!user?.id) return idle()
+  const userId = user.id
 
   // The user's cadence drives the ledger key + auto-archive window for rating
   // replays (cycles, not bare months — identical when frequency = 1).
@@ -374,7 +375,7 @@ export async function replayPendingActions(
   // would silently match zero rows under RLS (updates "succeed" and the queue
   // discards them) — or worse, a split replay would INSERT the other user's
   // text into this account. They resume when their owner signs back in.
-  const actions = all.filter((a) => REPLAYABLE.has(a.type) && ownedBy(a, userId))
+  const actions = all.filter((a) => REPLAYABLE.has(a.type) && ownedBy(a, user))
 
   // Same-device last write wins (rate then change/clear before sync): only the
   // last queued rating per summary row is written. Earlier ones are dropped

@@ -69,6 +69,16 @@ describe('middleware auth gate — real supabase client', () => {
     expect(fetchSpy).not.toHaveBeenCalled()
   })
 
+  it('allows the shareable demo page through without opening other routes', async () => {
+    const { updateSession } = await import('@/lib/supabase/middleware')
+    const page = await updateSession(req('/demo'))
+    expect(page.status).toBe(200)
+    expect(page.headers.get('location')).toBeNull()
+    const nestedPage = await updateSession(req('/demo/private'))
+    expect(nestedPage.status).toBe(307)
+    expect(new URL(nestedPage.headers.get('location')!).pathname).toBe('/login')
+  })
+
   it('fail-opens an expired session whose refresh hangs, and STOPS the retry loop', async () => {
     const fetchStarts: number[] = []
     globalThis.fetch = ((_input: RequestInfo | URL, init?: RequestInit) => {

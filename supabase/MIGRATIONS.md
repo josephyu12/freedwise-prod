@@ -36,6 +36,30 @@ Apply these after their prerequisites, separately from deploying the app:
 These files were prepared locally; their presence does not mean they have been
 applied to a deployed database.
 
+### Public demo
+
+1. Apply `migration_demo_workspace.sql` after the base schema. It adds the
+   sample-data RPC and ownership checks used by demo sessions.
+2. Enable **Allow anonymous sign-ins** under the project's Supabase Auth settings.
+3. Set `NEXT_PUBLIC_DEMO_ENABLED=true` in the app's build environment and deploy.
+   Open `/demo` or the public homepage in a signed-out browser and choose
+   **Try the demo**.
+
+Each visitor gets a separate, editable workspace. The seed runs once per account
+and uses the visitor's local date for Quick Review. **Exit demo** ends that
+browser's session. Supabase does not automatically remove anonymous accounts.
+If this project uses anonymous accounts exclusively for the demo, an operator
+can periodically remove expired accounts and their sample data via the existing
+foreign-key cascades. For example, a seven-day retention period uses:
+
+```sql
+DELETE FROM auth.users
+WHERE is_anonymous IS TRUE AND created_at < now() - interval '7 days';
+```
+
+See [Supabase anonymous sign-ins](https://supabase.com/docs/guides/auth/auth-anonymous)
+for Auth settings and signup rate limits.
+
 ### Incremental Migrations (For Existing Databases)
 
 These migrations can be applied individually to update existing databases:

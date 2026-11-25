@@ -82,8 +82,7 @@ export default function AppHeader() {
     return () => { document.body.style.overflow = '' }
   }, [mobileMenuOpen])
 
-  // Don't show header on login page
-  if (pathname === '/login') return null
+  if (pathname === '/login' || pathname === '/demo') return null
 
   const isActive = (href: string) => {
     if (href === '/') return pathname === '/'

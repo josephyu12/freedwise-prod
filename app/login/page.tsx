@@ -2,7 +2,11 @@
 
 import { useState } from 'react'
 import Link from 'next/link'
+import DemoButton from '@/components/DemoButton'
+import { clearDemoOfflineData } from '@/lib/offlineStore'
 import { createClient } from '@/lib/supabase/client'
+
+const DEMO_ENABLED = process.env.NEXT_PUBLIC_DEMO_ENABLED === 'true'
 
 const FEATURES = [
   {
@@ -78,11 +82,21 @@ const STEPS = [
 
 export default function LoginPage() {
   const [loading, setLoading] = useState(false)
+  const [startingDemo, setStartingDemo] = useState(false)
   const supabase = createClient()
 
   const handleGoogleLogin = async () => {
     try {
       setLoading(true)
+      if (DEMO_ENABLED) {
+        const { data, error } = await supabase.auth.getSession()
+        if (error) throw error
+        if (data.session?.user.is_anonymous) {
+          const { error: signOutError } = await supabase.auth.signOut({ scope: 'local' })
+          if (signOutError) throw signOutError
+          await clearDemoOfflineData(data.session.user.id)
+        }
+      }
       const { error } = await supabase.auth.signInWithOAuth({
         provider: 'google',
         options: {
@@ -100,7 +114,7 @@ export default function LoginPage() {
   const SignInButton = () => (
     <button
       onClick={handleGoogleLogin}
-      disabled={loading}
+      disabled={loading || startingDemo}
       className="w-full sm:w-auto px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center justify-center gap-2 font-medium"
     >
       {loading ? (
@@ -158,9 +172,20 @@ export default function LoginPage() {
             </p>
 
             <div className="mt-8 flex flex-col items-center gap-3">
-              <SignInButton />
+              <div className="flex w-full flex-col justify-center gap-3 sm:flex-row sm:items-start">
+                {DEMO_ENABLED && (
+                  <DemoButton
+                    disabled={loading}
+                    onPendingChange={setStartingDemo}
+                    className="btn-secondary w-full !text-base sm:w-auto"
+                  />
+                )}
+                <SignInButton />
+              </div>
               <p className="text-sm" style={{ color: 'var(--text-tertiary)' }}>
-                Free to use · Sign in with your Google account
+                {DEMO_ENABLED
+                  ? 'Review, search, and edit sample highlights. No sign-up needed.'
+                  : 'Free to use · Sign in with your Google account'}
               </p>
             </div>
 

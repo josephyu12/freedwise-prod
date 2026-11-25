@@ -195,10 +195,11 @@ export default function TutorialModal() {
     const supabase = createClient()
     let cancelled = false
 
-    const maybeOpen = (id: string | undefined) => {
-      // Never auto-open over the login page (a stale session can linger there)
-      if (cancelled || !id || window.location.pathname === '/login') return
+    const maybeOpen = (id: string | undefined, isDemo?: boolean) => {
+      const pathname = window.location.pathname
+      if (cancelled || !id || pathname === '/login' || pathname === '/demo') return
       setUserId(id)
+      if (isDemo) return
       try {
         if (!localStorage.getItem(seenKey(id))) {
           setStep(0)
@@ -211,13 +212,13 @@ export default function TutorialModal() {
     }
 
     supabase.auth.getSession().then(({ data: { session } }) => {
-      maybeOpen(session?.user?.id)
+      maybeOpen(session?.user?.id, session?.user?.is_anonymous)
     })
 
     // Catch sign-ins that happen without a full page load (client-side
     // navigation after login), so brand-new accounts see the tour immediately.
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
-      if (event === 'SIGNED_IN') maybeOpen(session?.user?.id)
+      if (event === 'SIGNED_IN') maybeOpen(session?.user?.id, session?.user?.is_anonymous)
     })
 
     return () => {
