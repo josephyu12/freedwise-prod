@@ -49,8 +49,8 @@ DECLARE
   month_start date := date_trunc('month', p_today::timestamp)::date;
   prior_review_day date := month_start - 7;
   earlier_review_day date := (month_start - interval '1 month')::date - 7;
-  category_ids uuid[] := ARRAY(SELECT gen_random_uuid() FROM generate_series(1, 4));
-  highlight_ids uuid[] := ARRAY(SELECT gen_random_uuid() FROM generate_series(1, 13));
+  category_ids uuid[] := ARRAY(SELECT gen_random_uuid() FROM generate_series(1, 5));
+  highlight_ids uuid[] := ARRAY(SELECT gen_random_uuid() FROM generate_series(1, 21));
 BEGIN
   IF demo_user IS NULL OR (auth.jwt() ->> 'is_anonymous') IS DISTINCT FROM 'true' THEN
     RAISE EXCEPTION 'An anonymous demo session is required' USING ERRCODE = '42501';
@@ -71,7 +71,8 @@ BEGIN
     (category_ids[1], demo_user, 'Learning', '#6366f1'),
     (category_ids[2], demo_user, 'Design', '#0ea5e9'),
     (category_ids[3], demo_user, 'Focus', '#10b981'),
-    (category_ids[4], demo_user, 'Teamwork', '#f59e0b');
+    (category_ids[4], demo_user, 'Teamwork', '#f59e0b'),
+    (category_ids[5], demo_user, 'Quotes', '#8b5cf6');
 
   INSERT INTO public.highlights (id, user_id, text, html_content, source, created_at, archived)
   SELECT highlight_ids[n], demo_user, body, COALESCE(html, '<p>' || body || '</p>'),
@@ -103,19 +104,53 @@ BEGIN
     (13, 'Keep a checklist for the launch dry run.', NULL, 'Launch retrospective', true)
   ) AS notes(n, body, html, source, archived);
 
+  INSERT INTO public.highlights (id, user_id, text, html_content, author, source, created_at)
+  SELECT highlight_ids[n], demo_user, body, '<blockquote><p>' || body || '</p></blockquote>',
+         author, source, now() - n * interval '1 hour'
+  FROM (VALUES
+    -- https://jamesclear.com/3-2-1/january-2-2020
+    (14, 'You do not rise to the level of your goals. You fall to the level of your systems.',
+      'James Clear', '3-2-1 Newsletter, January 2, 2020'),
+    -- https://paulgraham.com/greatwork.html
+    (15, 'The best questions grow in the answering.',
+      'Paul Graham', 'How to Do Great Work'),
+    -- https://aliabdaal.com/newsletter/what-does-it-actually-mean-to-be-efficient/
+    (16, 'Enjoyment really does seem to be a form of efficiency.',
+      'Ali Abdaal', 'LifeNotes, What Does It Actually Mean to Be Efficient?'),
+    -- https://dailystoic.com/dont-let-worry-get-better/
+    (17, 'We suffer more often in imagination than in reality.',
+      'Seneca', 'Letter 13, featured in Daily Stoic'),
+    -- https://tim.blog/wp-content/uploads/2020/01/17-Questions-That-Changed-My-Life.pdf
+    (18, 'What would this look like if it were easy?',
+      'Tim Ferriss', '17 Questions That Changed My Life'),
+    -- https://tim.blog/2015/08/07/5-bullet-friday/
+    (19, 'Innovation is saying no to 1,000 things.',
+      'Steve Jobs', 'Featured in Tim Ferriss’s 5-Bullet Friday'),
+    -- https://www.gutenberg.org/files/2944/2944-h/2944-h.htm
+    (20, 'Nothing great was ever achieved without enthusiasm.',
+      'Ralph Waldo Emerson', 'Circles'),
+    -- https://libraryweb.org/~digitized/books/Two_Speeches_by_Frederick_Douglass.pdf
+    (21, 'If there is no struggle there is no progress.',
+      'Frederick Douglass', 'West India Emancipation speech')
+  ) AS quotes(n, body, author, source);
+
   INSERT INTO public.highlight_categories (highlight_id, category_id)
   SELECT highlight_ids[n], category_ids[category]
   FROM (VALUES (1, 1), (2, 2), (3, 3), (4, 4), (5, 2), (6, 1), (7, 3),
-               (8, 4), (9, 2), (9, 4), (10, 1), (11, 2), (11, 3), (12, 3), (13, 4))
+               (8, 4), (9, 2), (9, 4), (10, 1), (11, 2), (11, 3), (12, 3), (13, 4),
+               (14, 1), (15, 1), (16, 3), (17, 3), (18, 3), (19, 2), (20, 3), (21, 4),
+               (14, 5), (15, 5), (16, 5), (17, 5), (18, 5), (19, 5), (20, 5), (21, 5))
     AS tags(n, category);
 
   INSERT INTO public.highlight_links (from_highlight_id, to_highlight_id)
   SELECT highlight_ids[source], highlight_ids[target]
-  FROM (VALUES (1, 6), (1, 10), (2, 9), (3, 7), (4, 8), (5, 11), (9, 4))
+  FROM (VALUES (1, 6), (1, 10), (2, 9), (3, 7), (4, 8), (5, 11), (9, 4),
+               (14, 3), (15, 5), (16, 20), (18, 11), (19, 2))
     AS links(source, target);
 
   INSERT INTO public.pinned_highlights (user_id, highlight_id)
-  VALUES (demo_user, highlight_ids[2]), (demo_user, highlight_ids[4]);
+  VALUES (demo_user, highlight_ids[2]), (demo_user, highlight_ids[4]),
+         (demo_user, highlight_ids[14]);
 
   -- Demo accounts use the app's default monthly cycle. Schedule from the
   -- visitor's local day and keep past ratings on their original assignment days.
@@ -126,9 +161,12 @@ BEGIN
 
   WITH assignments(n, day, rating) AS (
     VALUES (1, p_today, NULL::text), (2, p_today, NULL), (3, p_today, NULL), (4, p_today, NULL),
+           (14, p_today, NULL), (15, p_today, NULL),
            (5, p_today + 1, NULL), (6, p_today + 1, NULL), (7, p_today + 2, NULL),
            (8, p_today - 1, NULL), (9, p_today - 1, 'med'),
            (10, p_today + 3, NULL), (11, p_today + 4, NULL),
+           (16, p_today + 1, NULL), (17, p_today + 2, NULL), (18, p_today + 2, NULL),
+           (19, p_today + 3, NULL), (20, p_today + 4, NULL), (21, p_today + 4, NULL),
            (1, prior_review_day, 'high'),
            (12, prior_review_day, 'low'), (12, earlier_review_day, 'low')
   )

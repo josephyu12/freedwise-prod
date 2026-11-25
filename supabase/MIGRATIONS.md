@@ -47,7 +47,11 @@ applied to a deployed database.
 
 Each visitor gets a separate, editable workspace. The seed runs once per account
 and uses the visitor's local date for Quick Review. **Exit demo** ends that
-browser's session. Supabase does not automatically remove anonymous accounts.
+browser's session. If the demo is already enabled, reapply
+`migration_demo_workspace.sql` to load seed updates for new demo workspaces.
+To see the updated sample content, exit the demo and start a fresh session.
+
+Supabase does not automatically remove anonymous accounts.
 If this project uses anonymous accounts exclusively for the demo, an operator
 can periodically remove expired accounts and their sample data via the existing
 foreign-key cascades. For example, a seven-day retention period uses:
